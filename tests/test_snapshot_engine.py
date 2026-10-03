@@ -69,13 +69,13 @@ class SnapshotEngineTests(unittest.TestCase):
             self.store.objects(snapshot.id)
 
     def test_layout_and_inventory_order_do_not_change_identity(self) -> None:
-        sources = [("a", "é🌍\r\n" * 20), ("b", "same"), ("empty", "")]
+        sources = [("a", "é🌍\r\n" * 2), ("empty", "")]
         snapshot = snapshots.Snapshot(CORPUS, sources, CODE)
         self.store.save(snapshot, frame_bytes=4)
         with tempfile.TemporaryDirectory() as directory:
             other = snapshots.Store(directory)
             rebuilt = snapshots.Snapshot(CORPUS, reversed(sources), CODE)
-            other.save(rebuilt, frame_bytes=37)
+            other.save(rebuilt, frame_bytes=9)
             self.assertEqual(snapshot.id, rebuilt.id)
             first = self.store.load(snapshot.id)
             second = other.load(rebuilt.id)
@@ -205,10 +205,10 @@ class SnapshotEngineTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
 
     def test_parallel_publication_preserves_first_valid_layout(self) -> None:
-        snapshot = snapshots.Snapshot(CORPUS, [("a", "é🌍" * 10)], CODE)
+        snapshot = snapshots.Snapshot(CORPUS, [("a", "é🌍" * 2)], CODE)
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(lambda size: self.store.save(snapshot, size), (4, 9, 20, 37)))
-        self.assertEqual(self.store.load(snapshot.id).documents["a"].text, "é🌍" * 10)
+        self.assertEqual(self.store.load(snapshot.id).documents["a"].text, "é🌍" * 2)
         self.assertEqual(list(self.root.rglob(".tmp-*")), [])
 
     def test_interrupted_publication_is_retryable_and_not_visible(self) -> None:

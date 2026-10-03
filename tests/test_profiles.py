@@ -121,7 +121,8 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual((second.profile().documents, second.profile().content_bytes), (1, 1))
 
     def test_unfiltered_query_profiles_read_text_only_for_the_bounded_preview(self) -> None:
-        sources = [premixdb.Source(str(i), "é🌍" * i) for i in range(25)]
+        # One document beyond the ten-document preview detects accidental full reads.
+        sources = [premixdb.Source(str(i), "é🌍" * i) for i in range(11)]
         snapshot = self.corpus.snapshot(source=sources)
         captured = snapshot.profile()
         documents = coordinator(self.client)._snapshot(_decode_id(snapshot.id)).documents.values()

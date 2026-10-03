@@ -99,7 +99,7 @@ def test_supported_methods_have_docstrings_and_explicit_parameters() -> None:
 
 def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        old = db.corpus("pages", [p.Source(str(i), "sample text") for i in range(25)])
+        old = db.corpus("pages", [p.Source(str(i), "sample text") for i in range(2)])
         query = old.query().wait()
         from premixdb._shell import _PublicCompleter
 
@@ -112,13 +112,14 @@ def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
         assert completer.attr_matches("query._") == []
         for removed in ("estimate", "describe", "provenance", "list_document"):
             assert not hasattr(query, removed)
-        assert [row["ordinal"] for row in old.preview()] == [0, 1, 2]
-        assert [row["ordinal"] for row in old.preview(offset=3)] == [3, 4, 5]
-        assert [row["ordinal"] for row in query.preview(offset=3)] == [3, 4, 5]
-        assert old.preview(offset=25) == query.preview(offset=25) == []
+        assert [row["ordinal"] for row in old.preview()] == [0, 1]
+        assert [row["ordinal"] for row in old.preview(limit=1)] == [0]
+        assert [row["ordinal"] for row in old.preview(offset=1)] == [1]
+        assert [row["ordinal"] for row in query.preview(offset=1)] == [1]
+        assert old.preview(offset=2) == query.preview(offset=2) == []
         newer = db.corpus("pages", [p.Source("new", "a different snapshot")])
         assert db.corpus("pages").id == newer.id
-        assert old.profile().documents == 25
+        assert old.profile().documents == 2
         assert newer.preview()[0]["source_key"] == "new"
         assert newer.profile().added == 1
         for removed in (

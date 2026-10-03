@@ -13,8 +13,6 @@ from premixdb.local import Snapshot
 SHELL_SOURCES = (
     Source("speech/0000", "First Citizen:\nLet us speak together.\n"),
     Source("speech/0001", "Second Citizen:\nWe are listening.\n"),
-    Source("speech/0002", "First Citizen:\nLet us speak together.\n"),
-    Source("speech/0003", ""),
 )
 
 

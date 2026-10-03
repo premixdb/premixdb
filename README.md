@@ -68,7 +68,8 @@ uvx --python 3.12 premixdb shell
 ```
 
 The shell opens with `db`, `p`, and an offline Shakespeare `demo` corpus.
-From a checkout, use `uvx --from . premixdb shell`.
+From a checkout, use `make shell` (`uvx --from . premixdb shell`).
+Use `make install` for an editable local CLI install.
 
 - [Runnable examples](examples/README.md)
 - [Curation](docs/curation.md) · [Fields](docs/enrichment.md) · [Training](docs/training.md)

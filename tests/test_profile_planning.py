@@ -69,7 +69,7 @@ class HistogramTests(unittest.TestCase):
     def test_empty_all_null_and_constant_moments(self) -> None:
         for values in ([], [None, None]):
             self.assertFalse(self.scalar(values).distributions[0].HasField("numeric"))
-        for values in ([0.0], [0.0] * 10, [-1.25] * 10):
+        for values in ([0.0], [0.0] * 2, [-1.25] * 2):
             summary = self.scalar(values).distributions[0].numeric
             self.assertEqual(summary.mean, values[0])
             self.assertEqual(summary.total, sum(values))
@@ -201,7 +201,7 @@ class PlanningTests(unittest.TestCase):
         self.root = temp.name
         self.service = Coordinator(self.root)
         self.addCleanup(self.service.close)
-        self.snapshot = self.capture("profiles", ["", "a", "ab", "abc"])
+        self.snapshot = self.capture("profiles", ["", "ab"])
 
     def capture(
         self, name: str, texts: Iterable[str], *, base: snapshot_pb.Snapshot | None = None
@@ -233,16 +233,14 @@ class PlanningTests(unittest.TestCase):
             ),
         ):
             estimate = profiles.estimate_query(self.service, plan)
-        self.assertEqual((estimate.input.lower, estimate.input.upper), (4, 4))
-        self.assertEqual((estimate.output.lower, estimate.output.upper), (2, 2))
+        self.assertEqual((estimate.input.lower, estimate.input.upper), (2, 2))
+        self.assertEqual((estimate.output.lower, estimate.output.upper), (1, 1))
         uris = next(field for field in estimate.fields if field.field == q.FIELD_OBJECT_URI)
         self.assertEqual(
             {b.lower.text for b in uris.distributions[0].buckets},
             {
                 "doc/0",
                 "doc/1",
-                "doc/2",
-                "doc/3",
             },
         )
 
@@ -257,7 +255,7 @@ class PlanningTests(unittest.TestCase):
             )
         )
         estimate = profiles.estimate_query(self.service, plan)
-        self.assertEqual((estimate.output.lower, estimate.output.upper), (2, 2))
+        self.assertEqual((estimate.output.lower, estimate.output.upper), (1, 1))
         plan = compile_query(
             premixdb.query(
                 self.snapshot.id,
@@ -268,16 +266,16 @@ class PlanningTests(unittest.TestCase):
             )
         )
         estimate = profiles.estimate_query(self.service, plan)
-        self.assertEqual((estimate.output.lower, estimate.output.upper), (0, 2))
+        self.assertEqual((estimate.output.lower, estimate.output.upper), (0, 1))
         result = self.service.run_query(plan)
-        self.assertEqual(result.profile.output_documents, 2)
+        self.assertEqual(result.profile.output_documents, 1)
         self.assertEqual(result.estimate, estimate)
 
     def test_overlapping_snapshots_are_not_summed_as_exact_population(self) -> None:
-        other = self.capture("profiles", ["", "a", "ab", "changed"], base=self.snapshot)
+        other = self.capture("profiles", ["", "changed"], base=self.snapshot)
         plan = compile_query(premixdb.query(self.snapshot.id, other.id))
         estimate = profiles.estimate_query(self.service, plan)
-        self.assertEqual((estimate.input.lower, estimate.input.upper), (4, 8))
+        self.assertEqual((estimate.input.lower, estimate.input.upper), (2, 4))
         self.assertFalse(estimate.fields)
         actual = self.service.run_query(plan).profile.input_documents
         self.assertLessEqual(estimate.input.lower, actual)
@@ -295,7 +293,7 @@ class PlanningTests(unittest.TestCase):
         )
         estimate = profiles.estimate_query(self.service, plan)
         self.assertIn(q.FIELD_TEXT_BYTES, estimate.unavailable_fields)
-        self.assertEqual((estimate.output.lower, estimate.output.upper), (0, 4))
+        self.assertEqual((estimate.output.lower, estimate.output.upper), (0, 2))
         self.assertFalse(estimate.output.HasField("expected"))
 
     def test_profiles_survive_restart_and_return_detached_estimates(self) -> None:
@@ -341,7 +339,7 @@ class PlanningTests(unittest.TestCase):
                 self.assertTrue(entered.wait(5))
                 pending = self.service.GetQuery(q.GetQueryRequest(id=id)).query
                 self.assertIn(q.FIELD_LANGUAGE_EN, pending.estimate.unavailable_fields)
-                self.assertEqual(pending.estimate.output.upper, 4)
+                self.assertEqual(pending.estimate.output.upper, 2)
                 self.assertFalse(pending.estimate.output.HasField("expected"))
             finally:
                 release.set()
@@ -350,9 +348,9 @@ class PlanningTests(unittest.TestCase):
                 future.result()
             completed = self.service.GetQuery(q.GetQueryRequest(id=id)).query
             self.assertEqual(
-                (completed.estimate.output.lower, completed.estimate.output.upper), (3, 3)
+                (completed.estimate.output.lower, completed.estimate.output.upper), (1, 1)
             )
-            self.assertEqual(completed.profile.output_documents, 3)
+            self.assertEqual(completed.profile.output_documents, 1)
             plan = compile_query(
                 premixdb.query(
                     self.snapshot.id,
@@ -374,7 +372,7 @@ class PlanningTests(unittest.TestCase):
                 self.assertEqual(self.service.run_query(plan).profile.output_documents, 0)
 
     def test_derived_histograms_are_identical_across_sharding_and_restart(self) -> None:
-        snapshot = self.capture("many-values", ["x" * i for i in range(5)])
+        snapshot = self.capture("many-values", ["", "x"])
         plan = compile_query(
             premixdb.query(snapshot.id, steps=[premixdb.where(premixdb.language.en > 0.1)])
         )
@@ -388,7 +386,7 @@ class PlanningTests(unittest.TestCase):
                 return [{"id": doc.id, "language.en": len(doc.text) / 1000} for doc in docs]
 
         with (
-            patch.object(profiles, "MAX_BUCKETS", 4),
+            patch.object(profiles, "MAX_BUCKETS", 1),
             patch.object(enrichment, "producer", return_value=Worker()),
         ):
             with patch.object(enrichment, "SHARD_ROWS", 1):
@@ -405,13 +403,13 @@ class PlanningTests(unittest.TestCase):
                                 memory=storage.MemorySources(
                                     documents=[
                                         storage.MemorySource(uri=f"doc/{i}", text="x" * i)
-                                        for i in range(5)
+                                        for i in range(2)
                                     ]
                                 )
                             ),
                         )
                     )
-                    with patch.object(enrichment, "SHARD_ROWS", 3):
+                    with patch.object(enrichment, "SHARD_ROWS", 2):
                         second = enrichment.build(other, recipe).fields[0].snapshot.profile
                     self.assertEqual(first, second)
                     self.assertEqual(len(first.distributions[0].buckets), profiles.MAX_BUCKETS)

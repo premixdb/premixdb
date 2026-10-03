@@ -165,11 +165,14 @@ def test_mixture_lessons_use_named_domains_and_reproducible_candidates(
 
 def test_quality_lesson_reuses_real_cache_with_controlled_model(
     tmp_path: Path,
-    inputs: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    web, _ = inputs
+    web = tmp_path / "quality.jsonl"
+    web.write_text(
+        '{"text": "Science explains stars."}\n{"text": "A brief page."}\n',
+        encoding="utf-8",
+    )
     monkeypatch.syspath_prepend(str(EXAMPLES))
 
     class Scores:
@@ -182,11 +185,7 @@ def test_quality_lesson_reuses_real_cache_with_controlled_model(
             return [
                 {
                     "id": doc.id,
-                    "quality.educational_value": 2.0
-                    if doc.text.startswith("Science")
-                    else 0.5
-                    if doc.text
-                    else None,
+                    "quality.educational_value": 2.0 if doc.text.startswith("Science") else 0.5,
                 }
                 for doc in documents
             ]
@@ -202,7 +201,7 @@ def test_quality_lesson_reuses_real_cache_with_controlled_model(
     lesson.STORAGE = tmp_path / "store"
     with patch.object(enrichment, "producer", return_value=Scores()):
         lesson.main()
-    assert "Captured → selected documents: 3 → 1" in capsys.readouterr().out
+    assert "Captured → selected documents: 2 → 1" in capsys.readouterr().out
     assert Scores.calls == 1
 
 

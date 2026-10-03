@@ -1,17 +1,28 @@
 UV ?= uv
+UVX ?= uvx
 RUN = $(UV) run --locked
 
-.PHONY: help sync lint format typecheck protos test test-all integration coverage check build audit benchmark
+.PHONY: help install shell sync lint format typecheck protos test test-all integration coverage check build publish audit benchmark
 
 help:
+	@echo 'make shell     Run the local checkout with uvx'
+	@echo 'make install   Install the checkout as an editable CLI tool'
 	@echo 'make sync      Install the locked development environment'
 	@echo 'make check     Run lint, types, protobuf, coverage, and package checks'
 	@echo 'make test      Run fast tests with bounded fixtures'
 	@echo 'make test-all  Run fast tests and integration checks'
 	@echo 'make integration Run package, example, and process checks'
 	@echo 'make format    Format project Python files'
+	@echo 'make build     Build and validate fresh wheel and source distributions'
+	@echo 'make publish   Build, validate, and publish to PyPI'
 	@echo 'make audit     Audit locked runtime dependencies for known vulnerabilities'
 	@echo 'make benchmark Measure performance and save a local baseline'
+
+install:
+	$(UV) tool install --editable .
+
+shell:
+	$(UVX) --from . premixdb shell
 
 sync:
 	$(UV) sync --locked --all-extras
@@ -44,8 +55,12 @@ coverage:
 check: lint typecheck protos coverage build
 
 build:
+	rm -rf reports/dist
 	$(UV) build --out-dir reports/dist
 	$(RUN) twine check --strict reports/dist/*
+
+publish: build
+	$(UV) publish reports/dist/*
 
 audit:
 	mkdir -p reports

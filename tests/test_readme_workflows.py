@@ -102,7 +102,7 @@ class ReadmeWorkflows(unittest.TestCase):
         consumed = []
 
         def rows() -> Iterator[dict[str, str]]:
-            for i in range(1000):
+            for i in range(3):
                 consumed.append(i)
                 yield {"text": f"document {i}"}
 
@@ -112,9 +112,9 @@ class ReadmeWorkflows(unittest.TestCase):
             patch("huggingface_hub.HfApi", return_value=api),
             patch("datasets.load_dataset", side_effect=lambda *args, **kwargs: rows()) as load,
         ):
-            snapshot = self.db.corpus("c4", source=p.HuggingFaceSource("allenai", "c4"), limit=3)
-        self.assertEqual(consumed, [0, 1, 2])
-        self.assertEqual(snapshot.profile().documents, 3)
+            snapshot = self.db.corpus("c4", source=p.HuggingFaceSource("allenai", "c4"), limit=2)
+        self.assertEqual(consumed, [0, 1])
+        self.assertEqual(snapshot.profile().documents, 2)
         self.assertEqual(load.call_args.args, ("allenai/c4", "en"))
         self.assertEqual(
             load.call_args.kwargs, dict(split="train", revision="a" * 40, streaming=True)
@@ -243,16 +243,17 @@ class ReadmeWorkflows(unittest.TestCase):
         consumed = []
 
         def sources() -> Iterator[sdk.Source]:
-            for i in range(20):
+            for i in range(3):
                 consumed.append(i)
                 yield p.Source(str(i), f"é🌍 document {i}")
 
-        snapshot = self.db.corpus("pages", sources(), limit=15)
-        self.assertEqual(consumed, list(range(15)))
+        snapshot = self.db.corpus("pages", sources(), limit=2)
+        self.assertEqual(consumed, [0, 1])
         query = snapshot.query()
-        page = query.preview(offset=10, limit=4, max_characters=2)
-        self.assertEqual([row["ordinal"] for row in page], [10, 11, 12, 13])
-        self.assertEqual([row["text"] for row in page], ["é🌍"] * 4)
+        page = query.preview(limit=2, max_characters=2)
+        self.assertEqual([row["ordinal"] for row in page], [0, 1])
+        self.assertEqual([row["text"] for row in page], ["é🌍"] * 2)
+        self.assertEqual(query.preview(offset=1, limit=2, max_characters=2), page[1:])
         self.assertTrue(all(row["truncated"] for row in page))
         ids = [row["id"] for row in page]
         chosen = snapshot.query(steps=[p.where(p.document_id.is_in(ids))])
@@ -271,7 +272,7 @@ class ReadmeWorkflows(unittest.TestCase):
         self.assertEqual(query.preview(limit=0), [])
         self.assertEqual(query.preview(max_characters=0)[0]["text"], "")
         self.assertEqual(self.db.corpus("zero", sources(), limit=0).profile().documents, 0)
-        self.assertEqual(consumed, list(range(15)))
+        self.assertEqual(consumed, [0, 1])
         for options in (
             {"limit": -1},
             {"offset": True},

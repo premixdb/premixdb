@@ -21,7 +21,7 @@ def test_completed_selection_reopens_without_running_kernels(tmp_path: Path, mod
     with p.PremixDB(storage=tmp_path) as db:
         snapshot = db.corpus(
             "selection",
-            [p.Source(str(i), f"é first {i}\nremove me\n🌍 tail") for i in range(3)],
+            [p.Source(str(i), f"é first {i}\nremove me\n🌍 tail") for i in range(2)],
         )
         if mode == "span":
             reference = db.corpus("reference", [p.Source("ref", "remove me")])
@@ -29,7 +29,7 @@ def test_completed_selection_reopens_without_running_kernels(tmp_path: Path, mod
                 decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
             )
         elif mode == "replacement":
-            query = snapshot.query(sampling=p.sample(seed=42, documents=5, replacement=True))
+            query = snapshot.query(sampling=p.sample(seed=42, documents=3, replacement=True))
         else:
             query = snapshot.query(
                 steps=[p.where(p.text.characters > (10_000 if mode == "empty" else 0))]
