@@ -34,8 +34,11 @@ uv run --locked pytest tests/test_cli.py
 `make check` runs the full quality suite. CI runs it on Python 3.12 and 3.13.
 Local iteration can use individual commands. There are no commit or push hooks.
 
-Set `UV_PUBLISH_TOKEN` to your PyPI API token before `make publish`.
-The publish target rebuilds distributions and validates their metadata before upload.
+Create a [PyPI API token](https://pypi.org/help/#apitoken), then set
+`UV_PUBLISH_TOKEN` locally before `make publish`. Your PyPI account password cannot
+be used to upload packages. The target checks for the token before building, ignores
+`UV_PUBLISH_USERNAME` and `UV_PUBLISH_PASSWORD`, and validates fresh distributions
+before uploading them with token authentication.
 
 `pytest` defaults to fast tests. Use `-m integration` for integration checks or
 `-m 'not performance'` for both suites. Benchmarks run only through `make benchmark`.

@@ -59,8 +59,10 @@ build:
 	$(UV) build --out-dir reports/dist
 	$(RUN) twine check --strict reports/dist/*
 
-publish: build
-	$(UV) publish reports/dist/*
+publish:
+	@test -n "$$UV_PUBLISH_TOKEN" || (echo 'Set UV_PUBLISH_TOKEN to a PyPI API token.' >&2; exit 1)
+	$(MAKE) build
+	env -u UV_PUBLISH_USERNAME -u UV_PUBLISH_PASSWORD $(UV) publish --trusted-publishing never reports/dist/*
 
 audit:
 	mkdir -p reports
