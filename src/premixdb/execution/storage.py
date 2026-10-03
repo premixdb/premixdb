@@ -1,0 +1,255 @@
+"""Shared storage root with corpus/snapshot/query/dataset/mixture object namespaces."""
+
+from __future__ import annotations
+
+import builtins
+import json
+import os
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import RLock
+from types import TracebackType
+from typing import Self
+from urllib.parse import urlsplit
+
+from blake3 import blake3
+from google.protobuf.message import Message
+
+from ..v1.status_pb2 import STATUS_ERROR
+from ..v1.storage_pb2 import ObjectProfile, ObjectRef, SpanRef
+from .metadata import MetadataStore
+
+PREFIXES = frozenset(
+    (
+        "corpus",
+        "snapshot",
+        "query",
+        "dataset",
+        "mixture",
+        "derivation",
+        "field",
+        "index",
+        "execution",
+        "submission",
+        "tokenizer",
+    )
+)
+
+
+def _atomic(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if path.read_bytes() != data:
+                    raise ValueError("conflicting immutable storage object")
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+class ObjectStore:
+    def __init__(
+        self,
+        location: str | Path,
+        *,
+        metadata_path: str | Path | None = None,
+        read_only: bool = False,
+    ) -> None:
+        if urlsplit(str(location)).scheme:
+            raise ValueError("storage must be a local filesystem path")
+        self.root = Path(location).resolve()
+        self.read_only = read_only
+        self._closed = False
+        self._lock = RLock()
+        if not read_only:
+            for prefix in PREFIXES:
+                (self.root / prefix / "objects").mkdir(parents=True, exist_ok=True)
+        path = Path(metadata_path) if metadata_path is not None else self.root / "metadata.sqlite3"
+        self.metadata = MetadataStore(path, read_only=read_only)
+        try:
+            if not read_only:
+                self._migrate_metadata()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self.metadata.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def _legacy_names(self, prefix: str) -> builtins.list[str]:
+        return [path.name for path in (self.root / prefix).glob("*.ref")]
+
+    def _migrate_metadata(self) -> None:
+        """Resumable import; keep legacy files intact and verify every resource."""
+        if self.metadata.migrated("legacy-refs-v1"):
+            return
+        for prefix in sorted(PREFIXES):
+            for name in sorted(self._legacy_names(prefix)):
+                stem = name.removesuffix(".ref")
+                identity, dot, tail = stem.partition(".")
+                if (
+                    not name.endswith(".ref")
+                    or not identity
+                    or any(c not in "0123456789abcdef" for c in identity)
+                    or len(identity) % 2
+                ):
+                    continue
+                id, suffix = bytes.fromhex(identity), dot + tail
+                if self.metadata.contains(prefix, id, suffix=suffix):
+                    continue
+                ref = SpanRef.FromString(self._get(f"{prefix}/{name}"))
+                data = self._get(f"{prefix}/objects/{ref.object.blake3_digest.hex()}")
+                if (
+                    ref.start != 0
+                    or ref.end != len(data)
+                    or (blake3(data).digest() != ref.blake3_digest)
+                ):
+                    raise ValueError("stored resource integrity check failed")
+                self.metadata.save_bytes(prefix, id, data, suffix=suffix)
+        self.metadata.mark_migrated("legacy-refs-v1")
+
+    def object_uri(self, relative: str | Path) -> str:
+        return (self.root / relative).as_uri()
+
+    def _put(self, relative: str | Path, data: bytes) -> None:
+        """Write once; a concurrent publisher must have identical bytes."""
+        _atomic(self.root / relative, data)
+
+    def _get(self, relative: str | Path, limit: int = 64 * 1024 * 1024) -> bytes:
+        path = self.root / relative
+        if not path.exists():
+            raise KeyError(relative)
+        if path.stat().st_size > limit:
+            raise ValueError("storage object exceeds size limit")
+        return path.read_bytes()
+
+    def put(self, prefix: str, data: bytes, *, profile: ObjectProfile | None = None) -> ObjectRef:
+        if self.read_only:
+            raise PermissionError("catalog is read-only")
+        if prefix not in PREFIXES:
+            raise ValueError("invalid storage namespace")
+        digest = blake3(data).digest()
+        relative = f"{prefix}/objects/{digest.hex()}"
+        with self._lock:
+            self._put(relative, data)
+        return ObjectRef(
+            blake3_digest=digest,
+            profile=profile,
+            size_bytes=len(data),
+            uri=self.object_uri(relative),
+        )
+
+    def _replace_pointer(self, relative: str | Path, data: bytes) -> None:
+        """Atomically update a mutable head or diagnostic pointer."""
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.replace(temporary, path)
+                fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def save(
+        self, prefix: str, id: bytes, message: Message, *, suffix: str = "", failure: bool = False
+    ) -> None:
+        if prefix not in PREFIXES:
+            raise ValueError("invalid storage namespace")
+        from ..v1 import corpus_pb2 as c
+        from ..v1 import dataset_pb2 as d
+        from ..v1 import query_pb2 as q
+
+        if failure and (
+            not isinstance(message, (q.Query, d.Dataset))
+            or suffix != ".failed"
+            or message.id != id
+            or message.status != STATUS_ERROR
+        ):
+            raise ValueError("only failed execution status pointers are mutable")
+        head = prefix == "corpus" and suffix == ".latest"
+        if head and (
+            not isinstance(message, c.Corpus)
+            or message.id != id
+            or len(message.latest_snapshot_id) != 32
+        ):
+            raise ValueError("corpus heads require a corpus and a complete snapshot ID")
+        mutable = failure or head
+        if self.read_only:
+            raise PermissionError("catalog is read-only")
+        self.metadata.save(prefix, id, message, suffix=suffix, mutable=mutable)
+
+    def read_object(self, prefix: str, ref: ObjectRef) -> bytes:
+        if prefix not in PREFIXES or len(ref.blake3_digest) != 32:
+            raise ValueError("invalid stored object reference")
+        data = self._get(f"{prefix}/objects/{ref.blake3_digest.hex()}")
+        if len(data) != ref.size_bytes or blake3(data).digest() != ref.blake3_digest:
+            raise ValueError("enrichment object integrity check failed")
+        return data
+
+    def load[T: Message](
+        self, prefix: str, id: bytes, message_type: type[T], *, suffix: str = ""
+    ) -> T:
+        return self.metadata.load(prefix, id, message_type, suffix=suffix)
+
+    def list[T: Message](
+        self, prefix: str, message_type: type[T], *, suffix: str = ""
+    ) -> builtins.list[T]:
+        return self.metadata.list(prefix, message_type, suffix=suffix)
+
+    def snapshot_files(self, id: bytes, *, text: bool) -> set[str]:
+        """Resolve only the manifest graph; metadata reports skip text frames."""
+        from ..engine.snapshots import COMMIT_HEADER
+
+        name = id.hex()
+        commit = self._get(f"snapshot/snapshots/{name}", len(COMMIT_HEADER) + 32)
+        if len(commit) != len(COMMIT_HEADER) + 32 or not commit.startswith(COMMIT_HEADER):
+            raise ValueError("invalid snapshot commit")
+        files = {f"snapshot/snapshots/{name}"}
+
+        def object(digest: bytes | list[int]) -> bytes:
+            digest = bytes(digest)
+            if len(digest) != 32:
+                raise ValueError("invalid snapshot object digest")
+            relative = f"snapshot/objects/{digest.hex()}"
+            data = self._get(relative)
+            if blake3(data).digest() != digest:
+                raise ValueError("snapshot object integrity check failed")
+            files.add(relative)
+            return data
+
+        manifest = json.loads(object(commit[-32:]))
+        documents = manifest.get("documents") or []
+        for page in manifest.get("pages") or []:
+            documents.extend(json.loads(object(page["digest"])))
+        if text:
+            for document in documents:
+                for frame in document["frames"]:
+                    object(frame["digest"])
+        return files

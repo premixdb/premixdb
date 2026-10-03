@@ -1,0 +1,18 @@
+# Storage
+
+Keep the database directory to reuse captured text, fields, selections, and packed
+datasets. It contains SQLite metadata and immutable objects with verified digests.
+
+```python
+import premixdb as p
+
+with p.PremixDB(storage=".premixdb", read_only=True) as db:
+    snapshot = db.corpus("training")
+    print(snapshot.preview())
+```
+
+A corpus name opens its latest successful snapshot. Existing snapshot handles stay
+unchanged. Repeating a recipe reuses completed work.
+
+Back up metadata and objects together. For a live backup, use SQLite's backup API
+and preserve the object directory. Unused artifacts aren't automatically collected.

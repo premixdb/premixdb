@@ -1,0 +1,219 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/status.proto";
+import public "premixdb/v1/intrinsic.proto";
+import "premixdb/v1/profile.proto";
+import "premixdb/v1/storage.proto";
+
+message Comparison {
+  enum Operator {
+    OPERATOR_UNSPECIFIED = 0;
+    OPERATOR_EQ = 1;
+    OPERATOR_NE = 2;
+    OPERATOR_LT = 3;
+    OPERATOR_LE = 4;
+    OPERATOR_GT = 5;
+    OPERATOR_GE = 6;
+  }
+  IntrinsicField field = 1;
+  Operator operator = 2;
+  oneof value {
+    uint64 count = 3;
+    string text = 4;
+  }
+}
+message OrderBy {
+  enum Direction {
+    DIRECTION_UNSPECIFIED = 0;
+    DIRECTION_ASC = 1;
+    DIRECTION_DESC = 2;
+  }
+  Direction direction = 1;
+  IntrinsicField field = 2;
+  FieldComparison selector = 3; // Enrichment projection; field must be unset.
+}
+message Dedupe {
+  enum Algorithm {
+    ALGORITHM_UNSPECIFIED = 0;
+    ALGORITHM_EXACT_DOCUMENT = 1;
+    ALGORITHM_EXACT_LINE = 2;
+  }
+  Algorithm algorithm = 1;
+  repeated OrderBy order_by = 2;
+  optional string source_group_separator = 3;
+}
+message Decontaminate {
+  enum Algorithm {
+    ALGORITHM_UNSPECIFIED = 0;
+    ALGORITHM_EXACT_DOCUMENT = 1;
+    ALGORITHM_EXACT_LINE = 2;
+    ALGORITHM_EXACT_NGRAM = 3;
+  }
+  repeated bytes snapshot_ids = 1; // Reference snapshot containing contamination evidence.
+  Algorithm algorithm = 2;
+  uint32 n = 3; // Case-sensitive Unicode whitespace-delimited n-grams; no normalization.
+  enum Granularity { GRANULARITY_UNSPECIFIED = 0; DOCUMENT = 1; SPAN = 2; }
+  Granularity granularity = 4;
+}
+message QuerySampling {
+  optional uint64 seed = 1;
+  bool replacement = 2;
+  oneof budget { uint64 documents = 3; double fraction = 4; uint64 bytes = 5; uint64 characters = 6; uint64 tokens = 7; }
+  repeated FieldComparison domains = 8; // Ordered tuple of scalar/classifier projections.
+  map<string, double> weights = 9; // Canonical JSON tuple keys, or scalar labels for one field.
+  ObjectRef tokenizer_asset = 10; // Required for model-token budgets; absent means byte tokens.
+  uint64 max_document_bytes = 11;
+  bytes tokenizer_json = 12; // Optional captured JSON, verified against tokenizer_asset.
+}
+message SimilarityDedupe {
+  enum Algorithm { ALGORITHM_UNSPECIFIED = 0; JACCARD = 1; COSINE = 2; }
+  Algorithm algorithm = 1;
+  double threshold = 2; // Inclusive, finite, in [0,1].
+  uint32 n = 3;
+  FieldComparison embedding = 4;
+  repeated OrderBy order_by = 5;
+}
+message Operation {
+  oneof kind {
+    Dedupe dedupe = 1;
+    Comparison where = 2;
+    FieldComparison field_where = 3;
+    IndexedDedupe indexed_dedupe = 4;
+    SimilarityDedupe similarity_dedupe = 5;
+    DocumentSelection document_ids = 6;
+  }
+}
+message DocumentSelection { repeated bytes ids = 1; }
+message FieldComparison {
+  bytes field_snapshot_id = 1; // Planner-owned immutable derivation pin.
+  string field_name = 9 [deprecated = true]; // Legacy name; canonicalized to field.
+  IntrinsicField field = 11; // Built-in field; clients need no build definition.
+  enum Projection {
+    PROJECTION_UNSPECIFIED = 0;
+    SCALAR = 1;
+    CLASS_PROBABILITY = 2;
+    TOP_CLASS = 3;
+    IS_NULL = 4;
+    VECTOR_COMPONENT = 5;
+  }
+  Projection projection = 2;
+  string class_name = 3; // Required only for CLASS_PROBABILITY.
+  optional uint32 component = 10; // Required only for VECTOR_COMPONENT.
+  Comparison.Operator operator = 4;
+  oneof value {
+    double number = 5;
+    sint64 integer = 6;
+    string text = 7;
+    bool boolean = 8;
+  }
+}
+message IndexedDedupe {
+  bytes index_snapshot_id = 1; // Planner-owned immutable derivation pin.
+  string index_name = 3; // Logical built-in index.
+  repeated OrderBy order_by = 2;
+  optional double threshold = 4; // Inclusive verified Jaccard threshold for dupekit.lsh.
+}
+message QueryStepProfile {
+  uint64 input_characters = 1;
+  uint64 input_content_bytes = 2;
+  uint64 input_documents = 3;
+  uint64 output_characters = 4;
+  uint64 output_content_bytes = 5;
+  uint64 output_documents = 6;
+}
+// Query input is a deduplicated union of document identities, so adding snapshot
+// profiles would overcount overlapping snapshots. Output reflects every step.
+message DecontaminationProfile {
+  uint64 matched_documents = 1;
+  uint64 removed_documents = 2;
+  uint64 removed_spans = 3;
+  uint64 removed_bytes = 4;
+  repeated bytes reference_snapshot_ids = 5;
+}
+message SamplingProfile {
+  string unit = 1;
+  uint64 requested = 2;
+  uint64 realized = 3;
+  uint64 overshoot = 4;
+  uint64 unique_documents = 5;
+  uint64 document_occurrences = 6;
+  map<string,uint64> requested_domains = 7;
+  map<string,uint64> realized_domains = 8;
+}
+message QueryProfile {
+  repeated FieldProfile fields = 11; // Output occurrence distributions; estimate.fields describes input.
+  map<string,uint64> source_documents = 12; // Occurrences by logical corpus.
+  map<string,uint64> source_content_bytes = 13;
+  DecontaminationProfile decontamination = 9;
+  SamplingProfile sampling = 10;
+  uint64 input_characters = 1;
+  uint64 input_content_bytes = 2;
+  uint64 input_documents = 3;
+  uint64 output_characters = 4;
+  uint64 output_content_bytes = 5;
+  uint64 output_documents = 6;
+  uint64 snapshots = 7;
+  repeated QueryStepProfile steps = 8;
+}
+// First 10 surviving documents in final query output order, or all when fewer
+// exist. Text reflects all operations and decontamination.
+// Fixed preview limits; repeated fields do not enforce these bounds themselves.
+message QueryPreview {
+  message Document {
+    bytes id = 1;
+    string text = 2; // First 1,024 Unicode scalar values of the output document.
+    bool truncated = 3; // True when text omits a suffix of the output document.
+    string source_key = 4;
+    bytes corpus_id = 5;
+    uint64 ordinal = 6;
+  }
+  repeated Document documents = 1;
+}
+message Query {
+  bytes id = 1;
+  repeated bytes field_snapshot_ids = 2; // Exact immutable field builds; sorted by ID.
+  repeated bytes index_snapshot_ids = 3; // Exact immutable index builds; sorted by ID.
+  repeated bytes snapshot_ids = 4;
+  Decontaminate decontaminate = 5;
+  bytes git_commit = 6; // Resolved execution revision; raw full Git commit object ID.
+  repeated Operation operations = 7;
+  QueryPreview preview = 8; // Absent until example output is available.
+  QueryProfile profile = 9;
+  Status status = 10;
+  string error = 11; // Background execution failure, if any.
+  QuerySampling sampling = 13;
+  ObjectRef lineage = 14;
+  repeated FieldComparison fields = 15; // Query-requested projections for inspection/mixtures; no predicate.
+  QueryEstimate estimate = 12; // Available without waiting for query execution.
+}
+message CreateQueryRequest {
+  string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
+  QuerySampling sampling = 7;
+  repeated bytes field_snapshot_ids = 1; // Exact immutable field builds; canonicalized as a set.
+  repeated bytes index_snapshot_ids = 2; // Exact immutable index builds; canonicalized as a set.
+  repeated bytes snapshot_ids = 3;
+  Decontaminate decontaminate = 4;
+  bytes git_commit = 5; // Raw full Git commit object ID; empty resolves to the execution revision.
+  repeated Operation operations = 6;
+  repeated FieldComparison fields = 8; // Missing fields are derived by this background query.
+}
+message CreateQueryResponse { bytes id = 1; }
+message GetQueryRequest { bytes id = 1; }
+message GetQueryResponse { Query query = 1; }
+// Browsing options do not change the immutable resource or its identity.
+message PreviewRequest {
+  oneof input { bytes snapshot_id = 1; bytes query_id = 2; }
+  uint64 offset = 3;
+  optional uint32 limit = 4; // Default 3; maximum 1000.
+  optional uint32 max_characters = 5; // Default 1024; maximum 1,000,000 per document.
+}
+message PreviewResponse { QueryPreview preview = 1; }
+message ListQueryRequest {
+  bytes snapshot_id = 1;
+  bytes page_token = 2;
+}
+message ListQueryResponse {
+  bytes next_page_token = 1;
+  repeated Query queries = 2;
+}

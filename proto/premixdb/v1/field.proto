@@ -1,0 +1,45 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/storage.proto";
+import "premixdb/v1/profile.proto";
+
+enum ValueType {
+  VALUE_TYPE_UNSPECIFIED = 0;
+  VALUE_STRING = 1;
+  VALUE_BOOL = 2;
+  VALUE_INT64 = 3;
+  VALUE_FLOAT32 = 4;
+  VALUE_FLOAT64 = 5;
+}
+enum ProbabilityTransform {
+  PROBABILITY_TRANSFORM_UNSPECIFIED = 0;
+  PROBABILITY_TRANSFORM_SOFTMAX = 1;
+  PROBABILITY_TRANSFORM_SIGMOID = 2;
+}
+message Classification {
+  // Categorical model outputs only. For example WebOrganizer topic/format uses
+  // softmax over config.id2label in numeric ID order. Independent QuRating
+  // quality scores are scalar regression fields with no Classification.
+  repeated string classes = 1; // Same order as stored logits.
+  ProbabilityTransform transform = 2;
+  optional double temperature = 3; // Absent means 1; must be > 0.
+  ObjectRef model_artifact = 4; // Optional provenance, not needed for conversion.
+}
+message Field {
+  bytes id = 1;
+  string name = 2;
+  uint32 version = 3;
+  ValueType element_type = 4;
+  uint32 length = 5; // 0 = scalar; otherwise fixed vector width.
+  Classification classification = 6; // If present: numeric logits, not probabilities or class IDs.
+}
+message FieldSnapshot {
+  bytes id = 1; // Immutable build identity; pinned by Query.
+  bytes field_id = 2;
+  bytes snapshot_id = 3; // Set for a single-snapshot population.
+  repeated bytes snapshot_ids = 7; // Canonical population, including unions.
+  ObjectRef manifest = 4; // Manifest of field-value shards.
+  FieldProfile profile = 8; // Published atomically with the completed derivation.
+  bytes git_commit = 5; // Resolved build revision; raw full Git commit object ID.
+}

@@ -1,0 +1,153 @@
+syntax = "proto3";
+package premixdb.internal;
+
+import "premixdb/v1/field.proto";
+import "premixdb/v1/index.proto";
+import "premixdb/v1/storage.proto";
+
+message DataTroveProducer { string language = 1; }
+message LanguageProducer {
+  repeated string languages = 1;
+  bytes model_digest = 2; // Expected BLAKE3 of the fastText asset.
+}
+message DupekitProducer {
+  uint32 num_perms = 1;
+  uint32 num_bands = 2;
+  uint32 ngram_size = 3;
+  uint64 seed = 4;
+}
+message ModelProducer {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    QUALITY = 1;
+    TOPIC = 2;
+    CONTENT_TYPE = 3;
+    HARRIER = 4;
+    reserved 5;
+    reserved "QWEN";
+  }
+  Kind kind = 1;
+  string repository = 2;
+  string revision = 3; // Full immutable Hub commit.
+  string device = 4;
+  uint32 batch_size = 5;
+  uint32 max_length = 6;
+}
+message EnrichmentProducer {
+  oneof kind {
+    DataTroveProducer datatrove = 1;
+    DupekitProducer dupekit = 2;
+    ModelProducer model = 3;
+    LanguageProducer language = 4;
+  }
+}
+message FieldBuild {
+  premixdb.v1.Field field = 1;
+  premixdb.v1.FieldSnapshot snapshot = 2;
+}
+message IndexBuild {
+  premixdb.v1.Index index = 1;
+  premixdb.v1.IndexSnapshot snapshot = 2;
+}
+// Internal planner recipes and artifact receipts. No public build RPCs.
+message DerivationPlan {
+  bytes id = 1;
+  repeated bytes snapshot_ids = 2;
+  EnrichmentProducer producer = 3;
+  bytes git_commit = 4;
+  uint32 catalog_version = 5;
+  bytes runtime_digest = 6; // Source, Python and installed runtime dependencies.
+}
+message Materialization {
+  DerivationPlan plan = 1;
+  repeated FieldBuild fields = 2;
+  repeated IndexBuild indexes = 3;
+}
+
+// Worker-owned shard formats. Null is an explicit computed outcome; missing rows
+// are an integrity error. Rows are sorted by immutable document occurrence ID.
+message NumericVector { repeated double values = 1; }
+message FieldValue {
+  bytes document_id = 1;
+  oneof value {
+    double number = 2;
+    sint64 integer = 3;
+    string text = 4;
+    bool boolean = 5;
+    NumericVector vector = 6;
+    bool null = 7; // Must be true.
+  }
+}
+message FieldValueShard { repeated FieldValue rows = 1; }
+message DedupeEvidence {
+  bytes document_id = 1;
+  bytes exact_hash = 2; // Full 32-byte BLAKE3.
+  repeated uint64 minhash = 3;
+  repeated uint64 lsh_buckets = 4; // Ordered by band; empty means no fuzzy evidence.
+}
+message DedupeEvidenceShard { repeated DedupeEvidence rows = 1; }
+message EnrichmentManifest {
+  EnrichmentProducer producer = 1;
+  bytes definition_json = 2; // Canonical producer/version/model metadata.
+  repeated premixdb.v1.ObjectRef shards = 3;
+  uint64 documents = 4;
+  DerivationPlan plan = 6;
+  bytes logical_digest = 5; // Digest of ordered length-prefixed row messages, independent of sharding.
+}
+
+// Reusable computation outcomes. The key includes producer/revision/definition,
+// input document identities, schema identities, and computation cohort policy.
+// Population manifests are assembled separately and retain complete coverage.
+message DerivationCache {
+  bytes id = 1;
+  bytes definition_json = 2;
+  repeated bytes document_ids = 3;
+  repeated bytes schema_ids = 4;
+  repeated FieldValueShard fields = 5; // One column per schema, in schema order.
+  DedupeEvidenceShard evidence = 6;
+}
+
+// Completed query selections can be restored without executing the recipe.
+// Physical shards are bounded; occurrence order and retained byte ranges survive.
+message ByteRange { uint64 start = 1; uint64 end = 2; }
+message SelectedDocument {
+  bytes document_id = 1;
+  bool transformed = 2;
+  repeated ByteRange ranges = 3;
+  bytes source_record = 4; // Canonical captured document frame metadata; no text.
+  bytes corpus_id = 5;
+}
+message SelectionShard { repeated SelectedDocument rows = 1; }
+message QuerySelection {
+  bytes query_id = 1;
+  string repository = 2;
+  string commit = 3;
+  bytes environment = 4;
+  repeated premixdb.v1.ObjectRef shards = 5;
+  uint64 occurrences = 6;
+}
+
+// Immutable token encodings, including source-byte alignment. A document can
+// span several physical shards without changing its logical encoding identity.
+message EncodedToken {
+  uint32 value = 1;
+  repeated ByteRange ranges = 2;
+}
+message TokenEncodingShard { repeated EncodedToken tokens = 1; }
+message TokenEncoding {
+  bytes id = 1;
+  repeated premixdb.v1.ObjectRef shards = 2;
+  uint64 tokens = 3;
+}
+
+// Bounded document descriptors for preview reads without restoring a population.
+message PreviewShard {
+  premixdb.v1.ObjectRef object = 1;
+  uint64 first = 2;
+  uint64 count = 3;
+}
+message DocumentIndex {
+  bytes resource_id = 1;
+  uint64 documents = 2;
+  repeated PreviewShard shards = 3;
+}

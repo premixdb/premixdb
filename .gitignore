@@ -1,0 +1,20 @@
+.premixdb/
+/.cache/
+/.venv/
+__pycache__/
+*.so
+.ruff_cache/
+/dist/
+/build/
+*.egg-info/
+*.env
+# Generated during wheel builds and editable installs.
+*_pb2.py
+*_pb2.pyi
+*_pb2_grpc.py
+.pytest_cache/
+.hypothesis/
+.benchmarks/
+.coverage
+.coverage.*
+/reports/

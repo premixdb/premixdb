@@ -1,0 +1,30 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/storage.proto";
+
+enum IndexKind {
+  INDEX_KIND_UNSPECIFIED = 0;
+  INDEX_GROUP = 1; // Exact group membership.
+  INDEX_RANGE = 2; // Ordered scalar values.
+  INDEX_PAIR = 3; // Candidate pairs and similarity scores.
+  INDEX_VECTOR = 4; // Nearest-neighbor candidates and scores.
+  INDEX_LOOKUP = 5; // Exact key lookup.
+}
+message Index {
+  bytes id = 1;
+  string name = 2;
+  uint32 version = 3;
+  IndexKind kind = 4;
+  repeated bytes input_field_ids = 5; // Empty: built from document content.
+  bool approximate = 6; // Candidate retrieval can miss matches.
+}
+message IndexSnapshot {
+  bytes id = 1; // Immutable build identity; pinned by Query.
+  bytes index_id = 2;
+  bytes snapshot_id = 3; // Set for a single-snapshot population.
+  repeated bytes snapshot_ids = 7; // Canonical population, including unions.
+  ObjectRef manifest = 4; // Manifest of index shards.
+  bytes git_commit = 5; // Resolved build revision; raw full Git commit object ID.
+  repeated bytes field_snapshot_ids = 6; // Exact builds, aligned with Index.input_field_ids.
+}

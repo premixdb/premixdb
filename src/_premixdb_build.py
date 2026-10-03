@@ -1,0 +1,121 @@
+"""Build protobuf bindings from schemas for wheels and editable installs."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import tempfile
+from os import PathLike
+from pathlib import Path
+
+from setuptools import Command
+from setuptools.command.build import build
+from setuptools.command.build_py import build_py
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def schemas() -> list[Path]:
+    files = sorted((ROOT / "proto/premixdb").rglob("*.proto"))
+    if not files:
+        raise RuntimeError("No protobuf schemas found in proto/premixdb")
+    return files
+
+
+def generated_paths() -> list[Path]:
+    paths = [
+        schema.relative_to(ROOT / "proto").with_name(f"{schema.stem}_pb2{suffix}")
+        for schema in schemas()
+        for suffix in (".py", ".pyi")
+    ]
+    return paths
+
+
+def is_generated(path: str | PathLike[str]) -> bool:
+    return Path(path).name.endswith(("_pb2.py", "_pb2.pyi", "_pb2_grpc.py"))
+
+
+def generate_protos(destination: str | PathLike[str], *, check: bool = False) -> None:
+    import grpc_tools
+
+    destination = Path(destination)
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory)
+        base = [
+            sys.executable,
+            "-m",
+            "grpc_tools.protoc",
+            f"-I{ROOT / 'proto'}",
+            f"-I{Path(grpc_tools.__file__).parent / '_proto'}",
+        ]
+        subprocess.run(
+            [*base, f"--python_out={output}", f"--pyi_out={output}", *map(str, schemas())],
+            check=True,
+        )
+        paths = generated_paths()
+        targets = {destination / path for path in paths}
+        existing = {p for p in (destination / "premixdb").rglob("*") if is_generated(p)}
+        for obsolete in sorted(existing - targets):
+            if check:
+                raise SystemExit(f"Obsolete binding: {obsolete}; reinstall premixdb to regenerate")
+            obsolete.unlink()
+        for path in paths:
+            target = destination / path
+            content = (output / path).read_bytes()
+            if target.exists() and target.read_bytes() == content:
+                continue
+            if check:
+                raise SystemExit(f"Stale binding: {target}; reinstall premixdb to regenerate")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+
+
+class Build(build):
+    sub_commands = [*build.sub_commands, ("build_protos", None)]
+
+
+class BuildProtos(Command):
+    """Generate bindings as a separate subcommand, including for editable builds."""
+
+    editable_mode = False
+
+    def initialize_options(self) -> None:
+        self.build_lib = None
+
+    def finalize_options(self) -> None:
+        self.set_undefined_options("build_py", ("build_lib", "build_lib"))
+
+    def run(self) -> None:
+        if not self.dry_run:
+            generate_protos(ROOT / "src" if self.editable_mode else self.build_lib)
+
+    def get_source_files(self) -> list[str]:
+        return [str(p.relative_to(ROOT)) for p in schemas()]
+
+    def get_outputs(self) -> list[str]:
+        return [str(Path(self.build_lib) / p) for p in generated_paths()]
+
+    def get_output_mapping(self) -> dict[str, str]:
+        if self.editable_mode:
+            return {str(Path(self.build_lib) / p): str(Path("src") / p) for p in generated_paths()}
+        return {}
+
+
+class BuildPy(build_py):
+    def run(self) -> None:
+        if not self.editable_mode and not self.dry_run:
+            package = Path(self.build_lib) / "premixdb"
+            if package.resolve() == (ROOT / "src/premixdb").resolve():
+                raise RuntimeError("build directory must not replace package source")
+            if package.exists():
+                shutil.rmtree(package)
+        super().run()
+
+    def find_package_modules(self, package: str, package_dir: str) -> list[tuple[str, str, str]]:
+        # Ignored editable outputs must never become wheel or sdist inputs.
+        return [
+            module
+            for module in super().find_package_modules(package, package_dir)
+            if not is_generated(module[2])
+        ]

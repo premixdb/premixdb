@@ -1,0 +1,70 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/intrinsic.proto";
+
+// Typed endpoints preserve integer precision, including byte counts above 2^53.
+message ProfileValue {
+  oneof value {
+    uint64 count = 1;
+    sint64 integer = 2;
+    double number = 3;
+    string text = 4;
+    bool boolean = 5;
+  }
+}
+// Inclusive, disjoint, ordered ranges. Equal endpoints are exact value counts.
+// A range gives conservative selectivity bounds, not a uniformity assumption.
+message ProfileBucket {
+  ProfileValue lower = 1;
+  ProfileValue upper = 2;
+  uint64 documents = 3;
+}
+// Computed from every non-null numeric value, before histogram compaction.
+// Extrema retain integer precision; moments and totals use floating point.
+// standard_deviation describes the population (denominator documents), not a sample.
+// Absent for empty/all-null populations, text, booleans and legacy profiles.
+message NumericSummary {
+  uint64 documents = 1;
+  ProfileValue maximum = 2;
+  double mean = 3;
+  ProfileValue minimum = 4;
+  double standard_deviation = 5;
+  double total = 6;
+}
+message FieldDistribution {
+  enum Projection {
+    PROJECTION_UNSPECIFIED = 0;
+    SCALAR = 1;
+    CLASS_PROBABILITY = 2;
+    TOP_CLASS = 3;
+    VECTOR_COMPONENT = 5;
+  }
+  Projection projection = 1;
+  string class_name = 2;
+  optional uint32 component = 3;
+  repeated ProfileBucket buckets = 4;
+  NumericSummary numeric = 5;
+}
+// Statistics over one immutable document population, including computed nulls.
+// Absent profiles/projections are unknown. Histograms have at most 64 buckets.
+// Scalars and classifier projections are indexed; embeddings report coverage
+// only until component statistics are explicitly supported.
+message FieldProfile {
+  IntrinsicField field = 1;
+  uint64 documents = 2;
+  uint64 null_documents = 3;
+  repeated FieldDistribution distributions = 4;
+}
+message DocumentEstimate {
+  uint64 lower = 1;
+  uint64 upper = 2;
+  optional double expected = 3; // Midpoint for ranges; exact iff lower == upper.
+}
+message QueryEstimate {
+  DocumentEstimate input = 1;
+  DocumentEstimate output = 2;
+  repeated DocumentEstimate steps = 3; // Survivors after each ordered operation.
+  repeated FieldProfile fields = 4; // Includes researcher-facing class counts.
+  repeated IntrinsicField unavailable_fields = 5;
+}

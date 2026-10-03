@@ -1,0 +1,210 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/status.proto";
+import "premixdb/v1/storage.proto";
+import "premixdb/v1/query.proto";
+
+message ByteTokenizer {}
+message HuggingFaceTokenizer {
+  ObjectRef asset = 1;
+  uint64 max_document_bytes = 2;
+  bytes json = 3; // Optional captured JSON; verified against asset digest.
+}
+message Tokenizer {
+  bytes definition_digest = 1;
+  oneof kind {
+    ByteTokenizer byte = 2;
+    HuggingFaceTokenizer hugging_face = 3;
+  }
+}
+message Concat {
+  optional uint32 pad_token_id = 1;
+  optional uint32 separator_token_id = 2;
+  optional bool drop_remainder = 3;
+}
+message Packing {
+  oneof policy { Concat concat = 1; }
+}
+// Exact planned packing totals, available before output sequences are built.
+// content/separator/stratum tokens count emitted output after dropping tails.
+message DatasetProfile {
+  map<string,uint64> source_tokens = 14; // Emitted content tokens by logical corpus.
+  uint64 boundary_crossing_sequences = 15;
+  map<uint32,uint64> documents_per_sequence = 16; // Unique documents represented, excluding padding.
+  uint64 content_tokens = 1;
+  uint64 document_occurrences = 2;
+  uint64 dropped_tokens = 3;
+  uint64 output_tokens = 4;
+  uint64 padding_tokens = 5;
+  uint64 planned_content_tokens = 6;
+  map<string, uint64> planned_stratum_tokens = 7;
+  uint64 separator_tokens = 8;
+  uint64 sequences = 9;
+  uint64 source_characters = 10;
+  uint64 source_content_bytes = 11;
+  uint64 source_documents = 12;
+  map<string, uint64> stratum_tokens = 13;
+}
+
+// Logical token provenance; no physical storage references.
+message TokenByteRange { uint32 token = 1; uint64 start = 2; uint64 end = 3; uint32 token_end = 4; }
+message TokenRegion {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CONTENT = 1;
+    KIND_SEPARATOR = 2;
+    KIND_PADDING = 3;
+  }
+  bytes document_id = 1; // Absent for padding.
+  uint64 document_token_start = 2;
+  uint32 end = 3;
+  Kind kind = 4;
+  uint64 query_ordinal = 5;
+  uint32 start = 6;
+  repeated TokenByteRange source_ranges = 7; // Per-token captured UTF-8 ranges; a token can cross retained intervals.
+}
+message Sequence {
+  SpanRef attention_mask = 1;
+  SpanRef loss_mask = 2;
+  uint64 ordinal = 3;
+  repeated TokenRegion regions = 4;
+  SpanRef tokens = 5;
+}
+// First 10 packed output sequences by ordinal, or all when fewer exist.
+// Fixed preview limits; repeated fields do not enforce these bounds themselves.
+message DatasetPreview {
+  message Sequence {
+    repeated TokenRegion regions = 6; // Provenance clipped to preview token coverage.
+    string text = 7; // Deterministic decoding when supported by the tokenizer.
+    repeated uint32 attention_mask = 1; // One 0/1 value per preview token.
+    repeated uint32 loss_mask = 2; // One 0/1 value per preview token.
+    uint64 ordinal = 3;
+    repeated uint32 tokens = 4; // First 256 token IDs, including separators/padding.
+    bool truncated = 5; // True when tokens omits a suffix of the sequence.
+  }
+  repeated Sequence sequences = 1; // Inline data, using the dataset tokenizer.
+}
+message Dataset {
+  bytes id = 1;
+  bytes query_id = 2;
+  bytes git_commit = 3; // Resolved execution revision; raw full Git commit object ID.
+  Packing packing = 4;
+  DatasetPreview preview = 5; // Absent until example output is available.
+  DatasetProfile profile = 6;
+  Sampling sampling = 7;
+  uint32 sequence_length = 8;
+  repeated SpanRef sequences = 9; // SequenceBatch objects, 128 sequences per batch except the last.
+  Status status = 10;
+  Tokenizer tokenizer = 11;
+  repeated SpanRef tokens = 12; // Ordered spans covering every packed token.
+  string error = 13; // Materialization failure, if any; completion remains unpublished.
+}
+message CreateDatasetRequest {
+  string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
+  bytes query_id = 1;
+  bytes git_commit = 2; // Raw full Git commit object ID; empty inherits the query revision.
+  Packing packing = 3;
+  Sampling sampling = 4;
+  uint32 sequence_length = 5;
+  Tokenizer tokenizer = 6;
+}
+message CreateDatasetResponse { bytes id = 1; }
+message GetDatasetRequest { bytes id = 1; }
+message GetDatasetResponse { Dataset dataset = 1; }
+message ListDatasetRequest {
+  bytes query_id = 1;
+  bytes page_token = 2;
+}
+message ListDatasetResponse {
+  repeated Dataset datasets = 1;
+  bytes next_page_token = 2;
+}
+// Stored protobuf metadata; the data plane reads this through SpanRef, not RPC.
+message SequenceBatch { repeated Sequence sequences = 1; }
+
+message MixAssignments { map<string, string> documents = 1; } // Hex document ID -> label.
+message StratumFields { repeated FieldComparison selectors = 1; }
+message Domains {
+  oneof kind {
+    MixAssignments assignments = 1; // Exact coverage of the parent query.
+    StratumFields fields = 3;
+    IntrinsicField field = 2; // source.corpus_id or object.uri in the local engine.
+  }
+}
+message MixBounds {
+  map<string, double> lower = 1;
+  optional uint32 max_epochs = 2; // Positive whole passes per domain.
+  optional uint64 reference_tokens = 3; // Capacity constraints for a later larger run.
+  map<string, double> upper = 4;
+}
+message RegMix {
+  uint32 concentration_steps = 1;
+  double max_concentration = 2;
+  double min_concentration = 3;
+  double minimum_weight = 4;
+  uint32 oversample = 5;
+  double prior_power = 6;
+  optional uint64 seed = 7;
+}
+// Proposes candidate weight vectors; Sampling controls token selection.
+message MixAlgorithm {
+  oneof kind {
+    RegMix regmix = 1;
+  }
+}
+// Concrete token sampling for one dataset, whether created directly or by a mix.
+message Sampling {
+  optional uint32 max_epochs = 1;
+  optional bool replacement = 2; // Repeated shuffled passes; not independent document draws.
+  optional uint64 seed = 3;
+  Domains domains = 4;
+  uint64 tokens = 5; // Exact content-token budget, before separators and packing tails.
+  map<string, double> weights = 6; // Finite, nonnegative, sum to one; keyed by stratum.
+}
+// A persisted batch of candidate datasets with fixed recipes and planned profiles.
+// Candidate metadata is available before token materialization.
+message Mix {
+  bytes id = 1;
+  repeated bytes dataset_ids = 2; // Ordered; every ID is retrievable with GetDataset.
+  bytes query_id = 3;
+  MixAlgorithm algorithm = 4;
+  MixBounds bounds = 5;
+  bytes git_commit = 6; // Resolved revision for proposals and every candidate dataset.
+  uint32 n_candidates = 7;
+  Packing packing = 8;
+  optional bool replacement = 9;
+  optional uint64 seed = 10;
+  uint32 sequence_length = 11;
+  Domains domains = 12;
+  Tokenizer tokenizer = 13;
+  uint64 tokens = 14;
+}
+
+// Registers all candidate recipes and profiles; token materialization stays lazy.
+message CreateMixRequest {
+  string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
+  bytes query_id = 1;
+  MixAlgorithm algorithm = 2;
+  MixBounds bounds = 3;
+  bytes git_commit = 4; // Raw full Git commit object ID; empty inherits the query revision.
+  uint32 n_candidates = 5;
+  Packing packing = 6;
+  optional bool replacement = 7;
+  optional uint64 seed = 8;
+  uint32 sequence_length = 9;
+  Domains domains = 10;
+  Tokenizer tokenizer = 11;
+  uint64 tokens = 12;
+}
+message CreateMixResponse { bytes id = 1; }
+message GetMixRequest { bytes id = 1; }
+message GetMixResponse { Mix mix = 1; }
+message ListMixRequest {
+  bytes query_id = 1;
+  bytes page_token = 2;
+}
+message ListMixResponse {
+  repeated Mix mixtures = 1;
+  bytes next_page_token = 2;
+}

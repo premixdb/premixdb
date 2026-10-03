@@ -1,0 +1,25 @@
+syntax = "proto3";
+package premixdb.v1;
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_PENDING = 1;
+  STATUS_RUNNING = 2;
+  STATUS_COMPLETED = 3;
+  STATUS_ERROR = 4;
+}
+
+message ExecutionEvent {
+  string id = 1;
+  string operation = 2;
+  bytes resource_id = 3;
+  string status = 4;
+  uint64 started_ns = 5;
+  uint64 ended_ns = 6;
+  string error = 7;
+  bool cache_hit = 8;
+  bytes request_digest = 9;
+}
+message ListExecutionRequest { bytes resource_id = 1; bytes page_token = 2; }
+message ListExecutionResponse { repeated ExecutionEvent events = 1; bytes next_page_token = 2; }
+message Submission { bytes request_digest = 1; bytes response = 2; string response_type = 3; }

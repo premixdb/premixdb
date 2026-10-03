@@ -1,0 +1,21 @@
+syntax = "proto3";
+package premixdb.v1;
+
+// mutable object so no profile
+message Corpus {
+  bytes id = 1;
+  string name = 2;
+  bytes latest_snapshot_id = 3; // Most recently captured snapshot; refreshed on capture.
+}
+message CreateCorpusRequest {
+  string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
+  string name = 1;
+}
+message CreateCorpusResponse { bytes id = 1; }
+message GetCorpusRequest { bytes id = 1; }
+message GetCorpusResponse { Corpus corpus = 1; }
+message ListCorpusRequest { bytes page_token = 1; }
+message ListCorpusResponse {
+  repeated Corpus corpora = 1;
+  bytes next_page_token = 2;
+}

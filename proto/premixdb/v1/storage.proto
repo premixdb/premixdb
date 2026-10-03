@@ -1,0 +1,72 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/profile.proto";
+
+enum Compression {
+  COMPRESSION_UNSPECIFIED = 0;
+  COMPRESSION_ZSTANDARD = 1;
+}
+
+// Missing statistics are unknown, not zero. Text spans report Unicode scalars
+// and LF characters; token spans report counts for the pinned dataset tokenizer.
+message SpanProfile {
+  optional uint64 characters = 1;
+  uint64 content_bytes = 2;
+  optional uint64 newlines = 3;
+  optional uint64 tokens = 4;
+}
+message ObjectProfile {
+  optional uint64 characters = 1;
+  uint64 content_bytes = 2;
+  optional uint64 newlines = 3;
+  uint64 spans = 4;
+  optional uint64 tokens = 5;
+  repeated FieldProfile fields = 6; // Field shard rows; absent for raw text/token objects.
+}
+// Self-contained half-open byte range [start, end) in a compressed immutable object.
+message SpanRef {
+  bytes blake3_digest = 1;
+  Compression compression = 2;
+  uint64 end = 3;
+  ObjectRef object = 4;
+  SpanProfile profile = 5;
+  uint64 start = 6;
+}
+message ObjectRef {
+  bytes blake3_digest = 1; // 32-byte content identity and integrity digest.
+  reserved 2, 6;
+  reserved "crc32c_digest", "version";
+  ObjectProfile profile = 3;
+  uint64 size_bytes = 4;
+  string uri = 5; // Local file URI.
+}
+
+message HuggingFaceDataset {
+  // Named repository subset, for example a language; empty uses its default.
+  string configuration = 1;
+  string repository = 2;
+  string revision = 3;
+  string text_column = 5;
+  string key_column = 6;
+  string split = 4; // Partition within the subset, such as train or validation.
+}
+message Source {
+  reserved 5;
+  reserved "prefix";
+  optional uint64 limit = 6; // Capture at most this many documents; absent reads all.
+  oneof location {
+    FileSources files = 1;
+    HuggingFaceDataset hugging_face = 2;
+    SourceManifest manifest = 3;
+    MemorySources memory = 4;
+  }
+}
+message MemorySource {
+  string text = 1;
+  string uri = 2;
+}
+message MemorySources { repeated MemorySource documents = 1; }
+message FileSources { repeated FileSource documents = 1; }
+message FileSource { string path = 1; }
+message SourceManifest { map<string, ObjectRef> objects = 1; } // uri -> immutable input.

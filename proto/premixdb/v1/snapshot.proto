@@ -1,0 +1,63 @@
+syntax = "proto3";
+package premixdb.v1;
+
+import "premixdb/v1/storage.proto";
+import "premixdb/v1/status.proto";
+import "premixdb/v1/profile.proto";
+
+// Totals over logical source entries, including repeated content at different keys.
+message SnapshotProfile {
+  uint64 added = 1;
+  uint64 changed = 2;
+  uint64 characters = 3;
+  uint64 content_bytes = 4;
+  uint64 documents = 5;
+  uint64 newlines = 6;
+  uint64 objects = 7;
+  uint64 removed = 8;
+  uint64 reused = 9;
+  uint64 spans = 10;
+  uint64 unchanged = 11;
+  repeated FieldProfile fields = 12; // Document distributions, not sums of span values.
+}
+// First 10 documents in output order, or all documents when fewer exist.
+// Fixed preview limits; repeated fields do not enforce these bounds themselves.
+message SnapshotPreview {
+  message Document {
+    bytes id = 1;
+    string text = 2; // First 1,024 Unicode scalar values of the document.
+    bool truncated = 3; // True when text omits a suffix of the document.
+    string source_key = 4;
+    bytes corpus_id = 5;
+    uint64 ordinal = 6;
+  }
+  repeated Document documents = 1;
+}
+message Snapshot {
+  bytes id = 1;
+  bytes corpus_id = 2;
+  bytes parent_snapshot_id = 3;
+  bytes git_commit = 4; // Resolved execution revision; raw full Git commit object ID.
+  SnapshotPreview preview = 5; // Absent until example output is available.
+  SnapshotProfile profile = 6;
+  Source source = 7;
+  Status status = 8;
+}
+message CreateSnapshotRequest {
+  string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
+  bytes corpus_id = 1;
+  bytes parent_snapshot_id = 2;
+  bytes git_commit = 3; // Raw full Git commit object ID; empty resolves to the execution revision.
+  Source source = 4;
+}
+message CreateSnapshotResponse { Snapshot snapshot = 1; }
+message GetSnapshotRequest { bytes id = 1; }
+message GetSnapshotResponse { Snapshot snapshot = 1; }
+message ListSnapshotRequest {
+  bytes corpus_id = 1;
+  bytes page_token = 2;
+}
+message ListSnapshotResponse {
+  bytes next_page_token = 1;
+  repeated Snapshot snapshots = 2;
+}
