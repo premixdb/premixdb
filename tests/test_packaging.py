@@ -85,7 +85,7 @@ message = premixdb.corpus('build-smoke-test')
 assert corpus_pb2.CreateCorpusRequest.FromString(message.SerializeToString()) == message
 assert "grpc" not in sys.modules
 assert derivation_pb2.DESCRIPTOR
-assert premixdb.__version__ == '0.1.0'
+assert premixdb.__version__ == '0.1.1'
 sources = _demo_sources()
 assert len(sources) == 7222
 assert sources[0].text.startswith('First Citizen:')
@@ -126,7 +126,7 @@ with tempfile.TemporaryDirectory() as storage:
             self.assertIn("premixdb/data/gpt2-tokenizer.json", names)
             self.assertIn("premixdb/data/gpt2-LICENSE.txt", names)
             self.assertFalse(any("obsolete_pb2" in name for name in names))
-            metadata = archive.read("premixdb-0.1.0.dist-info/METADATA").decode()
+            metadata = archive.read("premixdb-0.1.1.dist-info/METADATA").decode()
             self.assertNotIn("Requires-Dist: grpcio-tools", metadata)
             self.assertNotIn("Requires-Dist: grpcio;", metadata)
             self.assertFalse(any(name.endswith("_pb2_grpc.py") for name in names))
@@ -146,7 +146,7 @@ with tempfile.TemporaryDirectory() as storage:
             self.assertIn("premixdb/__main__.py", names)
             entry_points = configparser.ConfigParser()
             entry_points.read_string(
-                archive.read("premixdb-0.1.0.dist-info/entry_points.txt").decode()
+                archive.read("premixdb-0.1.1.dist-info/entry_points.txt").decode()
             )
             self.assertEqual(entry_points["console_scripts"]["premixdb"], "premixdb._cli:main")
             installed = root / "installed"
@@ -162,7 +162,7 @@ with tempfile.TemporaryDirectory() as storage:
         with tarfile.open(next((self.root / "dist").glob("*.tar.gz"))) as archive:
             names = archive.getnames()
             self.assertFalse(any("_pb2" in name for name in names))
-            prefix = "premixdb-0.1.0/"
+            prefix = "premixdb-0.1.1/"
             for name in (
                 "src/_premixdb_build.py",
                 "src/premixdb/data/gpt2-tokenizer.json",
@@ -176,7 +176,7 @@ with tempfile.TemporaryDirectory() as storage:
             ):
                 self.assertIn(prefix + name, names)
             archive.extractall(self.root / "unpacked", filter="data")
-        unpacked = self.root / "unpacked/premixdb-0.1.0"
+        unpacked = self.root / "unpacked/premixdb-0.1.1"
         self.run_python(
             "from setuptools.build_meta import build_wheel; build_wheel('dist')", root=unpacked
         )
