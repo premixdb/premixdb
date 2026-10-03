@@ -70,4 +70,4 @@ audit:
 	$(RUN) pip-audit --requirement reports/requirements-audit.txt --require-hashes --disable-pip --strict
 
 benchmark:
-	$(RUN) pytest tests/benchmarks -m performance --benchmark-enable --benchmark-only --benchmark-save=local
+	$(RUN) pytest tests/benchmarks -n 0 -m performance --benchmark-enable --benchmark-only --benchmark-save=local

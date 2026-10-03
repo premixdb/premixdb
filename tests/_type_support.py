@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import NotRequired, Protocol, TypedDict
 
+from blake3 import blake3
+
 from premixdb import PremixDB, Source
 from premixdb._typing import FieldValue
 from premixdb.execution import Coordinator
 from premixdb.local import Snapshot
+from premixdb.v1.dataset_pb2 import Packing, Tokenizer
 
 SHELL_SOURCES = (
     Source("speech/0000", "First Citizen:\nLet us speak together.\n"),
@@ -59,6 +62,26 @@ class Vectors(Protocol):
 def coordinator(db: PremixDB) -> Coordinator:
     assert isinstance(db._executor, Coordinator)
     return db._executor
+
+
+def wordpiece_tokenizer() -> Tokenizer:
+    """Use a small real model when a test needs decoding but not GPT-2 defaults."""
+    from pathlib import Path
+
+    from premixdb import hugging_face_tokenizer
+
+    path = Path(__file__).parent / "fixtures/wordpiece.json"
+    return hugging_face_tokenizer(path, digest=blake3(path.read_bytes()).digest())
+
+
+def tokenizer_packing(tokenizer: Tokenizer) -> Packing:
+    """Explicit special tokens for the small WordPiece and byte test policies."""
+    from premixdb import Concat
+
+    model = tokenizer.HasField("hugging_face")
+    return Concat(
+        separator=2 if model else 256, drop_remainder=False, pad_token=3 if model else 257
+    )
 
 
 def numeric(value: FieldValue) -> float:

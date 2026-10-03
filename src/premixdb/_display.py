@@ -12,8 +12,10 @@ from ._default_tokenizer import _GPT2_DIGEST
 from ._field_ids import FIELD_NAMES
 from ._ids import _decode_id, _encode_id
 from .v1 import dataset_pb2 as d
+from .v1 import profile_pb2 as p
 from .v1 import query_pb2 as q
 from .v1 import snapshot_pb2 as s
+from .v1 import status_pb2 as status
 from .v1.storage_pb2 import Source
 
 _OPERATORS = {1: "==", 2: "!=", 3: "<", 4: "<=", 5: ">", 6: ">="}
@@ -243,6 +245,60 @@ def _query(value: q.Query) -> list[str]:
     return lines
 
 
+def _documents(value: p.DocumentEstimate) -> str:
+    count = f"{value.lower:,}" if value.lower == value.upper else f"{value.lower:,}–{value.upper:,}"
+    return f"{count} documents"
+
+
+def _profile(value: s.Snapshot | q.Query | d.Dataset) -> list[str]:
+    """Format attached statistics without fetching metadata or executing a recipe."""
+    if isinstance(value, q.Query):
+        if value.HasField("profile"):
+            query_profile = value.profile
+            return [
+                f"Input: {query_profile.input_documents:,} documents",
+                f"Output: {query_profile.output_documents:,} document occurrences",
+                f"Text: {query_profile.output_content_bytes:,} bytes; "
+                f"{query_profile.output_characters:,} characters",
+            ]
+        if value.HasField("estimate"):
+            lines = ["Input: " + _documents(value.estimate.input)]
+            # The histogram estimate covers operations, before these policies.
+            if value.HasField("decontaminate") or value.HasField("sampling"):
+                lines.append("Estimated selection: " + _documents(value.estimate.output))
+                lines.append("Output: unknown until decontamination or sampling is evaluated")
+            else:
+                lines.append("Estimated output: " + _documents(value.estimate.output))
+            if value.estimate.unavailable_fields:
+                lines.append(
+                    "Unprofiled fields: "
+                    + _items([_field(field) for field in value.estimate.unavailable_fields])
+                )
+            return lines
+        return ["Input: unknown; output: unknown (profile not available)"]
+    if not value.HasField("profile"):
+        if isinstance(value, d.Dataset):
+            return ["Content tokens: unknown; sequences: unknown (profile not computed)"]
+        return ["Documents: unknown; text: unknown (profile not available)"]
+    if isinstance(value, s.Snapshot):
+        snapshot_profile = value.profile
+        return [
+            f"Documents: {snapshot_profile.documents:,}",
+            f"Text: {snapshot_profile.content_bytes:,} bytes; {snapshot_profile.characters:,} characters",
+            f"Changes: {snapshot_profile.added:,} added; {snapshot_profile.changed:,} changed; "
+            f"{snapshot_profile.removed:,} removed",
+        ]
+    profile = value.profile
+    label = "Output" if value.status == status.STATUS_COMPLETED else "Planned output"
+    return [
+        f"{label}: {profile.content_tokens:,} content tokens; {profile.sequences:,} sequences",
+        f"Source: {profile.source_documents:,} unique documents; "
+        f"{profile.document_occurrences:,} document occurrences",
+        f"Packing totals: {profile.separator_tokens:,} separator tokens; "
+        f"{profile.padding_tokens:,} padding tokens; {profile.dropped_tokens:,} dropped tokens",
+    ]
+
+
 def _resource_repr(handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.Mix | sdk.Dataset) -> str:
     from . import _resources as sdk
     from ._resources import Corpus, Mix
@@ -307,6 +363,8 @@ def _resource_repr(handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.Mix | sdk
                     lines.append(f"{name}: {getattr(bounds, name):,}")
     else:
         return f"{type(handle).__name__}(name={value.name!r}, id={_id(value.id)!r})"
+    if isinstance(value, (s.Snapshot, q.Query, d.Dataset)):
+        lines = _profile(value) + lines
     if isinstance(value, (s.Snapshot, q.Query, d.Dataset, d.Mix)) and value.git_commit:
         lines.append(f"Revision: {value.git_commit.hex()[:12]}")
     if hasattr(value, "error") and value.error:
@@ -324,14 +382,27 @@ def _local_repr(handle: local.Snapshot | local.Query | local.Dataset) -> str:
     value = handle._handle
     header = f"{type(handle).__name__}(id={_id(value.id)!r})"
     if isinstance(value, Snapshot):
+        totals = value.summary()
+        changes = value.changes()
         lines = [
+            f"Documents: {totals['documents']:,}",
+            f"Text: {totals['bytes']:,} bytes; {totals['characters']:,} characters",
+            f"Changes: {changes['added']:,} added; {changes['changed']:,} changed; "
+            f"{changes['removed']:,} removed",
             f"Corpus: {_id(value.corpus_id)}",
             "Source keys: " + _items([repr(key) for key in value.documents]),
         ]
         if value.base:
             lines.append(f"Base snapshot: {_id(value.base)}")
     elif isinstance(value, Query):
-        lines = ["Snapshots: " + _items([_id(v) for v in value.inputs])]
+        summary = value.summary()
+        lines = [
+            f"Input: {summary['input']['documents']:,} documents",
+            f"Output: {summary['output']['documents']:,} document occurrences",
+            f"Text: {summary['output']['bytes']:,} bytes; "
+            f"{summary['output']['characters']:,} characters",
+            "Snapshots: " + _items([_id(v) for v in value.inputs]),
+        ]
         for i, step in enumerate(value.steps, 1):
             if step.kind == "Filter":
                 field = _LOCAL_FIELDS.get(step.field, step.field)
@@ -374,6 +445,8 @@ def _local_repr(handle: local.Snapshot | local.Query | local.Dataset) -> str:
             else f"tokenizer definition {_id(value.tokenizer_definition)}"
         )
         lines = [
+            f"Output: {len(value):,} sequences",
+            f"Content tokens: {value.summary()['content_tokens']:,}",
             f"Query: {_id(value.query_id)}",
             f"Tokenizer: {tokenizer}",
             f"Sequence length: {packing.length:,}",

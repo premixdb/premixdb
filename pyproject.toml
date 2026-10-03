@@ -112,7 +112,7 @@ blanket-ignore-comment = "error"
 minversion = "8.4"
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-ra --strict-markers --strict-config --benchmark-disable -m 'not integration and not performance'"
+addopts = "-ra --strict-markers --strict-config --benchmark-disable -n auto --maxprocesses=6 --dist=loadfile --no-loadscope-reorder -m 'not integration and not performance'"
 timeout = 180
 markers = [
     "integration: package builds, example workflows, and real subprocess/worker checks",
@@ -146,6 +146,7 @@ dev = [
     "pytest-benchmark>=5.1,<6",
     "pytest-cov>=7,<8",
     "pytest-timeout>=2.4,<3",
+    "pytest-xdist>=3.8,<4",
     "ruff>=0.16.9",
     "setuptools>=77",
     "twine>=6.2,<7",

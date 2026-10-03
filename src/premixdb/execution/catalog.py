@@ -154,12 +154,17 @@ def selectors(query: q.Query | q.CreateQueryRequest) -> Iterator[q.FieldComparis
         kind = operation.WhichOneof("kind")
         if kind == "field_where":
             yield operation.field_where
-        if kind in ("dedupe", "indexed_dedupe", "similarity_dedupe"):
-            for order in (
-                operation.dedupe.order_by if kind == "dedupe" else operation.indexed_dedupe.order_by
-            ):
-                if order.HasField("selector"):
-                    yield order.selector
+        if kind == "dedupe":
+            orders = operation.dedupe.order_by
+        elif kind == "indexed_dedupe":
+            orders = operation.indexed_dedupe.order_by
+        elif kind == "similarity_dedupe":
+            orders = operation.similarity_dedupe.order_by
+        else:
+            continue
+        for order in orders:
+            if order.HasField("selector"):
+                yield order.selector
         if kind == "similarity_dedupe" and operation.similarity_dedupe.HasField("embedding"):
             yield operation.similarity_dedupe.embedding
     if query.HasField("sampling"):

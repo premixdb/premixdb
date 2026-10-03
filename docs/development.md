@@ -31,8 +31,8 @@ uv run --locked pytest tests/test_cli.py
 | `make audit` | Locked runtime dependencies |
 | `make benchmark` | Local CPU benchmarks |
 
-`make check` runs the full quality suite. CI runs it on Python 3.12 and 3.13.
-Local iteration can use individual commands. There are no commit or push hooks.
+`make check` runs the full quality suite. Local iteration can use individual
+commands. There are no commit or push hooks.
 
 Create a [PyPI API token](https://pypi.org/help/#apitoken), then set
 `UV_PUBLISH_TOKEN` locally before `make publish`. Your PyPI account password cannot
@@ -42,11 +42,26 @@ before uploading them with token authentication.
 
 `pytest` defaults to fast tests. Use `-m integration` for integration checks or
 `-m 'not performance'` for both suites. Benchmarks run only through `make benchmark`.
+Tests use up to six CPU workers, keeping each test file together. Use `pytest -n 0`
+for serial runs and debugging, or `pytest -n 2` to use fewer workers. Benchmarks
+always run serially. Native OpenMP, BLAS, and Rayon pools default to one thread
+per process in tests, including spawned loader workers; explicit environment
+settings override those defaults. Heavy libraries load only in tests that need
+them, rather than during collection on every worker.
+When integration checks are selected, files with expensive process/build checks
+start early so they do not hold up the end of the run. Fast-only runs schedule
+larger files first; order within each file is preserved.
 Corpus fixtures use one or two documents unless a test needs a specific boundary
 or additional distinct roles. Boundary fixtures use the smallest input that crosses
 the boundary under test. Tests of validation, display, or storage use byte tokens;
-dedicated tests cover GPT-2 defaults
-and model-token alignment.
+dedicated tests cover GPT-2 defaults and model-token alignment. Decoder tests use
+the small bundled WordPiece fixture when they do not need GPT-2 behavior.
+All package build modes run fresh-process capture/query/byte-token checks. One
+installed-wheel check additionally runs the full GPT-2/PyTorch workflow.
+
+Writable query handles wait for local job completion directly. Polling remains a
+fallback when no local job is active. Wait deadlines do not cancel the job;
+completed publication can be read on a later call.
 
 Use concrete types, bounded generics, and protocols. Ruff rejects `Any` and
 missing annotations; ty checks assignments, returns, yields, and generic arguments.

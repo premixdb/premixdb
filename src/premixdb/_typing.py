@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from functools import cache
 from types import UnionType
 from typing import (
+    Callable,
     Literal,
     NotRequired,
     Required,
@@ -36,10 +38,8 @@ def is_json(value: object) -> TypeGuard[JSON]:
 
 
 def load_json(value: str | bytes) -> JSON:
-    result: object = json.loads(value)
-    if not is_json(result):
-        raise ValueError("expected a JSON value")
-    return result
+    """The default decoder produces only JSON scalars, arrays and string-keyed objects."""
+    return cast(JSON, json.loads(value))
 
 
 def json_object(value: JSON) -> dict[str, JSON]:
@@ -95,18 +95,21 @@ type Edge = tuple[str, str]
 
 def checked_record[T](value: object, schema: type[T]) -> T:
     """Validate a record at an untyped JSON/Arrow boundary, including nested fields."""
-    if not _matches_type(value, schema):
+    if not _validator(schema)(value):
         raise ValueError(f"invalid {schema.__name__} record")
     return cast(T, value)
 
 
-def _matches_type(value: object, annotation: object) -> bool:
+@cache
+def _validator(annotation: object) -> Callable[[object], bool]:
+    """Compile static record shapes once; only values vary between rows."""
+    if annotation is float:
+        return lambda value: type(value) in (float, int)
+    if annotation in (int, bool, str, bytes, type(None)):
+        return lambda value: type(value) is annotation
     if isinstance(annotation, TypeAliasType):
-        return _matches_type(value, annotation.__value__)
+        return lambda value: _validator(annotation.__value__)(value)
     if is_typeddict(annotation):
-        if not isinstance(value, dict):
-            return False
-        # Reflection is confined here; callers receive a validated concrete record.
         schema = cast(type[object], annotation)
         hints = cast(dict[str, object], get_type_hints(schema, include_extras=True))
         required = set(cast(frozenset[str], getattr(schema, "__required_keys__")))
@@ -115,38 +118,54 @@ def _matches_type(value: object, annotation: object) -> bool:
                 required.discard(key)
             elif get_origin(hint) is Required:
                 required.add(key)
-        return (
-            required <= value.keys()
-            and value.keys() <= hints.keys()
-            and all(_matches_type(item, hints[key]) for key, item in value.items())
-        )
+
+        def record(value: object) -> bool:
+            return (
+                isinstance(value, dict)
+                and required <= value.keys()
+                and value.keys() <= hints.keys()
+                and all(_validator(hints[key])(item) for key, item in value.items())
+            )
+
+        return record
     origin = cast(object, get_origin(annotation))
     args = cast(tuple[object, ...], get_args(annotation))
     if origin in (Required, NotRequired):
-        return _matches_type(value, args[0])
+        return lambda value: _validator(args[0])(value)
     if origin in (Union, UnionType):
-        return any(_matches_type(value, member) for member in args)
+        return lambda value: any(_validator(member)(value) for member in args)
     if origin is Literal:
-        return any(type(value) is type(member) and value == member for member in args)
+        return lambda value: any(type(value) is type(member) and value == member for member in args)
     if origin is list:
-        return isinstance(value, list) and all(_matches_type(item, args[0]) for item in value)
+        member = args[0]
+        if member is float:
+            return lambda value: (
+                isinstance(value, list) and all(type(item) in (float, int) for item in value)
+            )
+        if member in (int, bool, str, bytes, type(None)):
+            return lambda value: (
+                isinstance(value, list) and all(type(item) is member for item in value)
+            )
+        element = _validator(member)
+        return lambda value: isinstance(value, list) and all(element(item) for item in value)
     if origin is dict:
-        return isinstance(value, dict) and all(
-            _matches_type(key, args[0]) and _matches_type(item, args[1])
-            for key, item in value.items()
+        key_check, item_check = _validator(args[0]), _validator(args[1])
+        return lambda value: (
+            isinstance(value, dict)
+            and all(key_check(key) and item_check(item) for key, item in value.items())
         )
     if origin is tuple:
-        if not isinstance(value, tuple):
-            return False
-        if len(args) == 2 and args[1] is Ellipsis:
-            return all(_matches_type(item, args[0]) for item in value)
-        return len(value) == len(args) and all(
-            _matches_type(item, member) for item, member in zip(value, args, strict=True)
-        )
-    if annotation is float:
-        return type(value) in (float, int)
-    if annotation in (int, bool, str, bytes, type(None)):
-        return type(value) is annotation
+
+        def fields(value: object) -> bool:
+            if not isinstance(value, tuple):
+                return False
+            if len(args) == 2 and args[1] is Ellipsis:
+                return all(_validator(args[0])(item) for item in value)
+            return len(value) == len(args) and all(
+                _validator(member)(item) for item, member in zip(value, args, strict=True)
+            )
+
+        return fields
     if isinstance(annotation, type):
-        return isinstance(value, annotation)
+        return lambda value: isinstance(value, annotation)
     raise TypeError(f"unsupported record annotation: {annotation!r}")

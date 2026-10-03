@@ -12,16 +12,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-from _type_support import invalid_call
+from _type_support import SHELL_SOURCES, invalid_call
 
 import premixdb as p
-import premixdb as sdk
 from premixdb._typing import JSON, FieldValue
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.execution import enrichment
 from premixdb.internal import derivation_pb2 as d
-from premixdb.internal import derivation_pb2 as derivation_pb
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import query_pb2 as q
 
@@ -32,7 +30,7 @@ class TutorialModels:
     definition = {"provider": "readme-test", "version": 1}
     cache_scope = "document"
 
-    def __init__(self, policy: derivation_pb.EnrichmentProducer) -> None:
+    def __init__(self, policy: d.EnrichmentProducer) -> None:
         if policy.HasField("language"):
             self.fields = (
                 field("language.en"),
@@ -154,6 +152,25 @@ class ReadmeWorkflows(unittest.TestCase):
             self.assertEqual(reopened.corpus("history").id, second.id)
             self.assertEqual(reopened._snapshot(first.id).preview()[0]["text"], "first")
 
+    def test_wrong_base_is_rejected_before_consuming_or_resolving_sources(self) -> None:
+        base = self.db.corpus("base", [])
+        target = self.db._create_corpus("target")
+        consumed = []
+
+        def sources() -> Iterator[p.Source]:
+            consumed.append("read")
+            yield p.Source("a", "unused")
+
+        with self.assertRaisesRegex(ValueError, "base snapshot must belong to the same corpus"):
+            target.snapshot(source=sources(), base=base)
+        self.assertEqual(consumed, [])
+        with (
+            patch("huggingface_hub.HfApi", side_effect=AssertionError("resolved metadata")),
+            patch.object(base, "wait", side_effect=AssertionError("waited")),
+            self.assertRaisesRegex(ValueError, "base snapshot must belong to the same corpus"),
+        ):
+            target.snapshot(source=p.HuggingFaceSource("org/data"), base=base)
+
     def test_query_mix_inspect_torch_and_lineage_work_together(self) -> None:
         from torch.utils.data import DataLoader
 
@@ -242,7 +259,7 @@ class ReadmeWorkflows(unittest.TestCase):
     def test_capture_limits_preview_pages_and_document_selection_are_deterministic(self) -> None:
         consumed = []
 
-        def sources() -> Iterator[sdk.Source]:
+        def sources() -> Iterator[p.Source]:
             for i in range(3):
                 consumed.append(i)
                 yield p.Source(str(i), f"é🌍 document {i}")
@@ -317,6 +334,9 @@ def test_actual_readme_python_blocks_execute_in_order(
     blocks = re.findall(r"```python\n(.*?)\n```", readme, re.DOTALL)
     assert blocks
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PREMIXDB_STORAGE", str(tmp_path / ".premixdb"))
+    with p.PremixDB() as shell_db:
+        shell_db.corpus("demo", SHELL_SOURCES)
     api = Mock()
     revisions = {
         "datablations/c4-filter-small": "f975fa88ccfea268f412be33ed62cd3644d9d140",
@@ -349,6 +369,7 @@ def test_actual_readme_python_blocks_execute_in_order(
 
     real_producer = enrichment.producer
     with (
+        p.PremixDB() as bootstrap,
         patch("huggingface_hub.HfApi", return_value=api),
         patch("datasets.load_dataset", side_effect=hub_rows) as load,
         patch.object(
@@ -359,9 +380,19 @@ def test_actual_readme_python_blocks_execute_in_order(
             ),
         ),
     ):
-        namespace: dict[str, object] = {}
-        for index, code in enumerate(blocks):
-            exec(compile(ast.parse(code), f"README.md:example-{index + 1}", "exec"), namespace)
+        # The README continues inside the shell, which supplies these bindings.
+        namespace: dict[str, object] = {"p": p, "db": bootstrap}
+        shell_db = None
+        try:
+            for index, code in enumerate(blocks):
+                exec(compile(ast.parse(code), f"README.md:example-{index + 1}", "exec"), namespace)
+                if shell_db is None:
+                    handle = namespace.get("db")
+                    assert isinstance(handle, p.PremixDB)
+                    shell_db = handle
+        finally:
+            if shell_db is not None:
+                shell_db.close()
     assert [len(rows) for rows in consumed] == [8, 8]
     assert api.dataset_info.call_count == load.call_count == 2
     mixtures = namespace["mixtures"]

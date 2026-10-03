@@ -1,4 +1,4 @@
-"""Shared local and remote ordinal partitions and JSON checkpoints."""
+"""Deterministic ordinal partitions and JSON checkpoints."""
 
 from __future__ import annotations
 
@@ -18,10 +18,6 @@ class Topology:
 
     def _checkpoint_values(self) -> list[int]:
         return [self.rank, self.world_size, self.worker, self.workers_per_rank]
-
-    def _values(self) -> tuple[int, ...]:
-        """Legacy direct-API tuple adapter."""
-        return tuple(self._checkpoint_values())
 
     def _partition(self) -> tuple[int, int]:
         if (
@@ -52,7 +48,7 @@ class _ReadableDataset[S: _OrdinalSequence](Protocol):
 
 
 class Reader[S: _OrdinalSequence]:
-    """Version-1 ordinal-stride policy shared by every dataset transport."""
+    """Version-1 ordinal strides with optional deterministic shuffling."""
 
     def __init__(
         self,
@@ -69,33 +65,41 @@ class Reader[S: _OrdinalSequence]:
         self._dataset, self._topology = dataset, topology
         first, self._stride = topology._partition()
         self._cache: dict[int, S] = {}
+        ordinal: int | None = None
         if checkpoint is not None:
+            if not isinstance(checkpoint, dict):
+                raise ValueError("checkpoint must be a dictionary")
             try:
                 checkpoint_id = _decode_id(checkpoint.get("dataset", ""))
             except ValueError as exc:
                 raise ValueError("checkpoint has an invalid dataset ID") from exc
+            values = checkpoint.get("topology")
             if (
                 type(checkpoint.get("version")) is not int
                 or checkpoint.get("version") != 1
                 or checkpoint_id != _decode_id(dataset.id)
-                or checkpoint.get("topology") != topology._checkpoint_values()
+                or not isinstance(values, list)
+                or any(type(value) is not int for value in values)
+                or values != topology._checkpoint_values()
             ):
                 raise ValueError("checkpoint is incompatible with dataset or topology")
-            if checkpoint.get("shuffle_seed") != seed:
+            checkpoint_seed = checkpoint.get("shuffle_seed")
+            if type(checkpoint_seed) is not type(seed) or checkpoint_seed != seed:
                 raise ValueError("checkpoint shuffle policy differs")
             if "next_ordinal" not in checkpoint:
                 raise ValueError("checkpoint is missing next_ordinal")
-        self._count = len(dataset)
-        self._next = first if first < self._count else None
-        if checkpoint is not None:
-            ordinal = checkpoint.get("next_ordinal")
+            ordinal = checkpoint["next_ordinal"]
             if ordinal is not None and (
-                type(ordinal) is not int
-                or not first <= ordinal < self._count
-                or (ordinal - first) % self._stride
+                type(ordinal) is not int or ordinal < first or (ordinal - first) % self._stride
             ):
                 raise ValueError("checkpoint ordinal is not in this partition")
-            self._next = ordinal
+        self._next = first if checkpoint is None else ordinal
+        # An exhausted checkpoint needs no dataset reads or materialization.
+        self._count = len(dataset) if self._next is not None else 0
+        if self._next is not None and self._next >= self._count:
+            if checkpoint is not None:
+                raise ValueError("checkpoint ordinal is not in this partition")
+            self._next = None
 
     def __iter__(self) -> Self:
         return self

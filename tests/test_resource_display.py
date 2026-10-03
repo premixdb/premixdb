@@ -13,7 +13,6 @@ from _type_support import coordinator
 from google.protobuf.message import Message
 
 import premixdb as p
-import premixdb as sdk
 from premixdb import local
 from premixdb._resources import Dataset, Mix, Query, Snapshot
 from premixdb.v1 import dataset_pb2 as d
@@ -28,11 +27,11 @@ def shell_display(
     value: local.Snapshot
     | local.Query
     | local.Dataset
-    | sdk.Corpus
-    | sdk.Snapshot
-    | sdk.Query
-    | sdk.Dataset
-    | sdk.Mix
+    | p.Corpus
+    | p.Snapshot
+    | p.Query
+    | p.Dataset
+    | p.Mix
     | Message,
 ) -> str:
     output = io.StringIO()
@@ -82,6 +81,7 @@ def test_shell_plans_survive_reopening_and_do_not_materialize(tmp_path: Path) ->
             assert "Tokenizer: GPT2Tokenizer()" in repr(dataset)
             assert "Sequence length: 4" in repr(dataset)
             assert "Packing: Concat(" in repr(dataset)
+            assert "Planned output:" in repr(dataset)
             assert snapshot.id in repr(snapshot.union(snapshot))
         assert dataset.status is p.ExecutionStatus.PENDING
         assert not coordinator(db)._storage.list("dataset", d.Dataset)
@@ -249,9 +249,14 @@ def test_direct_local_api_retains_plan_after_input_list_is_mutated(tmp_path: Pat
         packing=local.Concat(separator=0, pad_token=0, drop_remainder=False),
     )
     assert "Source keys: 'a'" in shell_display(snapshot)
+    assert "Documents: 1" in shell_display(snapshot)
+    assert "Text: 4 bytes; 4 characters" in shell_display(snapshot)
     assert "1. where text.bytes > 0" in shell_display(query)
+    assert "Output: 1 document occurrences" in shell_display(query)
     assert "2. dedupe exact_document; remove document; order by object.uri asc" in repr(query)
     assert "ByteTokenizer()" in shell_display(dataset)
+    assert "Output: 2 sequences" in shell_display(dataset)
+    assert "Content tokens: 4" in shell_display(dataset)
     assert "Concat(separator=0, pad=0, drop_remainder=False)" in repr(dataset)
 
 
@@ -266,3 +271,96 @@ def test_query_default_sampling_is_visible_without_execution(tmp_path: Path) -> 
         assert "Sampling: all selected documents once; replacement=False (1 documents)" in repr(
             query
         )
+
+
+def test_shell_metadata_summaries_do_not_execute_or_fetch_on_display(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        snapshot = db.corpus("summaries", [p.Source("a", "abcd"), p.Source("b", "é")])
+        service = coordinator(db)
+        with (
+            patch.object(service, "_execute_query", side_effect=AssertionError("execution")),
+            patch.object(service, "_schedule_query", side_effect=AssertionError("scheduling")),
+            patch.object(service, "_snapshot", side_effect=AssertionError("document reads")),
+            patch.object(service, "_profile_dataset", side_effect=AssertionError("tokenization")),
+            patch.object(service._storage, "read_object", side_effect=AssertionError("shard read")),
+        ):
+            query = snapshot.query(
+                steps=[p.where(p.text.bytes > 2), p.where(p.text.characters > 2)]
+            )
+            dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            identities = snapshot.id, query.id, dataset.id
+            assert query.status is p.ExecutionStatus.PENDING
+            assert dataset.status is p.ExecutionStatus.PENDING
+            with (
+                patch.object(db, "_get", side_effect=AssertionError("metadata fetch")),
+                patch.object(db, "_submit", side_effect=AssertionError("submission")),
+                patch.object(service._storage, "load", side_effect=AssertionError("metadata read")),
+                patch.object(db._object_reader, "read", side_effect=AssertionError("data read")),
+            ):
+                assert "Documents: 2" in shell_display(snapshot)
+                assert "Text: 6 bytes; 5 characters" in shell_display(snapshot)
+                assert "Changes: 2 added; 0 changed; 0 removed" in shell_display(snapshot)
+                assert "Input: 2 documents" in shell_display(query)
+                assert "Estimated output: 0–1 documents" in shell_display(query)
+                assert "Content tokens: unknown; sequences: unknown" in shell_display(dataset)
+                displays = [repr(value) for value in (snapshot, query, dataset)]
+                # Attached estimates and profiles are never modified by formatting.
+                before = query._proto.SerializeToString()
+                assert str(query) == repr(query)
+                assert query._proto.SerializeToString() == before
+    with p.PremixDB(storage=tmp_path, read_only=True) as db:
+        restored = [
+            db._snapshot(identities[0]),
+            db._query(identities[1]),
+            db._dataset(identities[2]),
+        ]
+        assert [shell_display(value) for value in restored] == displays
+
+
+def test_shell_queries_show_exact_cached_results_after_execution(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        snapshot = db.corpus("exact-summary", [p.Source("a", "abcd"), p.Source("b", "é")])
+        query = snapshot.query(steps=[p.where(p.text.bytes > 2)])
+        assert "Estimated output: 1 documents" in shell_display(query)
+        query.wait()
+        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=3, packing=p.Concat())
+        dataset.profile()
+        with patch.object(
+            coordinator(db), "_profile_dataset", side_effect=AssertionError("profile")
+        ):
+            assert "Output: 1 document occurrences" in shell_display(query)
+            assert "Text: 4 bytes; 4 characters" in shell_display(query)
+            assert "Estimated output:" not in shell_display(query)
+            assert "Planned output: 3 content tokens; 1 sequences" in shell_display(dataset)
+            assert "Source: 1 unique documents; 1 document occurrences" in shell_display(dataset)
+            assert "0 padding tokens; 1 dropped tokens" in shell_display(dataset)
+            assert shell_display(db._dataset(dataset.id)) == shell_display(dataset)
+        dataset.wait()
+        assert "Output: 3 content tokens; 1 sequences" in shell_display(dataset)
+        assert "Planned output:" not in shell_display(dataset)
+
+
+def test_shell_estimates_label_missing_fields_and_unevaluated_policies(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        snapshot = db.corpus("unknown-summary", [p.Source("a", "abcd")])
+        service = coordinator(db)
+        with patch.object(service, "_execute_query", side_effect=AssertionError("execution")):
+            missing = snapshot.query(steps=[p.where(p.quality.educational_value > 1)])
+            sampled = snapshot.query(
+                sampling=q.QuerySampling(documents=3, seed=0, replacement=True)
+            )
+            assert "Estimated output: 0–1 documents" in shell_display(missing)
+            assert "Unprofiled fields: quality.educational_value" in shell_display(missing)
+            assert "Estimated selection: 1 documents" in shell_display(sampled)
+            assert "Output: unknown until decontamination or sampling is evaluated" in repr(sampled)
+            assert "Estimated output:" not in repr(sampled)
+
+
+def test_empty_snapshot_summary_preserves_exact_zero_counts(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        snapshot = db.corpus("empty-summary", source=[])
+        assert "Documents: 0" in shell_display(snapshot)
+        assert "Text: 0 bytes; 0 characters" in shell_display(snapshot)
+        query = snapshot.query()
+        assert "Input: 0 documents" in shell_display(query)
+        assert "Estimated output: 0 documents" in shell_display(query)

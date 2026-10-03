@@ -14,7 +14,8 @@ from .v1 import query_pb2 as q
 from .v1 import snapshot_pb2 as s
 
 if TYPE_CHECKING:
-    from ._resources import Dataset, Mix, PremixDB, Query, Snapshot, SourceInput
+    from ._inputs import SourceInput
+    from ._resources import Dataset, Mix, PremixDB, Query, Snapshot
 
 
 class PageRequest(Protocol):
@@ -36,8 +37,7 @@ def _pages[Request: PageRequest, Response: PageResponse, Item](
     request: Request,
     values: Callable[[Response], Iterable[Item]],
 ) -> list[Item]:
-    if db._closed:
-        raise ValueError("PremixDB is closed")
+    db._require_open()
     rows: list[Item] = []
     seen: set[bytes] = set()
     while True:
@@ -59,8 +59,7 @@ def _timestamp(ns: int) -> str:
 def _window(db: PremixDB, *, limit: int, offset: int) -> tuple[int, int]:
     from ._requests import _uint
 
-    if db._closed:
-        raise ValueError("PremixDB is closed")
+    db._require_open()
     start = _uint(offset, 64, "offset")
     return start, start + _uint(limit, 32, "limit")
 
@@ -106,37 +105,29 @@ class CorpusCollection:
         start, end = _window(self._db, limit=limit, offset=offset)
         if start == end:
             return []
-        rows: builtins.list[CorpusListing] = [
-            dict(id=_encode_id(value.id), name=value.name)
-            for value in sorted(
-                _pages(
-                    self._db,
-                    self._db._executor.ListCorpus,
-                    c.ListCorpusRequest(),
-                    lambda response: response.corpora,
-                ),
-                key=lambda value: _encode_id(value.id),
-            )
-        ]
-        return rows[start:end]
+        values = sorted(
+            _pages(
+                self._db,
+                self._db._executor.ListCorpus,
+                c.ListCorpusRequest(),
+                lambda response: response.corpora,
+            ),
+            key=lambda value: _encode_id(value.id),
+        )
+        return [dict(id=_encode_id(value.id), name=value.name) for value in values[start:end]]
 
 
 class _CorpusListings:
-    """Corpus-wide listings available on both corpus and snapshot handles."""
+    """Browse the history and recipes of a named corpus."""
 
     _db: PremixDB
-    _resource: c.Corpus | s.Snapshot
+    _resource: c.Corpus
 
     def _corpus_snapshots(self) -> list[s.Snapshot]:
-        corpus_id = (
-            self._resource.corpus_id
-            if isinstance(self._resource, s.Snapshot)
-            else self._resource.id
-        )
         return _pages(
             self._db,
             self._db._executor.ListSnapshot,
-            s.ListSnapshotRequest(corpus_id=corpus_id),
+            s.ListSnapshotRequest(corpus_id=self._resource.id),
             lambda response: response.snapshots,
         )
 
@@ -177,17 +168,17 @@ class _CorpusListings:
                 continue
             ns = event.ended_ns
             times[event.resource_id] = min(ns, times.get(event.resource_id, ns))
-        rows: list[SnapshotListing] = [
+        values = sorted(
+            snapshots,
+            key=lambda value: (value.id not in times, times.get(value.id, 0), value.id),
+        )
+        return [
             dict(
                 id=_encode_id(value.id),
                 timestamp=_timestamp(times[value.id]) if value.id in times else None,
             )
-            for value in sorted(
-                snapshots,
-                key=lambda value: (value.id not in times, times.get(value.id, 0), value.id),
-            )
+            for value in values[start:end]
         ]
-        return rows[start:end]
 
     def list_query(self, *, limit: int = 5, offset: int = 0) -> list[str]:
         """List a page of query IDs across this corpus's snapshots, ordered by ID."""

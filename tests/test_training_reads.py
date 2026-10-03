@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 import struct
+import tracemalloc
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-from _type_support import invalid_call
+from _type_support import invalid_call, tokenizer_packing, wordpiece_tokenizer
 from blake3 import blake3
 
 import premixdb as p
 from premixdb import RangeReader
-from premixdb._policies import ByteTokenizer as BytePolicy
-from premixdb._resources import _read_page
-from premixdb._torch import StreamingDataset, TorchDataset
+from premixdb._reader import permutation
+from premixdb._sequences import read_page
 from premixdb._typing import Scalar
 from premixdb.execution.storage import ObjectStore
 from premixdb.v1 import dataset_pb2 as d
-from premixdb.v1 import dataset_pb2 as dataset_pb
+from premixdb.v1 import status_pb2 as status
 from premixdb.v1.storage_pb2 import ObjectRef, SpanRef
 
 
@@ -30,7 +31,7 @@ def span(obj: ObjectRef, data: bytes, start: int = 0, end: int | None = None) ->
     return SpanRef(object=obj, start=start, end=end, blake3_digest=blake3(data[start:end]).digest())
 
 
-def stored_dataset(store: ObjectStore, count: int = 132) -> dataset_pb.Dataset:
+def stored_dataset(store: ObjectStore, count: int = 132) -> d.Dataset:
     tokens = struct.pack(f"<{count * 2}I", *[v for i in range(count) for v in (i, 2**32 - 1)])
     masks = bytes([1, 0]) * count
     token_object = store.put("dataset", tokens)
@@ -49,6 +50,41 @@ def stored_dataset(store: ObjectStore, count: int = 132) -> dataset_pb.Dataset:
         data = page.SerializeToString()
         resource.sequences.append(span(store.put("dataset", data), data))
     return resource
+
+
+@pytest.mark.parametrize("count", [128, 129])
+@pytest.mark.parametrize("topology", [p.Topology(), p.Topology(rank=1, world_size=3)])
+def test_shuffled_reader_reuses_whole_pages_and_resumes_exactly(
+    tmp_path: Path, count: int, topology: p.Topology
+) -> None:
+    with ObjectStore(tmp_path) as store:
+        resource = stored_dataset(store, count)
+        resource.id = b"d" * 32
+        resource.status = status.STATUS_COMPLETED
+    first, stride = topology._partition()
+    expected = [permutation(i, count, 7) for i in range(first, count, stride)]
+
+    def page_reads(ordinals: list[int]) -> int:
+        pages = [ordinal // 128 for ordinal in ordinals]
+        return sum(i == 0 or page != pages[i - 1] for i, page in enumerate(pages))
+
+    with p.PremixDB(storage=tmp_path, read_only=True) as db:
+        dataset = p.Dataset(db, resource)
+        with patch.object(db._object_reader, "read", wraps=db._object_reader.read) as reads:
+            reader = dataset.reader(seed=7, topology=topology)
+            prefix = [next(reader).ordinal for _ in range(7)]
+            checkpoint = json.loads(json.dumps(reader.checkpoint()))
+            remaining = [sequence.ordinal for sequence in reader]
+            assert prefix + remaining == expected
+            assert reads.call_count == page_reads(expected)
+            reads.reset_mock()
+            resumed = dataset.reader(seed=7, topology=topology, checkpoint=checkpoint)
+            assert [sequence.ordinal for sequence in resumed] == remaining
+            assert reads.call_count == page_reads(remaining)
+            assert (
+                list(dataset.reader(seed=7, topology=topology, checkpoint=reader.checkpoint()))
+                == []
+            )
 
 
 def test_coalescing_preserves_order_duplicates_and_checks_each_original_span(
@@ -75,7 +111,33 @@ def test_coalescing_preserves_order_duplicates_and_checks_each_original_span(
         reader.close()
 
 
+def test_duplicate_spans_share_bounded_bytes_and_keep_digest_checks(tmp_path: Path) -> None:
+    with ObjectStore(tmp_path) as store, RangeReader(local_root=tmp_path) as reader:
+        data = b"start" + b"x" * 1_000_000 + b"end"
+        obj = store.put("dataset", data)
+        reference = span(obj, data, 5, len(data) - 3)
+        tracemalloc.start()
+        try:
+            values = reader.read_many([span(obj, data), *[reference] * 64])
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 4_000_000
+        assert values == [data, *[data[5:-3]] * 64]
+        conflicting = SpanRef()
+        conflicting.CopyFrom(reference)
+        conflicting.blake3_digest = b"x" * 32
+        with pytest.raises(ValueError, match="integrity"):
+            reader.read_many([reference, reference, conflicting])
+        path = tmp_path / "dataset/objects" / obj.blake3_digest.hex()
+        path.write_bytes(b"corrupt" * (len(data) // 7) + b"x" * (len(data) % 7))
+        with pytest.raises(ValueError, match="integrity"):
+            reader.read_many([reference] * 64)
+
+
 def test_batch_loading_matches_individual_reads_and_coalesces_file_reads(tmp_path: Path) -> None:
+    from premixdb._torch import TorchDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store)
         reader = RangeReader(local_root=tmp_path)
@@ -98,6 +160,27 @@ def test_batch_loading_matches_individual_reads_and_coalesces_file_reads(tmp_pat
         reader.close()
 
 
+def test_tensor_mutations_do_not_change_duplicate_rows_labels_or_future_reads(
+    tmp_path: Path,
+) -> None:
+    from premixdb._torch import TorchDataset
+
+    with ObjectStore(tmp_path) as store, RangeReader(local_root=tmp_path) as reader:
+        data = TorchDataset(stored_dataset(store, count=2), reader)
+        first, other, duplicate = data.__getitems__([1, 0, 1])
+        first["input_ids"].zero_()
+        assert first["labels"].tolist() == [1, -100]
+        first["labels"].fill_(99)
+        first["attention_mask"].zero_()
+        assert other["input_ids"].tolist() == [0, 2**32 - 1]
+        assert duplicate["input_ids"].tolist() == [1, 2**32 - 1]
+        assert duplicate["labels"].tolist() == [1, -100]
+        assert duplicate["attention_mask"].tolist() == [1, 0]
+        reread = data[1]
+        for name, expected in duplicate.items():
+            assert reread[name].equal(expected)
+
+
 @pytest.mark.parametrize("batched", [False, True])
 def test_whole_object_reads_verify_the_object_digest(tmp_path: Path, batched: bool) -> None:
     with ObjectStore(tmp_path) as store:
@@ -114,6 +197,8 @@ def test_whole_object_reads_verify_the_object_digest(tmp_path: Path, batched: bo
 
 
 def test_streaming_ranks_and_workers_cover_every_sequence_once(tmp_path: Path) -> None:
+    from premixdb._torch import StreamingDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=385)
     reader = RangeReader(local_root=tmp_path)
@@ -140,6 +225,8 @@ def test_streaming_ranks_and_workers_cover_every_sequence_once(tmp_path: Path) -
 def test_streaming_dataset_survives_spawn_and_session_close(tmp_path: Path) -> None:
     from torch.utils.data import DataLoader
 
+    from premixdb._torch import StreamingDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=129)
     data = StreamingDataset(resource, RangeReader(local_root=tmp_path), seed=7)
@@ -154,11 +241,15 @@ def test_streaming_dataset_survives_spawn_and_session_close(tmp_path: Path) -> N
     "kwargs", [dict(rank=0), dict(rank=2, world_size=2), dict(seed=True), dict(epoch=-1)]
 )
 def test_streaming_rejects_invalid_topology_and_seeds(kwargs: dict[str, Scalar]) -> None:
+    from premixdb._torch import StreamingDataset
+
     with pytest.raises(ValueError):
         invalid_call(StreamingDataset, d.Dataset(), None, **kwargs)
 
 
 def test_local_reader_survives_fork(tmp_path: Path) -> None:
+    from premixdb._torch import TorchDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=2)
     reader = RangeReader(local_root=tmp_path)
@@ -169,6 +260,8 @@ def test_local_reader_survives_fork(tmp_path: Path) -> None:
 
 
 def test_single_index_fetches_only_requested_tokens_and_coalesces_masks(tmp_path: Path) -> None:
+    from premixdb._torch import TorchDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store)
     reader = RangeReader(local_root=tmp_path)
@@ -225,9 +318,11 @@ def test_torch_page_boundaries_and_empty_datasets(tmp_path: Path, count: int) ->
                 data[index]
 
 
-@pytest.mark.parametrize("tokenizer", [None, p.ByteTokenizer()])
+@pytest.mark.parametrize(
+    "tokenizer", [wordpiece_tokenizer(), p.ByteTokenizer()], ids=["wordpiece", "bytes"]
+)
 def test_public_torch_reopens_read_only_and_matches_all_sequence_fields(
-    tmp_path: Path, tokenizer: dataset_pb.Tokenizer | BytePolicy
+    tmp_path: Path, tokenizer: d.Tokenizer
 ) -> None:
     from torch.utils.data import DataLoader
 
@@ -235,10 +330,15 @@ def test_public_torch_reopens_read_only_and_matches_all_sequence_fields(
         dataset = (
             db.corpus(
                 "reopen",
-                [p.Source("a", ("a" if tokenizer is not None else " hello") * (131 * 8 - 1))],
+                [
+                    p.Source(
+                        "a",
+                        ("hello " if tokenizer.HasField("hugging_face") else "a") * (131 * 8 - 1),
+                    )
+                ],
             )
             .query()
-            .dataset(tokenizer=tokenizer, sequence_length=8)
+            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
         )
         expected = [
             dict(
@@ -276,6 +376,8 @@ def test_public_torch_reopens_read_only_and_matches_all_sequence_fields(
 def test_all_readers_reject_corrupt_sequence_pages(
     tmp_path: Path, mode: str, corruption: str
 ) -> None:
+    from premixdb._torch import StreamingDataset, TorchDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=2)
         reader = RangeReader(local_root=tmp_path)
@@ -291,7 +393,7 @@ def test_all_readers_reject_corrupt_sequence_pages(
     try:
         with pytest.raises(p.ExecutionError, match="incomplete or out of order"):
             if mode == "plain":
-                _read_page(resource, reader, 0)
+                read_page(resource, reader, 0)
             elif mode == "batched":
                 TorchDataset(resource, reader).__getitems__([0, 1])
             else:
@@ -300,28 +402,139 @@ def test_all_readers_reject_corrupt_sequence_pages(
         reader.close()
 
 
+@pytest.mark.parametrize("mode", ["plain", "batched", "streaming"])
 @pytest.mark.parametrize(
-    "field,value,message",
+    "field,value,start,message",
     [
-        ("tokens", struct.pack("<I", 1), "invalid length"),
-        ("attention_mask", bytes([1]), "invalid length"),
-        ("loss_mask", bytes([1]), "invalid length"),
-        ("attention_mask", bytes([1, 2]), "invalid stored token mask"),
-        ("loss_mask", bytes([1, 2]), "invalid stored token mask"),
+        ("tokens", struct.pack("<I", 1), 0, "invalid length"),
+        ("attention_mask", bytes([1]), 0, "invalid length"),
+        ("loss_mask", bytes([1]), 0, "invalid length"),
+        ("attention_mask", bytes([1, 2]), 0, "invalid stored .*mask"),
+        ("loss_mask", bytes([1, 2]), 0, "invalid stored .*mask"),
+        ("tokens", b"\0" + struct.pack("<2I", 1, 2), 1, "not uint32 aligned"),
     ],
 )
-def test_torch_rejects_invalid_token_lengths_and_masks(
-    tmp_path: Path, field: str, value: bytes, message: str
+def test_all_readers_reject_invalid_token_lengths_alignment_and_masks(
+    tmp_path: Path, mode: str, field: str, value: bytes, start: int, message: str
 ) -> None:
+    from premixdb._torch import StreamingDataset, TorchDataset
+
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=1)
         reader = RangeReader(local_root=tmp_path)
         batch = d.SequenceBatch.FromString(reader.read(resource.sequences[0]))
-        getattr(batch.sequences[0], field).CopyFrom(span(store.put("dataset", value), value))
+        getattr(batch.sequences[0], field).CopyFrom(span(store.put("dataset", value), value, start))
         encoded = batch.SerializeToString()
         resource.sequences[0].CopyFrom(span(store.put("dataset", encoded), encoded))
     try:
         with pytest.raises(ValueError, match=message):
-            TorchDataset(resource, reader)[0]
+            if mode == "plain":
+                sequence = read_page(resource, reader, 0)[0]
+                getattr(sequence, "mask" if field == "loss_mask" else field)
+            elif mode == "batched":
+                TorchDataset(resource, reader)[0]
+            else:
+                list(StreamingDataset(resource, reader))
     finally:
         reader.close()
+
+
+def test_sequence_values_are_detached_from_cached_storage(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        sequence = (
+            db.corpus("detached", [p.Source("a", "a")])
+            .query()
+            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
+        )
+        tokens, mask, attention, regions = (
+            sequence.tokens,
+            sequence.mask,
+            sequence.attention_mask,
+            sequence.spans,
+        )
+        tokens[0] = 0
+        mask[0] = False
+        attention[0] = False
+        regions[0].start = 100
+        assert sequence.tokens == [97, 256, 257, 257]
+        assert sequence.mask == [True, True, False, False]
+        assert sequence.attention_mask == [True, True, False, False]
+        assert sequence.spans[0].start == 0
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_session_close_releases_owned_read_threads_and_detached_data_still_reads(
+    tmp_path: Path, read_only: bool
+) -> None:
+    with p.PremixDB(storage=tmp_path) as writer:
+        identity = (
+            writer.corpus("lifetime", [p.Source("a", "abcd")])
+            .query()
+            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            .wait()
+            .id
+        )
+    db = p.PremixDB(storage=tmp_path, read_only=read_only)
+    data = db._dataset(identity).torch()
+    try:
+        expected = data[0]["input_ids"].tolist()
+        pool = data.reader._pool
+        assert pool is not None
+        db.close()
+        assert data.reader._pool is None
+        with pytest.raises(RuntimeError, match="cannot schedule"):
+            pool.submit(lambda: None)
+        assert data[0]["input_ids"].tolist() == expected
+        assert data.reader._pool is not pool
+    finally:
+        db.close()
+        data.reader.close()
+
+
+class FalsyReader(RangeReader):
+    def __bool__(self) -> bool:
+        return False
+
+
+@pytest.mark.parametrize("reader_type", [RangeReader, FalsyReader])
+def test_session_preserves_caller_supplied_reader(
+    tmp_path: Path, reader_type: type[RangeReader]
+) -> None:
+    reader = reader_type(local_root=tmp_path)
+    try:
+        with patch.object(reader, "close", wraps=reader.close) as close:
+            with p.PremixDB(storage=tmp_path, object_reader=reader) as db:
+                data = (
+                    db.corpus("shared-reader", [p.Source("a", "abcd")])
+                    .query()
+                    .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+                    .torch()
+                )
+                assert data.reader is reader
+                assert data[0]["input_ids"].tolist() == list(b"abcd")
+                pool = reader._pool
+            close.assert_not_called()
+            assert reader._pool is pool
+            assert data[0]["input_ids"].tolist() == list(b"abcd")
+    finally:
+        reader.close()
+
+
+def test_session_releases_reader_even_when_executor_close_fails(tmp_path: Path) -> None:
+    db = p.PremixDB(storage=tmp_path)
+    data = (
+        db.corpus("close-error", [p.Source("a", "abcd")])
+        .query()
+        .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        .torch()
+    )
+    try:
+        assert data[0]["input_ids"].tolist() == list(b"abcd")
+        assert data.reader._pool is not None
+        with patch.object(db._executor, "close", side_effect=OSError("executor close failed")):
+            with pytest.raises(OSError, match="executor close failed"):
+                db.close()
+        assert data.reader._pool is None
+    finally:
+        db._executor.close()
+        data.reader.close()

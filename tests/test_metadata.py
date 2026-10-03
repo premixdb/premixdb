@@ -7,9 +7,11 @@ import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from _type_support import coordinator
 
 import premixdb
@@ -26,6 +28,26 @@ from premixdb.v1.storage_pb2 import SpanRef
 
 
 class MetadataTests(unittest.TestCase):
+    def test_immutable_retries_verify_type_even_when_payloads_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, ObjectStore(directory) as store:
+            corpus = c.Corpus(id=b"c" * 16)
+            query = q.Query(id=corpus.id)
+            self.assertEqual(corpus.SerializeToString(), query.SerializeToString())
+            store.save("corpus", corpus.id, corpus)
+            with self.assertRaisesRegex(ValueError, "message type"):
+                store.save("corpus", corpus.id, query)
+            self.assertEqual(store.load("corpus", corpus.id, c.Corpus), corpus)
+            store.save("corpus", corpus.id, corpus)
+
+    def test_immutable_retries_reject_corrupt_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, ObjectStore(directory) as store:
+            corpus = c.Corpus(id=b"c" * 16, name="stable")
+            store.save("corpus", corpus.id, corpus)
+            with closing(sqlite3.connect(store.metadata.path)) as database, database:
+                database.execute("UPDATE metadata SET digest=?", (b"x" * 32,))
+            with self.assertRaisesRegex(ValueError, "integrity"):
+                store.save("corpus", corpus.id, corpus)
+
     def test_resources_and_uint64_profiles_survive_database_only_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -94,6 +116,7 @@ class MetadataTests(unittest.TestCase):
                             migrated.load(namespace, resource.id, type(resource), suffix=suffix),
                             resource,
                         )
+                        migrated.save(namespace, resource.id, resource, suffix=suffix)
                     self.assertTrue(all(path.exists() for path in originals))
                 finally:
                     migrated.close()
@@ -108,7 +131,7 @@ class MetadataTests(unittest.TestCase):
                 store.load("corpus", corpus.id, q.Query)
             with self.assertRaisesRegex(ValueError, "message type"):
                 store.list("corpus", q.Query)
-            with sqlite3.connect(store.metadata.path) as database:
+            with closing(sqlite3.connect(store.metadata.path)) as database, database:
                 database.execute("UPDATE metadata SET payload=?", (b"corrupt",))
             with self.assertRaisesRegex(ValueError, "integrity"):
                 store.list("corpus", c.Corpus)
@@ -138,7 +161,7 @@ class MetadataTests(unittest.TestCase):
     def test_unknown_schema_version_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "metadata.sqlite3"
-            with sqlite3.connect(path) as database:
+            with closing(sqlite3.connect(path)) as database, database:
                 database.execute("PRAGMA user_version=999")
             with self.assertRaisesRegex(ValueError, "schema version"):
                 MetadataStore(path)
@@ -188,6 +211,44 @@ class MetadataTests(unittest.TestCase):
             self.addCleanup(restored.close)
             self.assertEqual(restored.load("dataset", resource.id, d.Dataset), resource)
             self.assertEqual(restored.load("snapshot", later.id, s.Snapshot), later)
+
+
+@pytest.mark.parametrize("failure", [None, "backup", "verification"])
+def test_backup_closes_destination_on_every_exit(tmp_path: Path, failure: str | None) -> None:
+    store = MetadataStore(tmp_path / "source.sqlite3")
+    targets: list[sqlite3.Connection] = []
+    connect = sqlite3.connect
+
+    def destination(path: Path) -> sqlite3.Connection:
+        target = connect(path)
+        if failure == "verification":
+            target.set_authorizer(
+                lambda action, name, _value, _database, _trigger: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_PRAGMA and name == "integrity_check"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+        targets.append(target)
+        return target
+
+    try:
+        if failure == "backup":
+            store.close()
+        with patch("premixdb.execution.metadata.sqlite3.connect", side_effect=destination):
+            if failure is None:
+                store.backup(tmp_path / "backup.sqlite3")
+            else:
+                with pytest.raises(sqlite3.Error) as error:
+                    store.backup(tmp_path / "backup.sqlite3")
+                assert error.traceback is not None
+        assert len(targets) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            targets[0].execute("SELECT 1")
+    finally:
+        store.close()
+        for target in targets:
+            target.close()
 
 
 if __name__ == "__main__":

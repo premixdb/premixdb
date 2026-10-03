@@ -1,4 +1,4 @@
-"""Captured text inputs shared by the recipe and execution APIs."""
+"""Captured text values and adapters for source requests."""
 
 from __future__ import annotations
 
@@ -6,12 +6,13 @@ import gzip
 import json
 from dataclasses import dataclass
 from itertools import islice
-from os import PathLike
+from os import PathLike, fspath
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Self
+from typing import Iterable, Iterator, Self
+from urllib.parse import urlsplit
 
-if TYPE_CHECKING:
-    from .v1.storage_pb2 import Source as SourceProto
+from ._protobuf import copy_message
+from .v1 import storage_pb2 as storage
 
 
 @dataclass(frozen=True)
@@ -41,9 +42,7 @@ class HuggingFaceSource:
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{name} must be a nonempty string or None")
 
-    def _to_proto(self) -> SourceProto:
-        from .v1 import storage_pb2 as s
-
+    def _to_proto(self) -> storage.Source:
         repository = (
             self.repository if self.dataset is None else f"{self.repository}/{self.dataset}"
         )
@@ -55,8 +54,8 @@ class HuggingFaceSource:
         configuration = self.configuration
         if configuration is None and repository == "allenai/c4":
             configuration = "en"
-        return s.Source(
-            hugging_face=s.HuggingFaceDataset(
+        return storage.Source(
+            hugging_face=storage.HuggingFaceDataset(
                 repository=repository,
                 configuration=configuration or "",
                 split=self.split,
@@ -130,3 +129,53 @@ class Source:
                     raise ValueError(f"{path}: row {ordinal + 1}: {exc}") from exc
                 seen.add(key)
                 yield item
+
+
+type SourceInput = (
+    str
+    | PathLike[str]
+    | storage.Source
+    | storage.HuggingFaceDataset
+    | HuggingFaceSource
+    | Iterable[Source]
+)
+
+
+def source_files(path: Path) -> Iterator[tuple[str, Path]]:
+    """Enumerate local documents in path order, with relative POSIX keys."""
+    directory = path.is_dir()
+    for file in sorted(path.rglob("*")) if directory else (path,):
+        if not directory or file.is_file():
+            key = file.relative_to(path).as_posix() if directory else file.name
+            yield key, file
+
+
+def source_proto(value: SourceInput, *, limit: int | None = None) -> storage.Source:
+    """Detach a source request, consuming at most limit items from an iterable."""
+    if isinstance(value, HuggingFaceSource):
+        value = value._to_proto()
+    if isinstance(value, storage.HuggingFaceDataset):
+        value = storage.Source(hugging_face=value)
+    if isinstance(value, storage.Source):
+        result = copy_message(value)
+        if limit is not None:
+            result.limit = limit
+        return result
+    if isinstance(value, (str, PathLike)):
+        path = fspath(value)
+        if urlsplit(path).scheme:
+            raise ValueError("source paths must be local files")
+        return storage.Source(
+            limit=limit,
+            files=storage.FileSources(
+                documents=[storage.FileSource(path=str(Path(path).resolve()))]
+            ),
+        )
+    return storage.Source(
+        limit=limit,
+        memory=storage.MemorySources(
+            documents=(
+                storage.MemorySource(uri=item.key, text=item.text) for item in islice(value, limit)
+            )
+        ),
+    )

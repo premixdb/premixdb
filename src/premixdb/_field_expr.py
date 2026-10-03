@@ -5,12 +5,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ._field_ids import field_id
 from .v1 import query_pb2 as q
-
-T = TypeVar("T", bound=str | int | float | bool | Enum)
 
 
 @runtime_checkable
@@ -63,7 +61,7 @@ class FieldPredicate:
 
 
 @dataclass(frozen=True, eq=False)
-class ScalarField(Generic[T]):
+class ScalarField[T: str | int | float | bool | Enum]:
     name: str
     value_type: type[T]
     projection: q.FieldComparison.Projection = q.FieldComparison.SCALAR

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 import time
 from array import array
+from bisect import bisect_right
 from collections.abc import Sequence as SequenceABC
+from contextlib import ExitStack
 from copy import deepcopy
-from itertools import islice
+from itertools import accumulate, chain, islice, repeat
 from pathlib import Path
+from sys import byteorder
 from typing import TYPE_CHECKING, Iterable, Iterator, Literal, SupportsIndex, overload
 
 from .._reader import Reader, Topology
@@ -20,6 +22,7 @@ from .contracts import Counts, Occurrence, PackingSummary, SourceRange, Span, To
 
 if TYPE_CHECKING:
     from .queries import Query, Row
+    from .token_cache import TokenCache
 
 from blake3 import blake3
 
@@ -42,14 +45,31 @@ def _tokenizer_definition(asset_digest: str) -> str:
 
 class HuggingFaceTokenizer:
     def __init__(self, path: str | Path, expected: str, max_document_bytes: int) -> None:
-        from tokenizers import Tokenizer
-
-        if not unsigned(max_document_bytes):
-            raise ValueError("max_document_bytes must be positive")
+        self._set_limit(max_document_bytes)
         try:
             data = Path(path).read_bytes()
         except OSError as exc:
             raise ValueError(str(exc)) from exc
+        self._load(data, expected)
+
+    @classmethod
+    def from_bytes(
+        cls, data: bytes, expected: str, max_document_bytes: int
+    ) -> HuggingFaceTokenizer:
+        """Load an admitted asset directly, without a temporary file."""
+        tokenizer = cls.__new__(cls)
+        tokenizer._set_limit(max_document_bytes)
+        tokenizer._load(data, expected)
+        return tokenizer
+
+    def _set_limit(self, max_document_bytes: int) -> None:
+        if not unsigned(max_document_bytes):
+            raise ValueError("max_document_bytes must be positive")
+        self.max_document_bytes = max_document_bytes
+
+    def _load(self, data: bytes, expected: str) -> None:
+        from tokenizers import Tokenizer
+
         self.asset_bytes = data
         self.asset_digest = blake3(data).hexdigest()
         if digest(expected).hex() != self.asset_digest:
@@ -67,7 +87,6 @@ class HuggingFaceTokenizer:
             raise NotImplementedError(
                 "tokenizer BPE dropout must be disabled for deterministic encoding"
             )
-        self.max_document_bytes = max_document_bytes
         self.definition = _tokenizer_definition(self.asset_digest)
 
     def encode(self, text: str) -> list[int]:
@@ -107,6 +126,32 @@ class TokenList(list[int]):
         return super().__getitem__(index)
 
 
+def _source_intervals(
+    sources: SequenceABC[Interval], start: int, end: int, first: int = 0, cursor: int = 0
+) -> Iterator[Interval]:
+    for index in range(first, len(sources)):
+        if cursor >= end:
+            break
+        a, b = sources[index]
+        left, right = max(start, cursor), min(end, cursor + b - a)
+        if left < right:
+            yield a + left - cursor, a + right - cursor
+        cursor += b - a
+
+
+def _token_ranges(
+    sources: SequenceABC[Interval], offsets: Iterable[Interval]
+) -> list[list[Interval]]:
+    """Locate each token in concatenated retained bytes, including repeated offsets."""
+    ends = list(accumulate(b - a for a, b in sources))
+    mapped = []
+    for start, end in offsets:
+        first = bisect_right(ends, start)
+        cursor = ends[first - 1] if first else 0
+        mapped.append(list(_source_intervals(sources, start, end, first, cursor)))
+    return mapped
+
+
 class ByteRanges:
     def __init__(
         self, sources: SequenceABC[Interval], start: int = 0, end: int | None = None
@@ -116,23 +161,15 @@ class ByteRanges:
         self.end = sum(b - a for a, b in sources) if end is None else end
 
     def intervals(self) -> Iterator[Interval]:
-        cursor = 0
-        for a, b in self.sources:
-            left, right = max(self.start, cursor), min(self.end, cursor + b - a)
-            if left < right:
-                yield a + left - cursor, a + right - cursor
-            cursor += b - a
+        return _source_intervals(self.sources, self.start, self.end)
 
     def __len__(self) -> int:
         return self.end - self.start
 
     def __iter__(self) -> Iterator[list[Interval]]:
-        cursor = 0
-        for a, b in self.sources:
-            left, right = max(self.start, cursor), min(self.end, cursor + b - a)
-            for i in range(left, right):
-                yield [(a + i - cursor, a + i - cursor + 1)]
-            cursor += b - a
+        for start, end in self.intervals():
+            for position in range(start, end):
+                yield [(position, position + 1)]
 
     @overload
     def __getitem__(self, index: int) -> list[Interval]: ...
@@ -143,7 +180,7 @@ class ByteRanges:
             start, end, step = index.indices(len(self))
             if step != 1:
                 return [ranges for ranges in self][index]
-            return ByteRanges(self.sources, self.start + start, self.start + end)
+            return ByteRanges(self.sources, self.start + start, self.start + max(start, end))
         if index < 0:
             index += len(self)
         if not 0 <= index < len(self):
@@ -177,25 +214,21 @@ def encoded_tokens(
     text = row.text
     from .curation import RetainedDocument
 
+    if not tokenizer:
+        data = text.encode()
+        source = (
+            row.document.source_ranges
+            if isinstance(row.document, RetainedDocument)
+            else ((0, len(data)),)
+        )
+        return ByteTokens(data, ByteRanges(source))
+    tokens, offsets = tokenizer.encode_with_offsets(text)
     source = (
         row.document.source_ranges
         if isinstance(row.document, RetainedDocument)
-        else ((0, len(text.encode())),)
+        else ((0, row.document.size),)
     )
-    if not tokenizer:
-        return ByteTokens(text.encode(), ByteRanges(source))
-    tokens, offsets = tokenizer.encode_with_offsets(text)
-    mapped = []
-    for start, end in offsets:
-        cursor, ranges = 0, []
-        for a, b in source:
-            length = b - a
-            left, right = max(start, cursor), min(end, cursor + length)
-            if left < right:
-                ranges.append((a + left - cursor, a + right - cursor))
-            cursor += length
-        mapped.append(ranges)
-    return TokenList(tokens, mapped)
+    return TokenList(tokens, _token_ranges(source, offsets))
 
 
 def compact_ranges(ranges: Iterable[TokenRange]) -> list[SourceRange]:
@@ -234,13 +267,24 @@ class Sequence:
     def tokens(self) -> list[int]:
         return list(self._tokens)
 
+    def _token_bytes(self) -> bytes:
+        tokens = self._tokens
+        if byteorder != "little":
+            tokens = tokens[:]
+            tokens.byteswap()
+        return tokens.tobytes()
+
     @property
     def mask(self) -> list[bool]:
-        return [
-            span["kind"] != "padding"
-            for span in self._spans
-            for _ in range(span["start"], span["end"])
-        ]
+        return list(self._mask_values())
+
+    def _mask_values(self) -> Iterator[bool]:
+        return chain.from_iterable(
+            repeat(span["kind"] != "padding", span["end"] - span["start"]) for span in self._spans
+        )
+
+    def _preview(self, limit: int) -> tuple[list[int], list[int]]:
+        return list(self._tokens[:limit]), [int(v) for v in islice(self._mask_values(), limit)]
 
     @property
     def spans(self) -> list[Span]:
@@ -260,63 +304,57 @@ class Dataset:
         stream: bool = False,
     ) -> Dataset:
         start = time.monotonic()
-        if tokenizer:
-            from .token_cache import token_pool
-
-            pool = token_pool(query, tokenizer)
-            lengths = [pool.length(row.id) for row in query._rows]
-            encoded = ((row, pool[row.id]) for row in query._rows)
-        else:
-            encoded = ((r, encoded_tokens(r)) for r in query._rows)
-            lengths = query.lengths()
-        return cls(
-            query,
+        plan = DatasetPlan(
             query.id,
-            query.source_counts(),
-            encoded,
             tokenizer.definition if tokenizer else BYTE_DEFINITION,
-            length,
-            separator,
-            padding,
-            start,
-            lengths,
-            stream=stream,
+            query.code,
+            PackingPlan(length, separator, padding),
         )
+        pool = None
+        with ExitStack() as startup:
+            if tokenizer:
+                from .token_cache import token_pool
+
+                pool = token_pool(query, tokenizer)
+                startup.callback(pool.close)
+                lengths = [pool.length(row.id) for row in query]
+                encoded = ((row, pool[row.id]) for row in query)
+            else:
+                encoded = ((r, encoded_tokens(r)) for r in query)
+                lengths = query.lengths()
+            dataset = cls(
+                query,
+                plan,
+                query.source_counts(),
+                encoded,
+                start,
+                lengths,
+                stream=stream,
+                _token_pool=pool,
+            )
+            startup.pop_all()
+            return dataset
 
     def __init__(
         self,
         query: Query,
-        input_id: str,
+        plan: DatasetPlan,
         input_counts: Counts,
         encoded: Iterable[tuple[Row, list[int] | ByteTokens | TokenList]],
-        definition: str,
-        length: int,
-        separator: int | None,
-        padding: int | None,
         start: float,
         lengths: Iterable[int],
         *,
         stream: bool = False,
+        _token_pool: TokenCache | None = None,
     ) -> None:
-        self.plan = DatasetPlan(
-            input_id, definition, query.code, PackingPlan(length, separator, padding)
-        )
+        self._token_pool = _token_pool
+        self.plan = plan
         self._id = self.plan.id
         self.query_id = query.id
-        self.tokenizer_definition = definition
-        self._length = length
+        self.tokenizer_definition = plan.definition
         self._lengths = tuple(lengths)
-        totals = self.plan.packing.measure(self._lengths)
-        self._summary: PackingSummary = PackingSummary(
-            input=input_counts.copy(),
-            content_tokens=totals.content,
-            separator_tokens=totals.separators,
-            dropped_content_tokens=totals.dropped_content,
-            dropped_separator_tokens=totals.dropped_separators,
-            padding_tokens=totals.padding,
-            sequences=totals.sequences,
-            output_tokens=totals.output,
-        )
+        self._totals = self.plan.packing.measure(self._lengths)
+        self._input_counts = input_counts.copy()
         self._query = query
         self._encoded = iter(encoded)
         self._occurrences: list[Occurrence] = []
@@ -325,6 +363,22 @@ class Dataset:
         self.elapsed_seconds = time.monotonic() - start
 
     def _pack(self) -> Iterator[Sequence]:
+        try:
+            yield from self._pack_sequences()
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Release only the token pool owned by this packing stream."""
+        if self._token_pool is not None:
+            self._token_pool.close()
+            self._token_pool = None
+
+    def __del__(self) -> None:
+        if hasattr(self, "_token_pool"):
+            self.close()
+
+    def _pack_sequences(self) -> Iterator[Sequence]:
         if self._consumed:
             raise RuntimeError("packing stream has already been consumed")
         self._consumed = True
@@ -404,7 +458,7 @@ class Dataset:
         return self._occurrences[ordinal]["document"]
 
     def __len__(self) -> int:
-        return int(self._summary["sequences"])
+        return self._totals.sequences
 
     def __getitem__(self, index: int) -> Sequence:
         if type(index) is not int:
@@ -417,7 +471,7 @@ class Dataset:
         return self._sequences[index]
 
     def summary(self) -> PackingSummary:
-        return deepcopy(self._summary)
+        return self._totals.summary(self._input_counts)
 
     def occurrences(self) -> list[Occurrence]:
         return deepcopy(self._occurrences)
@@ -451,7 +505,7 @@ class Dataset:
     ) -> Iterator[tuple[int, Path, Path, list[tuple[str, str]], list[Sequence]]]:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        per_shard = max(1, TOKEN_SHARD_BYTES // self._length // 4)
+        per_shard = max(1, TOKEN_SHARD_BYTES // self.plan.packing.length // 4)
         sequences = self.iter_sequences()
         first = 0
         while chunk := list(islice(sequences, per_shard)):
@@ -459,8 +513,8 @@ class Dataset:
             digests = []
             with token_path.open("wb") as tokens, mask_path.open("wb") as masks:
                 for sequence in chunk:
-                    data = struct.pack(f"<{len(sequence._tokens)}I", *sequence._tokens)
-                    mask = bytes(sequence.mask)
+                    data = sequence._token_bytes()
+                    mask = bytes(sequence._mask_values())
                     tokens.write(data)
                     masks.write(mask)
                     digests.append((blake3(data).hexdigest(), blake3(mask).hexdigest()))

@@ -3,33 +3,29 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import ItemsView, MutableMapping
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from contextlib import ExitStack
 from threading import RLock
 from typing import Iterable, Iterator
 
 from .._typing import FieldValue, field_value, json_string, load_json
+from .spill import _database
 
 
 class ValueCache(MutableMapping[str, FieldValue]):
     def __init__(self, rows: Iterable[tuple[str, FieldValue]] = ()) -> None:
-        self._directory = TemporaryDirectory(prefix="premixdb-values-")
         self._lock = RLock()
-        self._database = sqlite3.connect(
-            Path(self._directory.name) / "values.sqlite3", check_same_thread=False
-        )
-        self._database.execute("PRAGMA cache_size=-8192")
-        self._database.execute("PRAGMA temp_store=FILE")
-        self._database.execute(
-            "CREATE TABLE values_index (id TEXT PRIMARY KEY,value TEXT) WITHOUT ROWID"
-        )
-        self._database.executemany(
-            "INSERT INTO values_index VALUES (?,?)",
-            ((key, self._encode(value)) for key, value in rows),
-        )
-        self._database.commit()
+        with ExitStack() as startup:
+            self._database = startup.enter_context(_database("values", check_same_thread=False))
+            self._database.execute(
+                "CREATE TABLE values_index (id TEXT PRIMARY KEY,value TEXT) WITHOUT ROWID"
+            )
+            self._database.executemany(
+                "INSERT INTO values_index VALUES (?,?)",
+                ((key, self._encode(value)) for key, value in rows),
+            )
+            self._database.commit()
+            self._lifetime = startup.pop_all()
 
     @staticmethod
     def _encode(value: FieldValue) -> str:
@@ -84,13 +80,14 @@ class ValueCache(MutableMapping[str, FieldValue]):
         with self._lock:
             return int(self._database.execute("SELECT COUNT(*) FROM values_index").fetchone()[0])
 
+    def close(self) -> None:
+        """Release temporary storage; repeated calls are safe."""
+        with self._lock:
+            self._lifetime.close()
+
     def __del__(self) -> None:
-        database = getattr(self, "_database", None)
-        if database is not None:
-            database.close()
-        directory = getattr(self, "_directory", None)
-        if directory is not None:
-            directory.cleanup()
+        if hasattr(self, "_lifetime"):
+            self.close()
 
 
 class _ValueItems(ItemsView[str, FieldValue]):

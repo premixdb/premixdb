@@ -7,16 +7,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
+from ._curation import selector
 from ._field_expr import FieldProjection, VectorField
-from ._field_ids import field_id, field_name, selector_field
+from ._field_ids import field_name, selector_field
 from ._requests import _Field
 from .v1 import dataset_pb2 as d
 from .v1 import profile_pb2 as p
 from .v1 import query_pb2 as q
 from .v1.snapshot_pb2 import SnapshotProfile as _SnapshotProfile
 
-ProfileScalar = int | float | str | bool
-ProfileSelector = (
+type ProfileScalar = int | float | str | bool
+type ProfileSelector = (
     str | _Field[int] | _Field[str] | FieldProjection | VectorField | q.FieldComparison
 )
 
@@ -130,17 +131,11 @@ def _describe_field(
     profiles: Iterable[p.FieldProfile], field: ProfileSelector
 ) -> DistributionSummary:
     """Select a published projection, raising KeyError when it is unavailable."""
-    if isinstance(field, q.FieldComparison):
-        identity = selector_field(field)
-    else:
-        identity = field_id(field if isinstance(field, str) else field.name)
-    projection = getattr(field, "projection", p.FieldDistribution.SCALAR)
-    class_name = getattr(field, "class_name", "")
-    component = (
-        (field.component if field.HasField("component") else None)
-        if isinstance(field, q.FieldComparison)
-        else getattr(field, "component_index", None)
-    )
+    selected = selector(field)
+    identity = selector_field(selected)
+    projection = selected.projection
+    class_name = selected.class_name
+    component = selected.component if selected.HasField("component") else None
     for profile in profiles:
         if profile.field != identity:
             continue
@@ -161,7 +156,7 @@ def _describe_field(
             numeric = distribution.numeric if distribution.HasField("numeric") else None
             return DistributionSummary(
                 name=field_name(identity),
-                projection=p.FieldDistribution.Projection.Name(projection),
+                projection=p.FieldDistribution.Projection.Name(distribution.projection),
                 class_name=class_name,
                 documents=profile.documents,
                 null_documents=profile.null_documents,

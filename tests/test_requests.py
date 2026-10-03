@@ -1,4 +1,4 @@
-"""Wire contracts for the pure Python SDK, independent of the Rust extension."""
+"""Typed requests remain independent of execution and internal storage schemas."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from google.protobuf.message import Message
 import premixdb
 from premixdb._protobuf import descriptor
 from premixdb.v1 import corpus_pb2 as corpora
-from premixdb.v1 import dataset_pb2 as dataset_types
 from premixdb.v1 import dataset_pb2 as datasets
 from premixdb.v1 import query_pb2 as queries
 from premixdb.v1 import snapshot_pb2 as snapshots
@@ -252,9 +251,7 @@ class RequestTests(unittest.TestCase):
             lambda: premixdb.concat(drop_remainder=False),
             lambda: premixdb.concat(pad_token=0),
             lambda: premixdb.concat(separator=True),
-            lambda: premixdb.dataset(
-                b"q" * 32, tokenizer=dataset_types.Tokenizer(), sequence_length=1
-            ),
+            lambda: premixdb.dataset(b"q" * 32, tokenizer=datasets.Tokenizer(), sequence_length=1),
             lambda: premixdb.dataset(
                 b"q" * 32, tokenizer=premixdb.byte_tokenizer(), sequence_length=0
             ),

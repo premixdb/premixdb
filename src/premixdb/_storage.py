@@ -7,7 +7,8 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import RLock
-from typing import TypedDict
+from types import TracebackType
+from typing import Self, TypedDict
 from urllib.parse import unquote, urlsplit
 
 from blake3 import blake3
@@ -17,8 +18,6 @@ from .v1.storage_pb2 import SpanRef
 
 class _ReaderState(TypedDict):
     local_root: Path | None
-    _pid: int
-    _pool: None
 
 
 class RangeReader:
@@ -31,13 +30,21 @@ class RangeReader:
         self._pool: ThreadPoolExecutor | None = None
 
     def __getstate__(self) -> _ReaderState:
-        return _ReaderState(local_root=self.local_root, _pid=self._pid, _pool=None)
+        return _ReaderState(local_root=self.local_root)
 
     def __setstate__(self, state: _ReaderState) -> None:
-        self.local_root = state["local_root"]
-        self._pool = None
-        self._lock = RLock()
-        self._pid = os.getpid()
+        RangeReader.__init__(self, local_root=state["local_root"])
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def _after_fork(self) -> None:
         if os.getpid() != self._pid:
@@ -68,7 +75,7 @@ class RangeReader:
             if not path.is_relative_to(self.local_root):
                 raise ValueError("object range escapes the local storage root")
             with path.open("rb") as stream:
-                if path.stat().st_size != object.size_bytes:
+                if os.fstat(stream.fileno()).st_size != object.size_bytes:
                     raise ValueError("object size changed")
                 stream.seek(span.start)
                 data = stream.read(size)
@@ -128,8 +135,13 @@ class RangeReader:
             merged = SpanRef(object=group[0][1].object, start=start, end=end)
             data = self._read_bytes(merged)
             values = []
+            verified: dict[tuple[int, int, bytes], bytes] = {}
             for index, span in group:
-                value = self._verified(span, data[span.start - start : span.end - start])
+                key = span.start, span.end, span.blake3_digest
+                value = verified.get(key)
+                if value is None:
+                    value = self._verified(span, data[span.start - start : span.end - start])
+                    verified[key] = value
                 values.append((index, value))
             return values
 
@@ -141,7 +153,7 @@ class RangeReader:
                     self._pool = ThreadPoolExecutor(
                         max_workers=4, thread_name_prefix="premixdb-reads"
                     )
-            fetched = self._pool.map(fetch, tasks)
+                fetched = self._pool.map(fetch, tasks)
         else:
             fetched = map(fetch, tasks)
         result = [b""] * len(spans)
@@ -152,6 +164,8 @@ class RangeReader:
 
     def close(self) -> None:
         """Release optional IO threads; stored references remain independently readable."""
-        if self._pool is not None:
-            self._pool.shutdown(wait=True)
-            self._pool: ThreadPoolExecutor | None = None
+        self._after_fork()
+        with self._lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=True)

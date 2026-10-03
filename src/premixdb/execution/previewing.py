@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Iterable
+from itertools import islice
+from typing import TYPE_CHECKING, Iterable, Sequence
 
 from .._protobuf import parse
-from .._typing import json_object, load_json
-from ..engine.curation import RetainedDocument
-from ..engine.queries import Row
-from ..engine.snapshots import StoredDocument, _decode_document
+from .._typing import Interval, json_object, load_json
+from ..engine.snapshots import _decode_document
 from .storage import ObjectStore
 
 if TYPE_CHECKING:
+    from ..engine.contracts import DocumentRecord
+    from ..engine.queries import Row
     from .catalog_reader import Catalog
 
 from blake3 import blake3
@@ -26,7 +26,33 @@ from ..v1 import status_pb2 as status
 SHARD_BYTES = 1024 * 1024
 
 
+def bounded_text(store: ObjectStore, row: Row, width: int) -> tuple[str, bool]:
+    """Read a verified text prefix, including any retained source ranges."""
+    from .selections import stored_selection
+
+    source, ranges = stored_selection(row)
+    return _text(store, source, width, ranges)
+
+
+def inline(
+    store: ObjectStore, preview: q.QueryPreview | s.SnapshotPreview, rows: Iterable[Row]
+) -> None:
+    """Fill the first ten examples using only the frames needed for their prefix."""
+    for row in islice(rows, 10):
+        text, truncated = bounded_text(store, row, 1024)
+        preview.documents.add(
+            id=bytes.fromhex(row.id),
+            text=text,
+            truncated=truncated,
+            source_key=row.source_key,
+            corpus_id=bytes.fromhex(row.corpus_id),
+            ordinal=row.ordinal,
+        )
+
+
 def publish(store: ObjectStore, kind: str, identity: bytes, rows: Iterable[Row]) -> None:
+    from .selections import selection_record
+
     index, shard = d.DocumentIndex(resource_id=identity), d.SelectionShard()
     size = 0
 
@@ -41,22 +67,7 @@ def publish(store: ObjectStore, kind: str, identity: bytes, rows: Iterable[Row])
         shard.Clear()
 
     for row in rows:
-        original = (
-            row.document.original if isinstance(row.document, RetainedDocument) else row.document
-        )
-        if not isinstance(original, StoredDocument):
-            raise ValueError("previews require stored document frames")
-        ranges = getattr(row.document, "source_ranges", None)
-        record = d.SelectedDocument(
-            document_id=bytes.fromhex(row.id),
-            corpus_id=bytes.fromhex(row.corpus_id),
-            source_record=json.dumps(
-                original.record, sort_keys=True, separators=(",", ":")
-            ).encode(),
-            transformed=ranges is not None,
-        )
-        if ranges is not None:
-            record.ranges.extend(d.ByteRange(start=a, end=b) for a, b in ranges)
+        record = selection_record(row)
         width = record.ByteSize() + 10
         if shard.rows and size + width > SHARD_BYTES:
             flush()
@@ -68,11 +79,13 @@ def publish(store: ObjectStore, kind: str, identity: bytes, rows: Iterable[Row])
     store.save(kind, identity, index, suffix=".preview-index")
 
 
-def _text(store: ObjectStore, record: d.SelectedDocument, width: int) -> tuple[str, bool]:
-    source = _decode_document(json_object(load_json(record.source_record)))
-    intervals = (
-        [(r.start, r.end) for r in record.ranges] if record.transformed else [(0, source["bytes"])]
-    )
+def _text(
+    store: ObjectStore,
+    source: DocumentRecord,
+    width: int,
+    ranges: Sequence[Interval] | None = None,
+) -> tuple[str, bool]:
+    intervals = list(ranges) if ranges is not None else [(0, source["bytes"])]
     if any(
         not 0 <= a < b <= source["bytes"] or i and intervals[i - 1][1] > a
         for i, (a, b) in enumerate(intervals)
@@ -83,35 +96,42 @@ def _text(store: ObjectStore, record: d.SelectedDocument, width: int) -> tuple[s
         return "", any(a < b for a, b in intervals)
     chunks: list[str] = []
     characters, cursor = 0, 0
+    selected = iter(intervals)
+    interval = next(selected, None)
     for frame in source["frames"]:
         first, end = cursor, cursor + frame["bytes"]
         cursor = end
-        slices = [
-            (max(first, a) - first, min(end, b) - first)
-            for a, b in intervals
-            if a < end and b > first
-        ]
-        if not slices:
+        while interval is not None and interval[1] <= first:
+            interval = next(selected, None)
+        if interval is None:
+            break
+        if interval[0] >= end:
             continue
         digest = bytes(frame["digest"])
         data = store._get("snapshot/objects/" + digest.hex(), frame["bytes"])
         if len(data) != frame["bytes"] or blake3(data).digest() != digest:
             raise ValueError("preview frame integrity check failed")
-        for a, b in slices:
-            value = data[a:b].decode("utf-8")
+        while interval is not None and interval[0] < end:
+            a, b = interval
+            value = data[max(first, a) - first : min(end, b) - first].decode("utf-8")
             needed = width + 1 - characters
             chunks.append(value[:needed])
             characters += min(needed, len(value))
             if characters > width:
                 return "".join(chunks)[:width], True
+            if b > end:
+                break
+            interval = next(selected, None)
     return "".join(chunks), False
 
 
 def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
-    limit = request.limit if request.HasField("limit") else 3
-    width = request.max_characters if request.HasField("max_characters") else 1024
-    if limit > 1000 or width > 1_000_000:
-        raise ValueError("preview supports at most 1000 documents and 1,000,000 characters")
+    limit, offset, width = _requests._preview_options(
+        request.limit if request.HasField("limit") else 3,
+        request.offset,
+        request.max_characters if request.HasField("max_characters") else 1024,
+        unit="documents",
+    )
     kind = request.WhichOneof("input")
     if kind is None:
         raise ValueError("preview requires a snapshot or query ID")
@@ -129,11 +149,11 @@ def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
         else resource.profile.documents
     )
     result = q.PreviewResponse()
-    if not limit or request.offset >= count:
+    if not limit or offset >= count:
         return result
-    end = min(request.offset + limit, count)
+    end = min(offset + limit, count)
     if width <= 1024 and end <= len(resource.preview.documents):
-        for doc in resource.preview.documents[request.offset : end]:
+        for doc in resource.preview.documents[offset:end]:
             item = result.preview.documents.add(
                 id=doc.id,
                 text=doc.text,
@@ -155,7 +175,7 @@ def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
         if chunk.first != cursor or not chunk.count:
             raise ValueError("preview index is incomplete or out of order")
         cursor += chunk.count
-        if chunk.first >= end or cursor <= request.offset:
+        if chunk.first >= end or cursor <= offset:
             continue
         try:
             data = store.read_object(namespace, chunk.object)
@@ -164,10 +184,11 @@ def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
         rows = parse(d.SelectionShard, data).rows
         if len(rows) != chunk.count:
             raise ValueError("preview shard coverage differs")
-        for ordinal in range(max(request.offset, chunk.first), min(end, cursor)):
+        for ordinal in range(max(offset, chunk.first), min(end, cursor)):
             row = rows[ordinal - chunk.first]
             source = _decode_document(json_object(load_json(row.source_record)))
-            text, truncated = _text(store, row, width)
+            ranges = [(r.start, r.end) for r in row.ranges] if row.transformed else None
+            text, truncated = _text(store, source, width, ranges)
             item = result.preview.documents.add(
                 id=row.document_id,
                 corpus_id=row.corpus_id,
@@ -181,6 +202,6 @@ def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
                 raise ValueError(
                     "preview exceeds the response limit; reduce limit or max_characters"
                 )
-    if cursor != count or len(result.preview.documents) != end - request.offset:
+    if cursor != count or len(result.preview.documents) != end - offset:
         raise ValueError("preview index is incomplete")
     return result

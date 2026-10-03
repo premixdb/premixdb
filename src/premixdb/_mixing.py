@@ -1,4 +1,4 @@
-"""Serializable mixture policies. These objects never read or process corpus data."""
+"""Serializable mixture policies and exact budget allocation."""
 
 from __future__ import annotations
 
@@ -6,11 +6,24 @@ import json
 import math
 import sys
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Mapping, Sequence
 
 from ._protobuf import parse
 from ._typing import FieldValue
 from .v1 import dataset_pb2 as datasets
+
+
+def allocations(weights: Mapping[str, int | float], budget: int) -> dict[str, int]:
+    """Exact largest remainders; label order breaks ties and zero weights stay zero."""
+    values = {key: Fraction(value) for key, value in sorted(weights.items())}
+    total = sum(values.values())
+    quotas = {key: value * budget / total for key, value in values.items()}
+    counts = {key: int(value) for key, value in quotas.items()}
+    order = sorted(quotas, key=lambda key: (-(quotas[key] - counts[key]), key))
+    for key in order[: budget - sum(counts.values())]:
+        counts[key] += 1
+    return counts
 
 
 def _domain_key(labels: Sequence[FieldValue]) -> str:

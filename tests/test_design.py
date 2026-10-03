@@ -6,10 +6,10 @@ import gc
 import tempfile
 import unittest
 import weakref
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 from _type_support import coordinator
 
@@ -21,6 +21,7 @@ from premixdb.engine import datasets as engine_datasets
 from premixdb.engine import execution
 from premixdb.engine import queries as engine_query
 from premixdb.engine.plans import external_filter, filter
+from premixdb.enrichment import DupekitIndex
 from premixdb.enrichment.types import ComputedRow, Document, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.execution import catalog, enrichment
@@ -83,6 +84,25 @@ class CoreDesignTests(unittest.TestCase):
                     dataset.reader(topology=direct.Topology()).checkpoint(),
                     dict(local_dataset.reader().checkpoint(), dataset=dataset.id),
                 )
+
+    def test_local_file_inventory_matches_between_adapters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "inputs"
+            (inputs / "nested").mkdir(parents=True)
+            (inputs / "unused").mkdir()
+            (inputs / "z.txt").write_bytes("é\r\n".encode())
+            (inputs / "nested/a.txt").write_bytes(b"")
+            native = direct.PremixDB(storage=root / "direct").corpus("files")
+            with premixdb.PremixDB(storage=root / "sdk") as db:
+                for path in (inputs, inputs / "z.txt"):
+                    local_snapshot = native.snapshot(source=path)
+                    snapshot = db.corpus("files", path)
+                    self.assertEqual(_decode_id(snapshot.id).hex(), local_snapshot.id)
+                    self.assertEqual(
+                        {row["source_key"]: row["text"] for row in snapshot.preview()},
+                        {row.source_key: row.text for row in local_snapshot.query().rows()},
+                    )
 
     def test_published_stream_matches_in_memory_packing_across_shards(self) -> None:
         with (
@@ -176,6 +196,22 @@ class CoreDesignTests(unittest.TestCase):
         self.assertNotIn("a", first)
         self.assertLessEqual(cache.used_bytes, cache.max_bytes)
 
+    def test_cache_views_keep_entries_during_other_namespace_eviction(self) -> None:
+        for items in (False, True):
+            with self.subTest(items=items):
+                cache = MemoryCache(1800)
+                first: MutableMapping[str, bytearray] = cache.namespace("first")
+                second: MutableMapping[str, bytearray] = cache.namespace("second")
+                a, b = bytearray(b"a" * 500), bytearray(b"b" * 500)
+                first["a"], first["b"] = a, b
+                view = iter(first.items() if items else first.values())
+                self.assertEqual(next(view), ("a", a) if items else a)
+                self.assertIs(first["a"], a)  # Keep a warm so the other namespace evicts b.
+                second["c"] = bytearray(500)
+                self.assertNotIn("b", first)
+                self.assertEqual(list(view), [("b", b)] if items else [b])
+                self.assertLessEqual(cache.used_bytes, cache.max_bytes)
+
 
 class IndependentWorker:
     cache_scope = "document"
@@ -191,6 +227,45 @@ class IndependentWorker:
 
 
 class DerivationReuseTests(unittest.TestCase):
+    def test_duplicate_worker_names_fail_before_computation_or_publication(self) -> None:
+        for index in (False, True):
+            for empty in (False, True):
+                with (
+                    self.subTest(index=index, empty=empty),
+                    tempfile.TemporaryDirectory() as directory,
+                    premixdb.PremixDB(storage=directory) as client,
+                ):
+                    snapshot = client.corpus(
+                        "duplicate-schema", [] if empty else [premixdb.Source("a", "text")]
+                    )
+                    service = coordinator(client)
+                    worker = DupekitIndex() if index else IndependentWorker()
+                    schemas = worker.indexes if isinstance(worker, DupekitIndex) else worker.fields
+                    spec = schemas[0]
+                    request = catalog.plan(
+                        [_decode_id(snapshot.id)],
+                        spec.name,
+                        bytes.fromhex(_runtime.current_code().commit),
+                        index=index,
+                    )
+                    with (
+                        patch.object(enrichment, "producer", return_value=worker),
+                        patch.object(
+                            type(worker),
+                            "indexes" if index else "fields",
+                            new_callable=PropertyMock,
+                            return_value=(spec, spec),
+                        ),
+                        patch.object(type(worker), "compute") as compute,
+                        patch.object(service._storage, "put", wraps=service._storage.put) as put,
+                        patch.object(service._storage, "save", wraps=service._storage.save) as save,
+                    ):
+                        with self.assertRaisesRegex(ValueError, "duplicate enrichment"):
+                            enrichment.build(service, request)
+                    compute.assert_not_called()
+                    put.assert_not_called()
+                    save.assert_not_called()
+
     def test_overlapping_unions_and_differentials_only_compute_missing_documents(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -338,32 +413,49 @@ class MaterializationLifecycleTests(unittest.TestCase):
             self.assertEqual(client._dataset(id)[0].tokens, list(b"ab"))
             self.assertEqual(len(service._submissions), 0)
 
-    def test_dataset_deadline_includes_submission_and_fetch(self) -> None:
+    def test_materialization_deadline_includes_submission_and_fetch(self) -> None:
         from types import SimpleNamespace
 
         from premixdb import _resources
         from premixdb.v1 import dataset_pb2 as pb
+        from premixdb.v1 import query_pb2 as query_pb
         from premixdb.v1 import status_pb2 as status
 
-        pending = pb.Dataset(id=b"d" * 32, status=status.STATUS_PENDING)
-        completed = pb.Dataset(id=pending.id, status=status.STATUS_COMPLETED)
-        client = Mock(_timeout=1.0, _poll_interval=0.1, _read_only=False, _progress_enabled=False)
-        client._submit.return_value = SimpleNamespace(id=pending.id)
-        client._get.return_value = completed
-        dataset = _resources.Dataset(client, pending)
-        with patch.object(_resources.time, "monotonic", side_effect=[0.0, 0.8]):
-            dataset.wait(timeout=1.0)
-        client._submit.assert_called_once()
-        self.assertEqual(client._submit.call_args.kwargs["timeout"], 1.0)
-        self.assertAlmostEqual(client._get.call_args.kwargs["timeout"], 0.2)
-        self.assertIs(dataset.status, premixdb.ExecutionStatus.COMPLETED)
+        for pending in (
+            query_pb.Query(id=b"q" * 32, status=status.STATUS_PENDING),
+            pb.Dataset(id=b"d" * 32, status=status.STATUS_PENDING),
+        ):
+            kind = type(pending).__name__
+            with self.subTest(kind=kind):
+                completed = type(pending)(id=pending.id, status=status.STATUS_COMPLETED)
+                client = Mock(
+                    _timeout=1.0, _poll_interval=0.1, _read_only=False, _progress_enabled=False
+                )
+                client._submit.return_value = SimpleNamespace(id=pending.id)
+                client._get.return_value = completed
+                resource = (
+                    _resources.Query(client, pending)
+                    if isinstance(pending, query_pb.Query)
+                    else _resources.Dataset(client, pending)
+                )
+                with patch.object(_resources.time, "monotonic", side_effect=[0.0, 0.8]):
+                    resource.wait(timeout=1.0)
+                client._submit.assert_called_once()
+                self.assertEqual(client._submit.call_args.kwargs["timeout"], 1.0)
+                self.assertAlmostEqual(client._get.call_args.kwargs["timeout"], 0.2)
+                self.assertEqual(client._get.call_args.args, (kind, pending.id))
+                self.assertIs(resource.status, premixdb.ExecutionStatus.COMPLETED)
 
-        client.reset_mock()
-        dataset = _resources.Dataset(client, pending)
-        with patch.object(_resources.time, "monotonic", side_effect=[0.0, 1.1]):
-            with self.assertRaises(TimeoutError):
-                dataset.wait(timeout=1.0)
-        client._get.assert_not_called()
+                client.reset_mock()
+                resource = (
+                    _resources.Query(client, pending)
+                    if isinstance(pending, query_pb.Query)
+                    else _resources.Dataset(client, pending)
+                )
+                with patch.object(_resources.time, "monotonic", side_effect=[0.0, 1.1]):
+                    with self.assertRaisesRegex(TimeoutError, f"waiting for {kind.lower()}"):
+                        resource.wait(timeout=1.0)
+                client._get.assert_not_called()
 
     def test_failed_query_survives_zero_cache_and_restart_until_explicit_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

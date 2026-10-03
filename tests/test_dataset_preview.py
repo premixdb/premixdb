@@ -2,28 +2,35 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 from _type_support import (
     PreviewOptions,
+    tokenizer_packing,
+    wordpiece_tokenizer,
 )
 
 import premixdb as p
-from premixdb._policies import ByteTokenizer as BytePolicy
+from premixdb._sequences import Sequence
 from premixdb.v1 import dataset_pb2 as dataset_pb
 
 
-@pytest.mark.parametrize("tokenizer", [None, p.ByteTokenizer()])
+@pytest.mark.parametrize(
+    "tokenizer", [wordpiece_tokenizer(), p.ByteTokenizer()], ids=["wordpiece", "bytes"]
+)
 def test_dataset_preview_materializes_and_reuses_inline_examples(
-    tmp_path: Path, tokenizer: dataset_pb.Tokenizer | BytePolicy
+    tmp_path: Path, tokenizer: dataset_pb.Tokenizer
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
             db.corpus("preview", [p.Source("a", "Hello world.\n" * 6)])
             .query()
-            .dataset(tokenizer=tokenizer, sequence_length=8)
+            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
         )
         assert dataset.status is p.ExecutionStatus.PENDING
         examples = dataset.preview()
@@ -42,23 +49,50 @@ def test_dataset_preview_materializes_and_reuses_inline_examples(
             assert dataset.preview() == examples
 
 
-@pytest.mark.parametrize("tokenizer", [None, p.ByteTokenizer()])
+@pytest.mark.parametrize(
+    "tokenizer", [wordpiece_tokenizer(), p.ByteTokenizer()], ids=["wordpiece", "bytes"]
+)
 def test_dataset_preview_pages_across_sequence_index_pages_after_reopening(
-    tmp_path: Path, tokenizer: dataset_pb.Tokenizer | BytePolicy
+    tmp_path: Path, tokenizer: dataset_pb.Tokenizer
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
             db.corpus(
                 "preview",
-                [p.Source("a", ("a" if tokenizer is not None else " hello") * (131 * 8 - 1))],
+                [
+                    p.Source(
+                        "a",
+                        ("hello " if tokenizer.HasField("hugging_face") else "a") * (131 * 8 - 1),
+                    )
+                ],
             )
             .query()
-            .dataset(tokenizer=tokenizer, sequence_length=8)
+            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
             .wait()
         )
         assert len(dataset) == 131
         expected = [dataset[index] for index in range(127, 131)]
-        examples = dataset.preview(limit=4, offset=127)
+        with (
+            patch.object(
+                Sequence,
+                "tokens",
+                new_callable=PropertyMock,
+                side_effect=AssertionError("expanded tokens"),
+            ),
+            patch.object(
+                Sequence,
+                "mask",
+                new_callable=PropertyMock,
+                side_effect=AssertionError("expanded mask"),
+            ),
+            patch.object(
+                Sequence,
+                "attention_mask",
+                new_callable=PropertyMock,
+                side_effect=AssertionError("expanded attention mask"),
+            ),
+        ):
+            examples = dataset.preview(limit=4, offset=127)
         for example, sequence in zip(examples, expected, strict=True):
             assert example["ordinal"] == sequence.ordinal
             assert example["tokens"] == sequence.tokens
@@ -72,6 +106,48 @@ def test_dataset_preview_pages_across_sequence_index_pages_after_reopening(
             "premixdb.execution.coordinator.Coordinator", side_effect=AssertionError("compute")
         ):
             assert db._dataset(dataset_id).preview(limit=4, offset=127) == examples
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "tokenizer", [wordpiece_tokenizer(), p.ByteTokenizer()], ids=["wordpiece", "bytes"]
+)
+def test_read_only_paged_preview_does_not_import_packing_code(
+    tmp_path: Path, tokenizer: dataset_pb.Tokenizer
+) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        dataset = (
+            db.corpus("preview", [p.Source("a", " hello" * 96)])
+            .query()
+            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
+        )
+        expected = dataset.preview(limit=1, offset=10)
+        assert expected
+        dataset_id = dataset.id
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import sys
+
+sys.modules["premixdb.execution.tokens"] = None
+sys.modules["premixdb.engine.datasets"] = None
+import premixdb as p
+
+with p.PremixDB(storage=sys.argv[1], read_only=True) as db:
+    print(json.dumps(db._dataset(sys.argv[2]).preview(limit=1, offset=10)))
+""",
+            str(tmp_path),
+            dataset_id,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert json.loads(result.stdout) == expected
 
 
 def test_preview_includes_unicode_separators_padding_and_truncation(tmp_path: Path) -> None:
@@ -112,15 +188,23 @@ def test_preview_includes_unicode_separators_padding_and_truncation(tmp_path: Pa
         dict(max_characters=1_000_001),
     ],
 )
+@pytest.mark.parametrize("kind", ["snapshot", "query", "dataset"])
 def test_invalid_preview_options_fail_before_materializing(
-    tmp_path: Path, options: PreviewOptions
+    tmp_path: Path, options: PreviewOptions, kind: str
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        dataset = db.corpus("preview", [p.Source("a", "hello")]).query().dataset()
-        with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
+        snapshot = db.corpus("preview", [p.Source("a", "hello")])
+        resource = (
+            snapshot
+            if kind == "snapshot"
+            else snapshot.query()
+            if kind == "query"
+            else snapshot.query().dataset()
+        )
+        with patch.object(type(resource), "wait", side_effect=AssertionError("started execution")):
             with pytest.raises(ValueError):
-                dataset.preview(**options)
-            assert dataset.preview(limit=0) == []
+                resource.preview(**options)
+            assert resource.preview(limit=0) == []
 
 
 def test_empty_dataset_preview_is_empty(tmp_path: Path) -> None:

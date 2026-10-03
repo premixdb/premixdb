@@ -6,7 +6,7 @@ Raw request builders and generated premixdb.v1 messages describe saved recipes.
 
 from ._curation import decontaminate, sample, similarity_dedupe
 from ._enums import DedupeAlgorithm, ExecutionStatus, IntrinsicField, RemovalUnit
-from ._inputs import HuggingFaceSource
+from ._inputs import HuggingFaceSource, Source
 from ._mixing import Bounds, RegMixSampler, Tokens
 from ._policies import DecontaminateDefault, SamplerDefault
 from ._profiles import DistributionSummary, HistogramBucket, QuantileRange
@@ -41,7 +41,6 @@ from ._resources import (
     PremixDB,
     Query,
     Snapshot,
-    Source,
     Topology,
 )
 from ._storage import RangeReader

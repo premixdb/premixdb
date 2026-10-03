@@ -7,16 +7,17 @@ Processors own kernel semantics; this module owns engine and artifact integrity.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from enum import Enum
+from io import BytesIO
 from pathlib import Path
-from tempfile import NamedTemporaryFile, TemporaryDirectory
-from typing import BinaryIO, Callable
+from tempfile import TemporaryDirectory
+from typing import BinaryIO, Callable, Iterable, Iterator
 from urllib.parse import unquote, urlsplit
 
 from blake3 import blake3
 
+from .._files import publish
 from .._typing import JSON, json_object, json_string, load_json
 
 CONTROL_LIMIT = 1024 * 1024
@@ -131,6 +132,11 @@ class PartitionStore:
     def verify(self, artifact: Artifact) -> None:
         self._copy_verified(artifact)
 
+    def read(self, artifact: Artifact) -> bytes:
+        with BytesIO() as target:
+            self._copy_verified(artifact, target)
+            return target.getvalue()
+
     def download(self, artifact: Artifact, path: str | Path | None = None) -> None:
         if path is None:
             self._copy_verified(artifact)
@@ -138,34 +144,26 @@ class PartitionStore:
         with Path(path).open("wb") as target:
             self._copy_verified(artifact, target)
 
+    def _publish(self, uri: str, chunks: Iterable[bytes]) -> Artifact:
+        digest = blake3()
+
+        def hashed() -> Iterator[bytes]:
+            for data in chunks:
+                digest.update(data)
+                yield data
+
+        created = publish(_path(uri), hashed())
+        artifact = Artifact(uri, digest.digest())
+        if not created:
+            self.verify(artifact)
+        return artifact
+
     def publish_file(self, uri: str, path: str | Path) -> Artifact:
-        destination = _path(uri)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        # Hash the staged bytes and publish with a link so readers never see a partial file.
-        with NamedTemporaryFile(dir=destination.parent, delete=False) as temporary:
-            staging = Path(temporary.name)
-            try:
-                digest = blake3()
-                with Path(path).open("rb") as source:
-                    while data := source.read(CHUNK_SIZE):
-                        digest.update(data)
-                        temporary.write(data)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-                artifact = Artifact(uri, digest.digest())
-                try:
-                    os.link(staging, destination)
-                except FileExistsError:
-                    # Identical retries/races are safe; never overwrite conflicting bytes.
-                    self.verify(artifact)
-                descriptor = os.open(destination.parent, os.O_RDONLY)
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-                return artifact
-            finally:
-                staging.unlink(missing_ok=True)
+        with Path(path).open("rb") as source:
+            return self._publish(uri, iter(lambda: source.read(CHUNK_SIZE), b""))
+
+    def publish_bytes(self, uri: str, data: bytes) -> Artifact:
+        return self._publish(uri, (data,))
 
     def receipt_uri(self, task: PartitionTask) -> str:
         return self.root + "/receipts/" + task.key.hex() + ".json"
@@ -215,10 +213,7 @@ class PartitionStore:
         ).encode()
         if len(data) > CONTROL_LIMIT:
             raise IntegrityError("partition completion record exceeds 1 MiB")
-        with NamedTemporaryFile() as temporary:
-            temporary.write(data)
-            temporary.flush()
-            self.publish_file(self.receipt_uri(task), temporary.name)
+        self.publish_bytes(self.receipt_uri(task), data)
         return receipt
 
 

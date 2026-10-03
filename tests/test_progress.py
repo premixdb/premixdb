@@ -14,7 +14,6 @@ import pytest
 from _type_support import coordinator, invalid_call
 
 import premixdb as p
-import premixdb as sdk
 from premixdb._progress import operation
 from premixdb.v1 import dataset_pb2 as dataset_pb
 from premixdb.v1 import query_pb2 as query_pb
@@ -146,7 +145,7 @@ def test_capture_and_dataset_profiles_report_blocking_work(
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
 
-        def sources() -> Iterator[sdk.Source]:
+        def sources() -> Iterator[p.Source]:
             output.reset()
             assert output.first.wait(timeout=3)
             yield p.Source("a", "hello")

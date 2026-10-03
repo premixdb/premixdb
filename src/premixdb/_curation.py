@@ -2,24 +2,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, Literal
-
-from ._policies import ByteTokenizer
-from ._protobuf import parse
-from .v1 import dataset_pb2 as datasets
-
-if TYPE_CHECKING:
-    from ._resources import Snapshot
-
-
-from typing import Mapping, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Iterable, Literal, Mapping, Protocol, runtime_checkable
 
 from ._field_expr import FieldProjection, VectorField
 from ._field_ids import field_id
+from ._policies import ByteTokenizer
+from ._protobuf import copy_message
 from ._requests import _Field, _id, _uint
-from .fields import ContentType, Language, Topic
+from .fields import ContentType, Language, Topic, content_type, language, topic
+from .v1 import dataset_pb2 as datasets
 from .v1 import query_pb2 as q
 from .v1.storage_pb2 import ObjectRef
+
+if TYPE_CHECKING:
+    from ._resources import Snapshot
 
 
 @runtime_checkable
@@ -44,11 +40,9 @@ type FieldSelector = (
 
 def selector(field: FieldSelector) -> q.FieldComparison:
     if isinstance(field, q.FieldComparison):
-        return parse(q.FieldComparison, field.SerializeToString())
+        return copy_message(field)
     if isinstance(field, _Field):
         return q.FieldComparison(field=field_id(field.name), projection=q.FieldComparison.SCALAR)
-    from .fields import ContentType, Language, Topic, content_type, language, topic
-
     if field is Topic:
         field = topic.label
     elif field is ContentType:
@@ -64,16 +58,12 @@ def selector(field: FieldSelector) -> q.FieldComparison:
     name = field if isinstance(field, str) else field.name
     if not isinstance(name, str):
         raise TypeError("expected a field projection with a string name")
-    result = q.FieldComparison(
-        field=field_id(name),
-        projection=field.projection
-        if isinstance(field, FieldProjection)
-        else q.FieldComparison.SCALAR,
-        class_name=field.class_name if isinstance(field, FieldProjection) else "",
-    )
-    component = field.component_index if isinstance(field, FieldProjection) else None
-    if component is not None:
-        result.component = component
+    result = q.FieldComparison(field=field_id(name), projection=q.FieldComparison.SCALAR)
+    if isinstance(field, FieldProjection):
+        result.projection = field.projection
+        result.class_name = field.class_name
+        if field.component_index is not None:
+            result.component = field.component_index
     return result
 
 

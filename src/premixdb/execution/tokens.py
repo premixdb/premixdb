@@ -4,44 +4,57 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterable, Mapping, Sequence
+from typing import Iterator, Mapping
 
-from ..engine.contracts import Provenance
-from ..engine.datasets import Dataset, HuggingFaceTokenizer
+from .._sequences import INDEX_PAGE_SIZE, decode_preview
+from ..engine.contracts import Provenance, SourceRange
+from ..engine.datasets import Dataset, HuggingFaceTokenizer, Sequence
 from ..v1 import dataset_pb2 as datasets
 from ..v1.storage_pb2 import ObjectProfile, SpanProfile, SpanRef
 from .storage import ObjectStore
 
 
-def decode_preview(
-    tokens: Sequence[int],
-    regions: Iterable[datasets.TokenRegion],
-    tokenizer: HuggingFaceTokenizer | None = None,
-) -> str:
-    if tokenizer is not None:
-        return tokenizer.decode(list(tokens))
-    text = []
-    for region in regions:
-        values = tokens[region.start : region.end]
-        if not values:
-            continue
-        if region.kind == datasets.TokenRegion.KIND_CONTENT:
-            text.append(bytes(values).decode("utf-8", errors="replace"))
-        else:
-            label = "separator" if region.kind == datasets.TokenRegion.KIND_SEPARATOR else "padding"
-            text.append(f"<{label}:{values[0]} ×{len(values)}>")
-    return "".join(text)
+def _regions(handle: Dataset, sequence: Sequence) -> Iterator[datasets.TokenRegion]:
+    ranges: dict[int, list[SourceRange]] = {}
+    for source in sequence.source_ranges:
+        ranges.setdefault(source["occurrence"], []).append(source)
+    kinds = {
+        "content": datasets.TokenRegion.KIND_CONTENT,
+        "separator": datasets.TokenRegion.KIND_SEPARATOR,
+        "padding": datasets.TokenRegion.KIND_PADDING,
+    }
+    for span in sequence.spans:
+        region = datasets.TokenRegion(
+            start=span["start"], end=span["end"], kind=kinds[span["kind"]]
+        )
+        if span["kind"] != "padding":
+            occurrence = span["occurrence"]
+            region.query_ordinal = occurrence
+            region.document_id = bytes.fromhex(handle.occurrence_document(occurrence))
+            region.document_token_start = span.get("offset", 0)
+            if span["kind"] == "content":
+                region.source_ranges.extend(
+                    datasets.TokenByteRange(
+                        token=source["token"],
+                        token_end=source["token_end"],
+                        start=source["start"],
+                        end=source["end"],
+                    )
+                    for source in ranges.get(occurrence, ())
+                    if span["start"] <= source["token"] < span["end"]
+                )
+        yield region
 
 
 def publish(
     store: ObjectStore,
     handle: Dataset,
-    sequence_length: int,
     *,
     profile: datasets.DatasetProfile | None = None,
     lineage: Mapping[str, Provenance] | None = None,
     tokenizer: HuggingFaceTokenizer | None = None,
 ) -> tuple[list[SpanRef], list[SpanRef], datasets.DatasetPreview]:
+    sequence_length = handle.plan.packing.length
     batch = datasets.SequenceBatch()
     batches: list[SpanRef] = []
     token_spans: list[SpanRef] = []
@@ -109,31 +122,7 @@ def publish(
                         ),
                     ),
                 )
-                for span in native.spans:
-                    kind = {
-                        "content": datasets.TokenRegion.KIND_CONTENT,
-                        "separator": datasets.TokenRegion.KIND_SEPARATOR,
-                        "padding": datasets.TokenRegion.KIND_PADDING,
-                    }[span["kind"]]
-                    region = seq.regions.add(start=span["start"], end=span["end"], kind=kind)
-                    if span["kind"] != "padding":
-                        region.query_ordinal = span["occurrence"]
-                        region.document_id = bytes.fromhex(
-                            handle.occurrence_document(span["occurrence"])
-                        )
-                        region.document_token_start = span.get("offset", 0)
-                        if span["kind"] == "content":
-                            region.source_ranges.extend(
-                                datasets.TokenByteRange(
-                                    token=r["token"],
-                                    start=r["start"],
-                                    end=r["end"],
-                                    token_end=r["token_end"],
-                                )
-                                for r in native.source_ranges
-                                if r["occurrence"] == span["occurrence"]
-                                and span["start"] <= r["token"] < span["end"]
-                            )
+                seq.regions.extend(_regions(handle, native))
                 if profile is not None:
                     documents = {r.document_id for r in seq.regions if r.document_id}
                     geometry[len(documents)] = geometry.get(len(documents), 0) + 1
@@ -144,10 +133,10 @@ def publish(
                                 source_tokens.get(corpus, 0) + region.end - region.start
                             )
                 if native.ordinal < 10:
-                    mask_preview = [int(v) for v in native.mask[:256]]
+                    tokens_preview, mask_preview = native._preview(256)
                     example = preview.sequences.add(
                         ordinal=native.ordinal,
-                        tokens=native.tokens[:256],
+                        tokens=tokens_preview,
                         attention_mask=mask_preview,
                         loss_mask=mask_preview,
                         truncated=sequence_length > 256,
@@ -167,8 +156,12 @@ def publish(
                             if retained.token_end > clipped.end:
                                 retained.end -= retained.token_end - clipped.end
                                 retained.token_end = clipped.end
-                    example.text = decode_preview(example.tokens, example.regions, tokenizer)
-                if len(batch.sequences) == 128:
+                    example.text = decode_preview(
+                        example.tokens,
+                        example.regions,
+                        tokenizer.decode if tokenizer is not None else None,
+                    )
+                if len(batch.sequences) == INDEX_PAGE_SIZE:
                     flush()
         if batch.sequences:
             flush()

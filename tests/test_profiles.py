@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from collections.abc import Iterable
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from unittest.mock import patch
 
 from _type_support import coordinator
@@ -14,12 +15,11 @@ import premixdb
 from premixdb._ids import _decode_id, _public_dataset_profile
 from premixdb._policies import Concat as ConcatPolicy
 from premixdb._profiles import DistributionSummary, _describe_field
-from premixdb._typing import field_value
+from premixdb._typing import FieldValue, field_value
 from premixdb.engine.snapshots import StoredDocument
 from premixdb.enrichment.types import field
 from premixdb.execution import Coordinator
 from premixdb.execution.profiles import FieldProfiler, Histogram
-from premixdb.v1 import dataset_pb2 as dataset_pb
 from premixdb.v1 import dataset_pb2 as pb
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import profile_pb2 as p
@@ -78,6 +78,26 @@ class ProfileTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 _describe_field(self.snapshot.profile().fields, premixdb.quality.educational_value)
 
+    def test_closed_sessions_reject_new_profile_work_but_keep_cached_profiles(self) -> None:
+        query = self.snapshot.query().wait()
+        dataset = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
+        uncached = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)
+        query_profile = query.profile()
+        dataset_profile = dataset.profile()
+        snapshot_profile = self.snapshot.profile()
+        self.client.close()
+
+        for name, compute in (
+            ("query fields", lambda: query._with_fields([premixdb.text.bytes])),
+            ("dataset profile", uncached.profile),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "PremixDB is closed"):
+                    compute()
+        self.assertEqual(query.profile(), query_profile)
+        self.assertEqual(dataset.profile(), dataset_profile)
+        self.assertEqual(self.snapshot.profile(), snapshot_profile)
+
     def test_profiles_aggregate_and_reopen_without_loading_text(self) -> None:
         profile = self.snapshot.profile()
         self.assertIsInstance(profile, premixdb.SnapshotProfile)
@@ -126,20 +146,28 @@ class ProfileTests(unittest.TestCase):
         snapshot = self.corpus.snapshot(source=sources)
         captured = snapshot.profile()
         documents = coordinator(self.client)._snapshot(_decode_id(snapshot.id)).documents.values()
-        preview_ids = sorted(document.id for document in documents)[:10]
-        read_ids = set()
-        read_text = StoredDocument.text.fget
+        expected_frames = {
+            bytes(frame["digest"]).hex()
+            for document in sorted(documents, key=lambda document: document.id)[:10]
+            if isinstance(document, StoredDocument)
+            for frame in document.record["frames"]
+        }
+        read_frames = set()
+        store = coordinator(self.client)._storage
+        get = store._get
 
-        def preview_text(document: StoredDocument) -> str:
-            self.assertIn(document.id, preview_ids, "profiling read text outside the preview")
-            read_ids.add(document.id)
-            return read_text(document)
+        def preview_frame(relative: str | Path, limit: int = 64 * 1024 * 1024) -> bytes:
+            if str(relative).startswith("snapshot/objects/"):
+                digest = Path(relative).name
+                self.assertIn(digest, expected_frames, "profiling read outside the preview")
+                read_frames.add(digest)
+            return get(relative, limit)
 
         query = snapshot.query()
         self.assertEqual(query.status, premixdb.ExecutionStatus.PENDING)
-        with patch.object(StoredDocument, "text", property(preview_text)):
+        with patch.object(store, "_get", side_effect=preview_frame):
             profile = query.profile()
-        self.assertEqual(read_ids, set(preview_ids))
+        self.assertEqual(read_frames, expected_frames)
         self.assertEqual(profile.output_documents, captured.documents)
         self.assertEqual(profile.output_characters, captured.characters)
         self.assertEqual(profile.output_content_bytes, captured.content_bytes)
@@ -165,10 +193,10 @@ class ProfileTests(unittest.TestCase):
 
         def profile(
             *,
-            tokenizer: dataset_pb.Tokenizer,
+            tokenizer: pb.Tokenizer,
             sequence_length: int,
-            packing: dataset_pb.Packing | ConcatPolicy,
-        ) -> dataset_pb.DatasetProfile:
+            packing: pb.Packing | ConcatPolicy,
+        ) -> pb.DatasetProfile:
             return _public_dataset_profile(
                 coordinator(self.client)._profile_dataset(
                     premixdb.dataset(
@@ -229,6 +257,51 @@ class ProfileTests(unittest.TestCase):
 
 
 class DistributionSummaryTests(unittest.TestCase):
+    def test_grouped_occurrences_preserve_expanded_profile_bytes(self) -> None:
+        classifier = field("weborganizer.topic", width=3, classes=("a", "b", "c"))
+        sigmoid = f.Field()
+        sigmoid.CopyFrom(classifier)
+        sigmoid.classification.transform = f.PROBABILITY_TRANSFORM_SIGMOID
+        cases: list[tuple[f.Field, list[tuple[FieldValue, int]]]] = [
+            (
+                field("datatrove.n_words", element_type=f.VALUE_INT64),
+                [(2**53 + i, i % 5 + 1) for i in range(100)] + [(None, 7), (0, 0)],
+            ),
+            (
+                field("quality.educational_value", element_type=f.VALUE_FLOAT64),
+                [(i / 7, i % 5 + 1) for i in range(100)] + [(None, 7), (0, 0)],
+            ),
+            (
+                classifier,
+                [([float(i), float(i % 3), -float(i)], i % 5 + 1) for i in range(100)]
+                + [(None, 7), ([], 0)],
+            ),
+            (
+                sigmoid,
+                [([float(i), float(i % 3), -float(i)], i % 5 + 1) for i in range(100)]
+                + [(None, 7), ([], 0)],
+            ),
+            (field("embedding.harrier", width=3), [([1.0, 2.0, 3.0], 300), (None, 7)]),
+        ]
+        for spec, batches in cases:
+            with self.subTest(field=spec.name, transform=spec.classification.transform):
+                expanded, grouped = FieldProfiler(spec), FieldProfiler(spec)
+                for item, count in batches:
+                    for _ in range(count):
+                        expanded.add(item)
+                    grouped.add(item, occurrences=count)
+                self.assertEqual(
+                    grouped.proto().SerializeToString(deterministic=True),
+                    expanded.proto().SerializeToString(deterministic=True),
+                )
+                self.assertEqual(grouped.proto().documents, 307)
+                self.assertEqual(grouped.proto().null_documents, 7)
+        profiler = FieldProfiler(field("datatrove.n_words", element_type=f.VALUE_INT64))
+        for invalid in (-1, True):
+            with self.assertRaises(ValueError):
+                profiler.add(0, occurrences=invalid)
+        self.assertEqual(profiler.proto().documents, 0)
+
     def describe(self, values: Iterable[int | None]) -> DistributionSummary:
         profiler = FieldProfiler(field("datatrove.n_words", element_type=f.VALUE_INT64))
         for value in values:

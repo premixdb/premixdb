@@ -3,23 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import MutableMapping
-from concurrent.futures import Future
+from concurrent.futures import Future, wait
+from contextlib import ExitStack, closing
 from functools import wraps
 from pathlib import Path
 from threading import Lock
 from types import TracebackType
 from typing import Callable, Concatenate, Hashable, Iterable, Literal, Self, cast
+from weakref import WeakSet
 
 from blake3 import blake3
 from google.protobuf.message import Message
 
 from .. import _requests, _runtime
 from .._identity import corpus_id as _corpus_id
+from .._inputs import source_files
 from .._protobuf import copy_message, descriptor_name
-from .._typing import Edge
 from ..engine import execution
 from ..engine.contracts import QuerySummary
-from ..engine.curation import SelectedDocument
 from ..engine.dataset_plan import BYTE_DEFINITION, DatasetPlan, PackingPlan
 from ..v1 import corpus_pb2 as corpora
 from ..v1 import dataset_pb2 as datasets
@@ -29,49 +30,47 @@ from ..v1 import status_pb2 as status
 from ..v1 import storage_pb2 as storage
 from . import mixing, profiles, tokens
 from .cache import MemoryCache, _Namespace
-from .catalog_reader import Catalog
+from .catalog_reader import Catalog, _read
 from .materialization import Materializer, SingleFlight
 from .planner import compile_query, copy_fields, execution_steps, field_definitions, reject_unknown
 from .storage import ObjectStore
 
+type _CreateRequest = (
+    corpora.CreateCorpusRequest
+    | snapshots.CreateSnapshotRequest
+    | queries.CreateQueryRequest
+    | datasets.CreateDatasetRequest
+    | datasets.CreateMixRequest
+)
+type _CreateResponse = (
+    corpora.CreateCorpusResponse
+    | snapshots.CreateSnapshotResponse
+    | queries.CreateQueryResponse
+    | datasets.CreateDatasetResponse
+    | datasets.CreateMixResponse
+)
 
-def _operation[Request: Message, Response: Message, **P](
+
+def _operation[Request: _CreateRequest, Response: _CreateResponse, **P](
     method: Callable[Concatenate[Coordinator, Request, P], Response],
 ) -> Callable[Concatenate[Coordinator, Request, P], Response]:
+    name = str(getattr(method, "__name__"))
+
     @wraps(method)
     def call(self: Coordinator, request: Request, *args: P.args, **kwargs: P.kwargs) -> Response:
         event = None
         try:
             reject_unknown(request)
             request = copy_message(request)
-            name = str(getattr(method, "__name__"))
-            if not name.startswith("Create"):
-                return method(self, request, *args, **kwargs)
             digest = blake3(request.SerializeToString(deterministic=True)).digest()
             event = self._storage.metadata.begin_execution(name, digest)
-            key = (
-                request.request_id
-                if isinstance(
-                    request,
-                    (
-                        corpora.CreateCorpusRequest,
-                        snapshots.CreateSnapshotRequest,
-                        queries.CreateQueryRequest,
-                        datasets.CreateDatasetRequest,
-                        datasets.CreateMixRequest,
-                    ),
-                )
-                else ""
-            )
+            key = request.request_id
             cache_hit = False
-
-            def invoke() -> Response:
-                return method(self, request, *args, **kwargs)
 
             def run() -> Response:
                 nonlocal cache_hit
                 if not key:
-                    return invoke()
+                    return method(self, request, *args, **kwargs)
                 identity = blake3(name.encode() + b"\0" + key.encode()).digest()
                 try:
                     previous = self._storage.metadata.load(
@@ -98,7 +97,7 @@ def _operation[Request: Message, Response: Message, **P](
                     # The submission key binds the request and operation to the
                     # response type recorded by the first successful invocation.
                     return cast(Response, cached)
-                result = invoke()
+                result = method(self, request, *args, **kwargs)
                 self._storage.metadata.save(
                     "submission",
                     identity,
@@ -156,23 +155,6 @@ class Coordinator(Catalog):
             raise ValueError("workers must be a positive integer")
         if type(process_workers) is not int or process_workers < 0:
             raise ValueError("process_workers must be a nonnegative integer")
-        self._storage = (
-            storage_path
-            if isinstance(storage_path, ObjectStore)
-            else ObjectStore(storage_path, metadata_path=metadata_path)
-        )
-        self.pipeline = None
-        if process_workers:
-            from .partitions import PartitionStore
-            from .pipeline import PartitionPipeline
-
-            self.pipeline = PartitionPipeline(
-                PartitionStore(self._storage.root / "partitions"), workers=process_workers
-            )
-        self._store = execution.Store(self._storage.root / "snapshot")
-        from .encodings import Encodings
-
-        self._encodings = Encodings(self._storage)
         self._source_root = Path(source_root).resolve() if source_root is not None else None
         self._allow_local_files = allow_local_files
         self._cache = MemoryCache(cache_bytes)
@@ -199,12 +181,34 @@ class Coordinator(Catalog):
         self._mix_pools: _Namespace[tuple[bytes, bytes, bytes, bytes], execution.MixturePool] = (
             self._cache.namespace("mix_pools")
         )
+        self._owned_mix_pools: WeakSet[execution.MixturePool] = WeakSet()
         self._profile_lock = Lock()
         self._index_lock = Lock()
         self._mix_pool_lock = Lock()
         self._submissions = SingleFlight()
-        self._jobs = Materializer[queries.Query | datasets.Dataset](workers)
         self._lock = Lock()
+        self.pipeline = None
+        with ExitStack() as startup:
+            if isinstance(storage_path, ObjectStore):
+                self._storage = storage_path
+            else:
+                self._storage = ObjectStore(storage_path, metadata_path=metadata_path)
+                startup.callback(self._storage.close)
+            self._jobs = Materializer[queries.Query | datasets.Dataset](workers)
+            startup.callback(self._jobs.close)
+            self._store = execution.Store(self._storage.root / "snapshot")
+            from .encodings import Encodings
+
+            self._encodings = Encodings(self._storage)
+            if process_workers:
+                from .partitions import PartitionStore
+                from .pipeline import PartitionPipeline
+
+                self.pipeline = PartitionPipeline(
+                    PartitionStore(self._storage.root / "partitions"), workers=process_workers
+                )
+                startup.callback(self.pipeline.close)
+            startup.pop_all()
 
     def __enter__(self) -> Self:
         return self
@@ -218,10 +222,19 @@ class Coordinator(Catalog):
         self.close()
 
     def close(self) -> None:
-        self._jobs.close()
-        if self.pipeline is not None:
-            self.pipeline.close()
-        self._storage.close()
+        with ExitStack() as closing:
+            closing.callback(self._storage.close)
+            if self.pipeline is not None:
+                closing.callback(self.pipeline.close)
+            closing.callback(self._close_mix_pools)
+            closing.callback(self._jobs.close)
+
+    def _close_mix_pools(self) -> None:
+        with self._mix_pool_lock:
+            pools = tuple(self._owned_mix_pools)
+        with ExitStack() as closing:
+            for pool in pools:
+                closing.callback(pool.close)
 
     def _once[R: Message](
         self, request: Message, run: Callable[[], R], *, mode: Hashable | None = None
@@ -257,7 +270,6 @@ class Coordinator(Catalog):
         with self._lock:
             handle = self._snapshot_handles.get(id)
         if handle is None:
-            self._storage.snapshot_files(id, text=True)
             handle = self._store.load(id.hex(), lazy=True)
             with self._lock:
                 self._snapshot_handles[id] = handle
@@ -277,15 +289,11 @@ class Coordinator(Catalog):
                 path = Path(document.path).resolve()
                 if self._source_root is not None and not path.is_relative_to(self._source_root):
                     raise ValueError("source path escapes the configured source root")
-                files = sorted(path.rglob("*")) if path.is_dir() else [path]
-                for file in files:
-                    if path.is_dir() and not file.is_file():
-                        continue
+                for key, file in source_files(path):
                     if self._source_root is not None and not file.resolve().is_relative_to(
                         self._source_root
                     ):
                         raise ValueError("source symlink escapes the configured source root")
-                    key = file.relative_to(path).as_posix() if path.is_dir() else file.name
                     result.append((key, file))
             return (), result
         from .sources import capture
@@ -295,7 +303,7 @@ class Coordinator(Catalog):
     def _snapshot_resource(
         self, id: bytes, source: storage.Source | None = None
     ) -> snapshots.Snapshot:
-        self._storage.snapshot_files(id, text=False)
+        self._storage.verify_snapshot_metadata(id)
         info = self._store.describe(id.hex())
         result = snapshots.Snapshot(
             id=id,
@@ -383,19 +391,10 @@ class Coordinator(Catalog):
                         resource = self._snapshot_resource(id, request.source)
                         resource.git_commit = bytes.fromhex(code.commit)
                         preview = execution.execute([handle], [], code)
-                        for i in range(min(10, preview.row_count)):
-                            row = preview.row(i)
-                            resource.preview.documents.add(
-                                id=bytes.fromhex(row.id),
-                                text=row.text[:1024],
-                                truncated=len(row.text) > 1024,
-                                source_key=row.source_key,
-                                corpus_id=bytes.fromhex(row.corpus_id),
-                                ordinal=row.ordinal,
-                            )
-                        from .previewing import publish
+                        from .previewing import inline, publish
 
-                        publish(self._storage, "snapshot", id, preview.rows())
+                        inline(self._storage, resource.preview, preview)
+                        publish(self._storage, "snapshot", id, preview)
                         self._storage.save("snapshot", id, resource)
                     self._snapshots[id] = resource
                 corpus = self._storage.load("corpus", request.corpus_id, corpora.Corpus)
@@ -406,7 +405,7 @@ class Coordinator(Catalog):
 
         return self._once(request, run)
 
-    @_operation
+    @_read
     def GetSnapshot(
         self, request: snapshots.GetSnapshotRequest, *, timeout: float | None = None
     ) -> snapshots.GetSnapshotResponse:
@@ -429,58 +428,48 @@ class Coordinator(Catalog):
         expected = compile_query(query)
         if query != expected:
             raise ValueError("query identity, execution revision, or inputs were modified")
-        if (
-            query.field_snapshot_ids
-            or query.index_snapshot_ids
-            or query.HasField("sampling")
-            or any(op.HasField("similarity_dedupe") for op in query.operations)
-        ):
-            from .enrichment import query_inputs
+        with ExitStack() as resources:
+            if (
+                query.field_snapshot_ids
+                or query.index_snapshot_ids
+                or query.HasField("sampling")
+                or any(op.HasField("similarity_dedupe") for op in query.operations)
+            ):
+                from .enrichment import query_inputs
 
-            index, steps = query_inputs(self, query)
-        else:
-            index = self._query_index(query.snapshot_ids)
-            steps = execution_steps(query)
-        from ..engine import plans
+                index, steps = resources.enter_context(query_inputs(self, query))
+            else:
+                index = self._query_index(query.snapshot_ids)
+                steps = execution_steps(query)
+            from ..engine import plans
 
-        for i, step in enumerate(steps):
-            if step.kind != "Policy":
-                continue
-            assert step.payload is not None
-            if step.payload[0] == "decontaminate":
-                _, policy, _ = step.payload
-                reference_index = self._query_index(tuple(policy.snapshot_ids))
-                steps[i] = plans.policy(
-                    step.definition,
-                    ("decontaminate", policy, list(reference_index.documents.values())),
-                )
-            elif step.payload[0] == "sample":
-                _, sampling, tokenizer = step.payload
-                if sampling.HasField("tokenizer_asset"):
-                    tokenizer = self._tokenizer_asset(
-                        sampling.tokenizer_asset,
-                        sampling.max_document_bytes or 8 * 1024 * 1024,
-                        sampling.tokenizer_json or None,
+            for i, step in enumerate(steps):
+                if step.kind != "Policy":
+                    continue
+                assert step.payload is not None
+                if step.payload[0] == "decontaminate":
+                    _, policy, _ = step.payload
+                    reference_index = self._query_index(tuple(policy.snapshot_ids))
+                    steps[i] = plans.policy(
+                        step.definition,
+                        ("decontaminate", policy, list(reference_index.documents.values())),
                     )
-                steps[i] = plans.policy(step.definition, ("sample", sampling, tokenizer))
-            elif step.payload[0] == "similarity" and step.payload[2] is None:
-                from ..engine.curation import jaccard_edges
-
-                operation = query.operations[i].similarity_dedupe
-
-                def edges(
-                    documents: list[SelectedDocument], p: queries.SimilarityDedupe = operation
-                ) -> Iterable[Edge]:
-                    return jaccard_edges(documents, p.n, p.threshold)
-
-                steps[i] = plans.policy(step.definition, ("similarity", step.payload[1], edges))
-        if self.pipeline is not None:
-            index.class_provider = self.pipeline.exact_classes
-            index.reference_provider = self.pipeline.references
-        estimate = profiles.estimate_query(self, query)
-        handle = index.execute(
-            steps, _runtime.resolve_code(query.git_commit), field_definitions(query)
-        )
+                elif step.payload[0] == "sample":
+                    _, sampling, tokenizer = step.payload
+                    if sampling.HasField("tokenizer_asset"):
+                        tokenizer = self._tokenizer_asset(
+                            sampling.tokenizer_asset,
+                            sampling.max_document_bytes or 8 * 1024 * 1024,
+                            sampling.tokenizer_json or None,
+                        )
+                    steps[i] = plans.policy(step.definition, ("sample", sampling, tokenizer))
+            if self.pipeline is not None:
+                index.class_provider = self.pipeline.exact_classes
+                index.reference_provider = self.pipeline.references
+            estimate = profiles.estimate_query(self, query)
+            handle = index.execute(
+                steps, _runtime.resolve_code(query.git_commit), field_definitions(query)
+            )
         handle.field_snapshot_ids = tuple(query.field_snapshot_ids)
         handle._encoding_provider = self._encodings
         if bytes.fromhex(handle.id) != query.id:
@@ -488,30 +477,24 @@ class Coordinator(Catalog):
         result = copy_message(query)
         result.status = status.STATUS_COMPLETED
         result.estimate.CopyFrom(estimate)
-        result.profile.CopyFrom(query_profile(handle.summary(), len(query.snapshot_ids)))
+        summary = handle.summary()
+        result.profile.CopyFrom(query_profile(summary, len(query.snapshot_ids)))
         from .profiles import output_profiles
 
         result.profile.fields.extend(output_profiles(self, query, handle))
-        for row in handle.rows():
+        for row in handle:
             result.profile.source_documents[row.corpus_id] += 1
             result.profile.source_content_bytes[row.corpus_id] += row.document.size
-        summary = handle.summary()
         if "decontamination" in summary:
             result.profile.decontamination.CopyFrom(
                 queries.DecontaminationProfile(**summary["decontamination"])
             )
         if "sampling" in summary:
             result.profile.sampling.CopyFrom(queries.SamplingProfile(**summary["sampling"]))
-        for i in range(min(10, handle.row_count)):
-            row = handle.row(i)
-            result.preview.documents.add(
-                id=bytes.fromhex(row.id),
-                text=row.text[:1024],
-                truncated=len(row.text) > 1024,
-                source_key=row.source_key,
-                corpus_id=bytes.fromhex(row.corpus_id),
-                ordinal=row.ordinal,
-            )
+        from .previewing import inline
+        from .previewing import publish as publish_preview
+
+        inline(self._storage, result.preview, handle)
         import json
 
         result.lineage.CopyFrom(
@@ -523,9 +506,7 @@ class Coordinator(Catalog):
         from .selections import publish
 
         publish(self._storage, handle)
-        from .previewing import publish as publish_preview
-
-        publish_preview(self._storage, "query", result.id, handle.rows())
+        publish_preview(self._storage, "query", result.id, handle)
         self._storage.save("query", result.id, result)
         with self._lock:
             self._query_handles[result.id] = handle
@@ -583,7 +564,7 @@ class Coordinator(Catalog):
         return self._once(resolved, run, mode="plan" if _lazy else "execute")
 
     def _plan_query(self, request: queries.CreateQueryRequest) -> queries.Query:
-        """Save a query recipe without scheduling work or estimating its population."""
+        """Save a query recipe and attach population bounds from published metadata."""
         request = copy_message(request)
         if request.HasField("sampling") and request.sampling.tokenizer_json:
             policy = request.sampling
@@ -656,29 +637,49 @@ class Coordinator(Catalog):
     def _schedule_query(self, resolved: queries.Query) -> Future[queries.Query]:
         return self._materialize("query", resolved, lambda: self.run_query(copy_message(resolved)))
 
-    @_operation
+    def _wait_for_materialization(
+        self, kind: Literal["query", "dataset"], identity: bytes, timeout: float
+    ) -> bool:
+        """Wake when a local job finishes; the catalog supplies its result or failure."""
+        future = self._jobs.active(kind, identity)
+        if future is None:
+            return False
+        done, _ = wait((future,), timeout=timeout)
+        return bool(done)
+
+    def _materialized_resource[R: queries.Query | datasets.Dataset](
+        self,
+        kind: Literal["query", "dataset"],
+        identity: bytes,
+        message_type: type[R],
+        cache: MutableMapping[bytes, R],
+        recipe_suffix: str,
+    ) -> R:
+        _requests._id(identity, 32)
+        with self._lock:
+            cached = cache.get(identity)
+            if cached is not None and cached.status == status.STATUS_COMPLETED:
+                return copy_message(cached)
+        try:
+            return self._storage.load(kind, identity, message_type)
+        except KeyError:
+            resource = self._storage.load(kind, identity, message_type, suffix=recipe_suffix)
+        # Completion takes priority; an active retry supersedes an earlier failure.
+        if self._jobs.active(kind, identity) is not None:
+            resource.status = status.STATUS_RUNNING
+            return resource
+        try:
+            return self._storage.load(kind, identity, message_type, suffix=".failed")
+        except KeyError:
+            return resource
+
+    @_read
     def GetQuery(
         self, request: queries.GetQueryRequest, *, timeout: float | None = None
     ) -> queries.GetQueryResponse:
-        _requests._id(request.id, 32)
-        with self._lock:
-            result = self._queries.get(request.id)
-        if result is None or result.status != status.STATUS_COMPLETED:
-            try:
-                result = self._storage.load("query", request.id, queries.Query)
-            except KeyError:
-                result = self._storage.load("query", request.id, queries.Query, suffix=".pending")
-                active = self._jobs.active("query", request.id)
-                if active is not None:
-                    result.status = status.STATUS_RUNNING
-                else:
-                    try:
-                        result = self._storage.load(
-                            "query", request.id, queries.Query, suffix=".failed"
-                        )
-                    except KeyError:
-                        pass
-        result = copy_message(result)
+        result = self._materialized_resource(
+            "query", request.id, queries.Query, self._queries, ".pending"
+        )
         if result.status != status.STATUS_COMPLETED or not result.HasField("estimate"):
             result.estimate.CopyFrom(profiles.estimate_query(self, result))
         return queries.GetQueryResponse(query=result)
@@ -773,8 +774,6 @@ class Coordinator(Catalog):
     def _tokenizer_asset(
         self, asset: storage.ObjectRef, limit: int, inline: bytes | None = None
     ) -> execution.HuggingFaceTokenizer:
-        from tempfile import NamedTemporaryFile
-
         from .assets import read
 
         relative = "tokenizer/objects/" + asset.blake3_digest.hex()
@@ -782,10 +781,7 @@ class Coordinator(Catalog):
         if inline is None and asset.uri == owned_uri:
             inline = self._storage._get(relative)
         data = read(asset, local_root=self._source_root, inline=inline)
-        with NamedTemporaryFile(suffix=".json") as stream:
-            stream.write(data)
-            stream.flush()
-            return execution.HuggingFaceTokenizer(stream.name, asset.blake3_digest.hex(), limit)
+        return execution.HuggingFaceTokenizer.from_bytes(data, asset.blake3_digest.hex(), limit)
 
     def _tokenizer(
         self, spec: datasets.CreateDatasetRequest | datasets.CreateMixRequest | datasets.Dataset
@@ -844,11 +840,12 @@ class Coordinator(Catalog):
                         r.id: _domain_key(
                             [values[selector_key(s)][r.id] for s in strata.fields.selectors]
                         )
-                        for r in query.rows()
+                        for r in query
                     }
                 pool = MixturePool(
                     query, mixing.domains_name(strata), assignments, self._tokenizer(spec)
                 )
+                self._owned_mix_pools.add(pool)
                 self._mix_pools[key] = pool
             return pool
 
@@ -917,16 +914,13 @@ class Coordinator(Catalog):
 
         from ..engine.datasets import Dataset
 
+        plan = self._dataset_plan(spec)
         lengths, encoded = self.pipeline.tokenize(query, spec.tokenizer)
         return Dataset(
             query,
-            query.id,
+            plan,
             query.source_counts(),
             encoded,
-            spec.tokenizer.definition_digest.hex(),
-            length=spec.sequence_length,
-            separator=self._packing(spec)[1],
-            padding=self._packing(spec)[2],
             start=time.monotonic(),
             lengths=lengths,
             stream=True,
@@ -955,8 +949,10 @@ class Coordinator(Catalog):
             if spec.HasField("sampling"):
                 pool, args = self._sampling(spec)
                 planned = args[0]
-                values = pool.profile(*args, *self._packing(spec))
-                geometry = pool.geometry(*args, *self._packing(spec))
+                packing = PackingPlan(*self._packing(spec))
+                prepared = pool._prepare(*args)
+                values = prepared.profile(packing)
+                geometry = prepared.geometry(packing)
             else:
                 handle = self._query(spec.query_id)
                 tokenizer = self._tokenizer(spec)
@@ -966,8 +962,8 @@ class Coordinator(Catalog):
                     else:
                         from ..engine.token_cache import token_pool
 
-                        pool = token_pool(handle, tokenizer)
-                        lengths = [pool.length(row.id) for row in handle.rows()]
+                        with closing(token_pool(handle, tokenizer)) as tokens:
+                            lengths = [tokens.length(row.id) for row in handle]
                     values = PackingPlan(*self._packing(spec)).profile(
                         handle.source_counts(),
                         lengths,
@@ -976,8 +972,7 @@ class Coordinator(Catalog):
                     values = handle.profile(*self._packing(spec))
                     lengths = handle.lengths()
                 geometry = PackingPlan(*self._packing(spec)).geometry(
-                    (r.id, r.corpus_id, length)
-                    for r, length in zip(handle.rows(), lengths, strict=True)
+                    (r.id, r.corpus_id, length) for r, length in zip(handle, lengths, strict=True)
                 )
             profile = datasets.DatasetProfile(**values, **geometry, planned_stratum_tokens=planned)
             self._storage.save("dataset", key, profile, suffix=".profile")
@@ -1090,29 +1085,27 @@ class Coordinator(Catalog):
                     return existing
             except KeyError:
                 pass
-            handle = self._dataset_handle(spec)
-            if self.pipeline is not None:
-                handle = self.pipeline.pack(handle)
-            if bytes.fromhex(handle.id) != id:
-                raise RuntimeError("kernel dataset identity does not match its recipe")
-            result = copy_fields(
-                spec,
-                datasets.Dataset(
-                    id=id, status=status.STATUS_COMPLETED, profile=self._profile_dataset(spec)
-                ),
-            )
-            spans, batches, preview = tokens.publish(
-                self._storage,
-                handle,
-                spec.sequence_length,
-                profile=result.profile,
-                lineage=self._query(spec.query_id).provenance(),
-                tokenizer=self._tokenizer(spec),
-            )
-            result.tokens.extend(spans)
-            result.sequences.extend(batches)
-            result.preview.CopyFrom(preview)
-            return result
+            with closing(self._dataset_handle(spec)) as native:
+                handle = self.pipeline.pack(native) if self.pipeline is not None else native
+                if bytes.fromhex(handle.id) != id:
+                    raise RuntimeError("kernel dataset identity does not match its recipe")
+                result = copy_fields(
+                    spec,
+                    datasets.Dataset(
+                        id=id, status=status.STATUS_COMPLETED, profile=self._profile_dataset(spec)
+                    ),
+                )
+                spans, batches, preview = tokens.publish(
+                    self._storage,
+                    handle,
+                    profile=result.profile,
+                    lineage=self._query(spec.query_id).provenance(),
+                    tokenizer=self._tokenizer(spec),
+                )
+                result.tokens.extend(spans)
+                result.sequences.extend(batches)
+                result.preview.CopyFrom(preview)
+                return result
 
         # Mix candidates and direct builds share the same registered recipe.
         id = self._dataset_id(spec)
@@ -1153,30 +1146,13 @@ class Coordinator(Catalog):
             result.ClearField("error")
         return result
 
-    @_operation
+    @_read
     def GetDataset(
         self, request: datasets.GetDatasetRequest, *, timeout: float | None = None
     ) -> datasets.GetDatasetResponse:
-        _requests._id(request.id, 32)
-        with self._lock:
-            resource = self._datasets.get(request.id)
-        if resource is None or resource.status != status.STATUS_COMPLETED:
-            try:
-                resource = self._storage.load("dataset", request.id, datasets.Dataset)
-            except KeyError:
-                resource = self._storage.load(
-                    "dataset", request.id, datasets.Dataset, suffix=".recipe"
-                )
-                active = self._jobs.active("dataset", request.id)
-                if active is not None:
-                    resource.status = status.STATUS_RUNNING
-                else:
-                    try:
-                        resource = self._storage.load(
-                            "dataset", request.id, datasets.Dataset, suffix=".failed"
-                        )
-                    except KeyError:
-                        pass
+        resource = self._materialized_resource(
+            "dataset", request.id, datasets.Dataset, self._datasets, ".recipe"
+        )
         return datasets.GetDatasetResponse(dataset=self._dataset_profile(resource))
 
 

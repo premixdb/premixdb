@@ -5,7 +5,7 @@ from __future__ import annotations
 import builtins
 from dataclasses import dataclass, field
 from os import PathLike
-from typing import TYPE_CHECKING, Generic, Iterable, Mapping, TypeVar, cast
+from typing import TYPE_CHECKING, Iterable, Literal, Mapping, cast
 from urllib.parse import urlsplit
 
 from ._default_tokenizer import _GPT2_DIGEST, _GPT2_EOS, _gpt2_tokenizer
@@ -13,7 +13,7 @@ from ._enums import DedupeAlgorithm, IntrinsicField, RemovalUnit
 from ._field_expr import FieldPredicate
 from ._field_ids import field_id
 from ._ids import _decode_id
-from ._protobuf import parse
+from ._protobuf import copy_message
 from .fields import ContentType, DedupeIndex, Language, Topic
 from .v1 import corpus_pb2 as corpora
 from .v1 import dataset_pb2 as datasets
@@ -45,6 +45,21 @@ def _uint(value: builtins.object, bits: int, name: str, *, positive: bool = Fals
     return value
 
 
+def _preview_options(
+    limit: int,
+    offset: int,
+    max_characters: int,
+    *,
+    unit: Literal["documents", "sequences"],
+) -> tuple[int, int, int]:
+    limit = _uint(limit, 32, "limit")
+    offset = _uint(offset, 64, "offset")
+    max_characters = _uint(max_characters, 32, "max_characters")
+    if limit > 1000 or max_characters > 1_000_000:
+        raise ValueError(f"preview supports at most 1000 {unit} and 1,000,000 characters")
+    return limit, offset, max_characters
+
+
 @dataclass(frozen=True)
 class _Predicate:
     field: IntrinsicField
@@ -55,11 +70,8 @@ class _Predicate:
         raise TypeError("use separate where() steps instead of chained comparisons or and/or")
 
 
-FieldValue = TypeVar("FieldValue", int, str)
-
-
 @dataclass(frozen=True, eq=False)
-class _Field(Generic[FieldValue]):
+class _Field[FieldValue: (int, str)]:
     name: IntrinsicField
 
     # Expression operators intentionally build a predicate rather than a bool.
@@ -83,15 +95,11 @@ class _Field(Generic[FieldValue]):
 
     def asc(self) -> queries.OrderBy:
         """Order documents by this field from smallest to largest."""
-        return queries.OrderBy(field=_field(self.name), direction=queries.OrderBy.DIRECTION_ASC)
+        return queries.OrderBy(field=field_id(self.name), direction=queries.OrderBy.DIRECTION_ASC)
 
     def desc(self) -> queries.OrderBy:
         """Order documents by this field from largest to smallest."""
-        return queries.OrderBy(field=_field(self.name), direction=queries.OrderBy.DIRECTION_DESC)
-
-
-def _field(name: str) -> queries.IntrinsicField:
-    return field_id(IntrinsicField(name).value)
+        return queries.OrderBy(field=field_id(self.name), direction=queries.OrderBy.DIRECTION_DESC)
 
 
 @dataclass(frozen=True)
@@ -144,7 +152,7 @@ def where(predicate: _Predicate | FieldPredicate | _DocumentPredicate) -> querie
         raise TypeError("where() expects a field comparison")
     if predicate.field == IntrinsicField.CORPUS_ID:
         raise NotImplementedError("source.corpus_id is currently available for mix strata only")
-    comparison = queries.Comparison(operator=predicate.operator, field=_field(predicate.field))
+    comparison = queries.Comparison(operator=predicate.operator, field=field_id(predicate.field))
     if predicate.field == IntrinsicField.OBJECT_URI:
         if not isinstance(predicate.value, str):
             raise TypeError("object.uri comparisons require a string")
@@ -409,14 +417,14 @@ def dataset(
         packing = packing._to_proto()
     if not isinstance(packing, datasets.Packing) or packing.WhichOneof("policy") != "concat":
         raise ValueError("packing requires a concat policy")
-    packing = parse(datasets.Packing, packing.SerializeToString())
+    packing = copy_message(packing)
     policy = packing.concat
     if not policy.HasField("drop_remainder"):
         policy.drop_remainder = not policy.HasField("pad_token_id")
     if policy.drop_remainder == policy.HasField("pad_token_id"):
         raise ValueError("pad_token_id is required exactly when drop_remainder=False")
     if sampling is not None and sampling.domains.field == queries.FIELD_SOURCE_CORPUS_ID:
-        sampling = parse(datasets.Sampling, sampling.SerializeToString())
+        sampling = copy_message(sampling)
         weights = {_id(key, 16).hex(): value for key, value in sampling.weights.items()}
         sampling.weights.clear()
         sampling.weights.update(weights)
@@ -471,7 +479,7 @@ def mix(
     partition = datasets.Domains()
     strata = source.corpus_id if domains is None else domains
     if isinstance(strata, _Field):
-        partition.field = _field(strata.name)
+        partition.field = field_id(strata.name)
     elif isinstance(strata, Mapping):
         labels = {_id(id, 32).hex(): label for id, label in cast(Mapping[str, str], strata).items()}
         if any(not isinstance(label, str) or not label for label in labels.values()):

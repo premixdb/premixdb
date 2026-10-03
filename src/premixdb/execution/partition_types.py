@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
-from ..engine.contracts import Span, TokenRange
+from ..engine.contracts import EncodedTokens, Span, TokenRange
 
 
 class InputRow(TypedDict):
@@ -49,13 +49,6 @@ class PackingRequest(TypedDict):
     separator: int | None
     padding: int | None
     prefixes: list[int]
-
-
-class EncodedTokens(TypedDict):
-    byte_tokens: NotRequired[str]
-    byte_ranges: NotRequired[list[list[int]]]
-    tokens: NotRequired[list[int]]
-    ranges: NotRequired[list[list[list[int]]]]
 
 
 class TokenRow(EncodedTokens):

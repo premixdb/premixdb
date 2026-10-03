@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import builtins
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from threading import RLock
-from typing import Callable
+from time import time_ns
+from uuid import uuid4
 
 from blake3 import blake3
 from google.protobuf.message import Message
@@ -19,11 +21,10 @@ class MetadataStore:
 
     def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path).absolute()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not read_only:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._closed = False
-        self.before_save: Callable[[str, bytes, bytes, str, bool], None] | None = None
-        self.after_save: Callable[[], None] | None = None
         self.read_only = read_only
         self._db = sqlite3.connect(
             self.path.as_uri() + "?mode=ro" if read_only else self.path,
@@ -65,17 +66,12 @@ class MetadataStore:
     def begin_execution(
         self, operation: str, request_digest: bytes = b"", resource_id: bytes = b""
     ) -> ExecutionEvent:
-        import time
-        from uuid import uuid4
-
-        from ..v1.status_pb2 import ExecutionEvent
-
         event = ExecutionEvent(
             id=uuid4().hex,
             operation=operation,
             resource_id=resource_id,
             status="running",
-            started_ns=time.time_ns(),
+            started_ns=time_ns(),
             request_digest=request_digest,
         )
         self.save("execution", event.id.encode(), event, mutable=True)
@@ -89,13 +85,11 @@ class MetadataStore:
         error: str = "",
         cache_hit: bool = False,
     ) -> None:
-        import time
-
         event.resource_id = resource_id or event.resource_id
         event.error = error
         event.status = "error" if error else "completed"
         event.cache_hit = cache_hit
-        event.ended_ns = time.time_ns()
+        event.ended_ns = time_ns()
         self.save("execution", event.id.encode(), event, mutable=True)
 
     def close(self) -> None:
@@ -145,28 +139,25 @@ class MetadataStore:
     ) -> None:
         if self.read_only:
             raise PermissionError("catalog is read-only")
-        if self.before_save is not None:
-            self.before_save(namespace, id, payload, suffix, mutable)
         with self._lock, self._db:
             # Serialize concurrent publishers across processes as well as threads.
             self._db.execute("BEGIN IMMEDIATE")
             row = self._db.execute(
-                "SELECT payload FROM metadata WHERE namespace=? AND id=? AND suffix=?",
+                "SELECT message_type, payload, digest FROM metadata "
+                "WHERE namespace=? AND id=? AND suffix=?",
                 (namespace, id, suffix),
             ).fetchone()
             if row is not None and not mutable:
-                if row[0] != payload:
+                if _verified_payload(row, message_type) != payload:
                     raise ValueError("conflicting immutable storage object")
                 return
             self._db.execute(
                 "INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?)",
                 (namespace, id, suffix, message_type, payload, blake3(payload).digest()),
             )
-        if self.after_save is not None:
-            self.after_save()
 
     def backup(self, path: Path) -> None:
-        with self._lock, sqlite3.connect(path) as target:
+        with self._lock, closing(sqlite3.connect(path)) as target:
             self._db.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("catalog snapshot failed SQLite integrity check")
@@ -220,13 +211,19 @@ class MetadataStore:
             self._db.execute("INSERT OR IGNORE INTO migrations VALUES (?)", (name,))
 
 
-def _decode[T: Message](row: tuple[str, bytes, bytes], message_type: type[T]) -> T:
+def _verified_payload(row: tuple[str, bytes, bytes], message_type: str) -> bytes:
     stored_type, payload, digest = row
     if blake3(payload).digest() != digest:
         raise ValueError("stored resource integrity check failed")
+    if stored_type and message_type and stored_type != message_type:
+        raise ValueError("stored resource message type mismatch")
+    return payload
+
+
+def _decode[T: Message](row: tuple[str, bytes, bytes], message_type: type[T]) -> T:
     descriptor = message_type.DESCRIPTOR
-    if descriptor is None or stored_type and stored_type != descriptor.full_name:
+    if descriptor is None:
         raise ValueError("stored resource message type mismatch")
     result = message_type()
-    result.ParseFromString(payload)
+    result.ParseFromString(_verified_payload(row, descriptor.full_name))
     return result

@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from os import PathLike, fspath
 from pathlib import Path
 from typing import Iterable, Iterator, Literal, cast
-from uuid import NAMESPACE_URL, uuid5
 
 from . import _requests, _runtime
 from ._enums import DedupeAlgorithm, RemovalUnit
 from ._field_expr import FieldPredicate
+from ._identity import corpus_id
+from ._inputs import source_files
 from ._policies import ByteTokenizer as ByteTokenizer
 from ._policies import Concat as Concat
 from ._policies import HuggingFaceTokenizer as HuggingFaceTokenizer
@@ -25,7 +26,6 @@ from ._types import Checkpoint
 from .engine import execution
 from .engine.contracts import Changes, Counts, Occurrence, PackingSummary, Provenance, QuerySummary
 from .engine.execution import Reader, Row, Sequence, Source
-from .engine.identity import IDENTITY_NAMESPACE
 from .v1 import query_pb2 as q
 
 
@@ -124,7 +124,7 @@ class Corpus:
     @property
     def id(self) -> str:
         """Return the resource identity as a hexadecimal string."""
-        return uuid5(NAMESPACE_URL, f"{IDENTITY_NAMESPACE}:corpus/v1:{self.name}").hex
+        return corpus_id(self.name).hex()
 
     def snapshot(
         self,
@@ -140,18 +140,13 @@ class Corpus:
         If the inventory matches the base, return that snapshot unchanged,
         including its original capture statistics. Edits create a new snapshot.
         """
+        if base is not None and base.corpus_id != self.id:
+            raise ValueError("base belongs to another corpus")
+        sources: Iterable[Source]
         if isinstance(source, (str, PathLike)):
-            path = _local_path(source)
-            if path.is_dir():
-                sources = [
-                    Source.read(file.relative_to(path).as_posix(), file)
-                    for file in sorted(path.rglob("*"))
-                    if file.is_file()
-                ]
-            else:
-                sources = [Source.read(path.name, path)]
+            sources = (Source.read(key, file) for key, file in source_files(_local_path(source)))
         else:
-            sources = list(source)
+            sources = source
         handle = self._db._store.capture(
             self.id,
             sources,
@@ -319,4 +314,4 @@ class Dataset:
         Save reader.checkpoint() alongside training state after processing the
         returned sequences. An exhausted checkpoint remains exhausted.
         """
-        return self._handle.reader(topology._checkpoint_values(), checkpoint, seed)
+        return self._handle.reader(topology, checkpoint, seed)

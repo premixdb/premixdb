@@ -48,11 +48,11 @@ type ListedResource = (
 )
 
 
-def _read[Request: Message, Response, **P](
-    method: Callable[Concatenate[Catalog, Request, P], Response],
-) -> Callable[Concatenate[Catalog, Request, P], Response]:
+def _read[Host: Catalog, Request: Message, Response, **P](
+    method: Callable[Concatenate[Host, Request, P], Response],
+) -> Callable[Concatenate[Host, Request, P], Response]:
     @wraps(method)
-    def call(self: Catalog, request: Request, *args: P.args, **kwargs: P.kwargs) -> Response:
+    def call(self: Host, request: Request, *args: P.args, **kwargs: P.kwargs) -> Response:
         reject_unknown(request)
         return method(self, copy_message(request), *args, **kwargs)
 
@@ -95,9 +95,12 @@ class Catalog:
     def GetQuery(
         self, request: queries.GetQueryRequest, *, timeout: float | None = None
     ) -> queries.GetQueryResponse:
-        return queries.GetQueryResponse(
-            query=self._resource("query", request.id, queries.Query, ".pending")
-        )
+        resource = self._resource("query", request.id, queries.Query, ".pending")
+        if not resource.HasField("profile") and not resource.HasField("estimate"):
+            from .profiles import estimate_query
+
+            resource.estimate.CopyFrom(estimate_query(self, resource))
+        return queries.GetQueryResponse(query=resource)
 
     @_read
     def GetDataset(
@@ -182,14 +185,14 @@ class Catalog:
             resources = sorted(resources, key=lambda value: value.id)
         selector = copy_message(request)
         selector.ClearField("page_token")
-        scope = blake3(
+        digest = blake3(
             descriptor_name(request).encode()
             + b"\0"
             + selector.SerializeToString(deterministic=True)
-            + b"".join(
-                value.id.encode() if isinstance(value.id, str) else value.id for value in resources
-            )
-        ).digest()
+        )
+        for value in resources:
+            digest.update(value.id.encode() if isinstance(value.id, str) else value.id)
+        scope = digest.digest()
         start, size, cap = _page(scope, request.page_token, len(resources))
         rows = values(response)
         for resource in resources[start : start + size]:
@@ -302,7 +305,7 @@ class Catalog:
             _requests._id(request.query_id, 32)
         with self._lock:
             resources = {value.id: value for value in self._storage.list("mixture", datasets.Mix)}
-            resources.update(self._mixes)
+            resources.update(self._mixes.items())
             return self._listing(
                 request,
                 [

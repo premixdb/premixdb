@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from threading import RLock
 
 from .. import _runtime
 from .._protobuf import parse
+from ..engine.curation import RetainedDocument
 from ..engine.datasets import ByteTokens, HuggingFaceTokenizer, TokenList, encoded_tokens
 from ..engine.queries import Row
 from ..internal import derivation_pb2 as d
@@ -24,8 +26,10 @@ class Encodings:
         # A warmer cache must not bypass the caller's whole-document bound.
         if row.document.size > tokenizer.max_document_bytes:
             raise NotImplementedError("tokenizer input exceeds whole-document limit")
+        document = row.document
+        original = document.original if isinstance(document, RetainedDocument) else document
+        source = document.source_ranges if isinstance(document, RetainedDocument) else None
         selection = d.SelectedDocument(document_id=bytes.fromhex(row.id))
-        source = getattr(row.document, "source_ranges", None)
         if source is not None:
             selection.transformed = True
             selection.ranges.extend(d.ByteRange(start=a, end=b) for a, b in source)
@@ -64,15 +68,23 @@ class Encodings:
             if manifest.id != key:
                 raise ValueError("token encoding belongs to different inputs")
             tokens, ranges = [], []
-            bound = getattr(row.document, "original", row.document).size
+            bound = original.size
+            starts = [start for start, _ in source] if source is not None else []
             for ref in manifest.shards:
                 try:
                     data = self.storage.read_object("tokenizer", ref)
                 except KeyError as exc:
                     raise ValueError("cached token encoding shard is missing") from exc
                 for token in parse(d.TokenEncodingShard, data).tokens:
-                    if any(not 0 <= r.start <= r.end <= bound for r in token.ranges):
-                        raise ValueError("cached token alignment is outside its source document")
+                    for r in token.ranges:
+                        if not 0 <= r.start <= r.end <= bound:
+                            raise ValueError(
+                                "cached token alignment is outside its source document"
+                            )
+                        if source is not None:
+                            index = bisect_right(starts, r.start) - 1
+                            if index < 0 or r.end > source[index][1]:
+                                raise ValueError("cached token alignment includes removed text")
                     tokens.append(token.value)
                     ranges.append([(r.start, r.end) for r in token.ranges])
             if len(tokens) != manifest.tokens:

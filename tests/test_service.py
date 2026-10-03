@@ -16,16 +16,13 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
-import premixdb as sdk
 from premixdb._ids import _decode_id, _encode_id
 from premixdb._protobuf import descriptor
 from premixdb.engine import execution
 from premixdb.execution import Coordinator, compile_query
 from premixdb.v1 import corpus_pb2 as corpora
-from premixdb.v1 import dataset_pb2 as dataset_types
 from premixdb.v1 import dataset_pb2 as datasets
 from premixdb.v1 import query_pb2 as queries
-from premixdb.v1 import query_pb2 as query_pb
 from premixdb.v1 import snapshot_pb2 as snapshots
 from premixdb.v1 import status_pb2 as common
 from premixdb.v1 import storage_pb2 as source_types
@@ -39,7 +36,7 @@ class ServiceTests(unittest.TestCase):
         self.client = premixdb.PremixDB(storage=self.root / "local")
         self.addCleanup(self.client.close)
 
-    def snapshot(self, client: sdk.PremixDB | None = None) -> sdk.Snapshot:
+    def snapshot(self, client: premixdb.PremixDB | None = None) -> premixdb.Snapshot:
         client = client or self.client
         return client._create_corpus("test").snapshot(
             source=[
@@ -49,7 +46,7 @@ class ServiceTests(unittest.TestCase):
             ]
         )
 
-    def recipe(self, snapshot: sdk.Snapshot) -> sdk.Query:
+    def recipe(self, snapshot: premixdb.Snapshot) -> premixdb.Query:
         return snapshot.query(
             steps=[
                 premixdb.where(premixdb.text.characters > 0),
@@ -149,6 +146,22 @@ class ServiceTests(unittest.TestCase):
         self.addCleanup(other.close)
         with self.assertRaises(ValueError):
             first.union(self.snapshot(other))
+
+    def test_pathlike_sources_use_the_filesystem_protocol(self) -> None:
+        path = self.root / "input.txt"
+        path.write_text("captured text", encoding="utf-8")
+
+        class FilePath:
+            def __fspath__(self) -> str:
+                return str(path)
+
+            def __str__(self) -> str:
+                raise AssertionError("source paths must use __fspath__")
+
+        expected = self.client.corpus("paths", path)
+        actual = self.client.corpus("paths", FilePath(), base=expected)
+        self.assertEqual(actual.id, expected.id)
+        self.assertEqual(actual.preview()[0]["text"], "captured text")
 
     def test_resolve_without_execution_and_worker_validates_query_identity(self) -> None:
         snapshot = self.snapshot()
@@ -255,13 +268,13 @@ class ServiceTests(unittest.TestCase):
         started, release = Event(), Event()
         waiters = Barrier(4)
 
-        class WaitingFuture(Future[query_pb.Query]):
-            def result(self, timeout: float | None = None) -> query_pb.Query:
+        class WaitingFuture(Future[queries.Query]):
+            def result(self, timeout: float | None = None) -> queries.Query:
                 if not self.done():
                     waiters.wait(timeout=5)
                 return super().result(timeout=timeout)
 
-        def fail(query: query_pb.Query) -> None:
+        def fail(query: queries.Query) -> None:
             started.set()
             if not release.wait(timeout=5):
                 raise AssertionError("failed submission was not released")
@@ -363,7 +376,7 @@ class ServiceTests(unittest.TestCase):
         query = snapshot.query()
         request = premixdb.dataset(query.id, tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
         # Unknown nested configuration must not be silently ignored.
-        unknown = dataset_types.Concat.FromString(
+        unknown = datasets.Concat.FromString(
             request.packing.concat.SerializeToString() + b"\x98\x06\x01"
         )
         request.packing.concat.CopyFrom(unknown)
@@ -396,6 +409,25 @@ assert "grpc" not in sys.modules
     def test_local_sources_are_disabled_by_default_and_root_is_enforced(self) -> None:
         service = Coordinator(self.root / "restricted", source_root=self.root / "inputs")
         self.addCleanup(service.close)
+        inputs = (self.root / "inputs").resolve()
+        (inputs / "nested").mkdir(parents=True)
+        document = inputs / "nested/data.txt"
+        document.write_text("text")
+        (inputs / "alias.txt").symlink_to(document)
+        source = source_types.Source(
+            files=premixdb.FileSources(documents=[premixdb.FileSource(path=str(inputs))])
+        )
+        self.assertEqual(
+            service._sources(source),
+            ((), [("alias.txt", inputs / "alias.txt"), ("nested/data.txt", document)]),
+        )
+        outside = self.root / "outside.txt"
+        outside.write_text("outside")
+        (inputs / "escape.txt").symlink_to(outside)
+        with self.assertRaisesRegex(
+            ValueError, "source symlink escapes the configured source root"
+        ):
+            service._sources(source)
         with self.assertRaises(ValueError):
             service._sources(
                 source_types.Source(
@@ -417,17 +449,13 @@ assert "grpc" not in sys.modules
         dataset = (
             self.snapshot().query().dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)
         )
-        native = (
-            coordinator(self.client)
-            ._query(bytes.fromhex(dataset._proto.query_id.hex()))
-            .dataset(1, 256, 257)
-        )
+        native = coordinator(self.client)._query(dataset._proto.query_id).dataset(1, 256, 257)
         all_ordinals = []
         for rank in range(2):
             for worker in range(3):
                 topology = premixdb.Topology(rank, 2, worker, 3)
                 reader = dataset.reader(topology=topology)
-                reference = native.reader(NativeTopology(rank, 2, worker, 3)._values())
+                reference = native.reader(NativeTopology(rank, 2, worker, 3))
                 first = next(reader, None)
                 native_first = next(reference, None)
                 self.assertEqual(

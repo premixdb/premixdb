@@ -16,6 +16,8 @@ with p.PremixDB(storage=".premixdb") as db:
 
 Use your model's tokenizer when packing. Padding labels are `-100`.
 The PyTorch adapter remains usable after closing the database.
+Closing a session releases its own read threads. Caller-supplied readers stay
+open; use `with p.RangeReader(...) as reader` or call `reader.close()` when done.
 
 ## Shuffle and distribute
 
@@ -42,6 +44,7 @@ checkpoint = reader.checkpoint()
 resumed = dataset.reader(seed=42, checkpoint=checkpoint)
 ```
 
-Resume with the same dataset, seed, and topology. Save model, optimizer, and RNG
+Resume with the same dataset, seed, and topology. An exhausted checkpoint returns
+an empty reader without reading or packing data. Save model, optimizer, and RNG
 state alongside the checkpoint. DataLoader prefetching needs separate tracking
 of consumed batches.

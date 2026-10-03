@@ -11,9 +11,21 @@ SQLite stores recipes and metadata. Immutable files store text, fields, selectio
 lineage, and tokens. Training reads token ranges directly. Selection and snapshot
 inventories must fit in worker memory.
 
+Queries and datasets share one materialization pool. Reads prefer completed results;
+an active retry overrides an earlier failure. Recipes and failures are durable, so
+cache eviction does not discard their state.
+
+Local and partitioned execution share token serialization and disk-backed exact
+evidence grouping. Evidence groups stay readable while their stream is open;
+exhausting or closing the stream releases its temporary database.
+
 | Code | Responsibility |
 | --- | --- |
 | [`_resources.py`](../src/premixdb/_resources.py) | Python API |
+| [`_inputs.py`](../src/premixdb/_inputs.py) | Source values and request conversion |
+| [`_files.py`](../src/premixdb/_files.py) | Publish complete immutable files and synchronize writes |
+| [`_lineage.py`](../src/premixdb/_lineage.py) | Validated provenance and public witness IDs |
+| [`_sequences.py`](../src/premixdb/_sequences.py) | Verified sequence reads and preview decoding |
 | [`execution/`](../src/premixdb/execution) | Planning, execution, caching |
 | [`engine/`](../src/premixdb/engine) | Capture, curation, tokenization, packing |
 | [`proto/`](../proto/README.md) | Stored schemas |

@@ -1,7 +1,11 @@
-"""JSON-compatible typed summaries and reader checkpoints."""
+"""Public errors, typed summaries, and reader checkpoints."""
 
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
+
+
+class ExecutionError(RuntimeError):
+    """A recipe failed to execute or its published result is incomplete."""
 
 
 @dataclass(frozen=True)

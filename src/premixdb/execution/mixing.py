@@ -13,7 +13,7 @@ from blake3 import blake3
 from google.protobuf.message import Message
 
 from .. import _requests
-from .._mixing import RegMixSampler, _weights_message
+from .._mixing import RegMixSampler, _weights_message, allocations
 from .._protobuf import descriptor_name
 from .._typing import JSON
 from .._typing import scalar as json_scalar
@@ -137,18 +137,6 @@ def validate_mix(spec: datasets.CreateMixRequest) -> None:
     )._to_proto()
     if policy.concentration_steps > 1024 or policy.oversample * spec.n_candidates > MAX_PROPOSALS:
         raise ValueError("RegMix proposal work exceeds the service limit")
-
-
-def allocations(weights: Mapping[str, float], budget: int) -> dict[str, int]:
-    """Exact largest remainders; label order breaks ties and zero weights stay zero."""
-    values = {k: Fraction(v) for k, v in sorted(weights.items())}
-    total = sum(values.values())
-    quotas = {k: v * budget / total for k, v in values.items()}
-    counts = {k: int(v) for k, v in quotas.items()}
-    order = sorted(quotas, key=lambda k: (-(quotas[k] - counts[k]), k))
-    for key in order[: budget - sum(counts.values())]:
-        counts[key] += 1
-    return counts
 
 
 def capacity_check(

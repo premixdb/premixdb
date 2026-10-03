@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import unittest
 from types import SimpleNamespace
-from typing import Unpack, cast
+from typing import TYPE_CHECKING, Unpack, cast
 from unittest.mock import patch
 
 from _type_support import (
@@ -13,7 +13,9 @@ from _type_support import (
     Vectors,
     numeric,
 )
-from torch import Tensor
+
+if TYPE_CHECKING:
+    from torch import Tensor
 
 from premixdb.enrichment import (
     DataTroveFields,

@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import os
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
 from os import PathLike
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Iterable, Iterator, Protocol
 
 from blake3 import blake3
 
+from .._files import publish as _publish
 from .._inputs import Source
 from .._typing import (
     JSON,
@@ -229,26 +228,6 @@ def _profile(data: bytes) -> TextProfile:
     return TextProfile(content_bytes=len(data), characters=len(text), newlines=text.count("\n"))
 
 
-def _publish(path: Path, data: bytes) -> None:
-    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                pass
-            fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
 def _decode_profile(raw: JSON) -> TextProfile:
     obj = json_object(raw)
     _totals(obj, ("content_bytes", "characters", "newlines"))
@@ -390,22 +369,23 @@ class Store:
             raise RuntimeError("snapshot manifest ID mismatch")
         return manifest
 
-    def _records(self, manifest: Manifest) -> list[DocumentRecord]:
-        if manifest["version"] == 1 and "documents" in manifest and "pages" not in manifest:
-            records = manifest["documents"]
-        elif manifest["version"] == 2 and "pages" in manifest and "documents" not in manifest:
-            records = []
-            for page in manifest["pages"]:
-                rows = [
-                    _decode_document(json_object(row))
-                    for row in json_list(load_json(self._frame(page, PAGE_BYTES)))
-                ]
-                if not rows:
-                    raise RuntimeError("empty inventory page")
-                records.extend(rows)
-        else:
-            raise RuntimeError("invalid snapshot manifest layout or version")
-        for record in records:
+    def _records(self, manifest: Manifest) -> Iterator[DocumentRecord]:
+        """Validate inventory records one page at a time, including global ordering."""
+
+        def records() -> Iterator[DocumentRecord]:
+            if manifest["version"] == 1 and "documents" in manifest and "pages" not in manifest:
+                yield from manifest["documents"]
+            elif manifest["version"] == 2 and "pages" in manifest and "documents" not in manifest:
+                for page in manifest["pages"]:
+                    rows = json_list(load_json(self._frame(page, PAGE_BYTES)))
+                    if not rows:
+                        raise RuntimeError("empty inventory page")
+                    yield from (_decode_document(json_object(row)) for row in rows)
+            else:
+                raise RuntimeError("invalid snapshot manifest layout or version")
+
+        previous, count = None, 0
+        for record in records():
             _schema(record, ("key", "content", "bytes", "frames"))
             if (
                 len(bytes(record["content"])) != 32
@@ -429,10 +409,13 @@ class Store:
                         or not p["newlines"] <= p["characters"] <= p["content_bytes"]
                     ):
                         raise RuntimeError("invalid text profile")
-        keys = [r["key"] for r in records]
-        if keys != sorted(set(keys)) or len(keys) != manifest["summary"]["documents"]:
+            key = record["key"]
+            if previous is not None and key <= previous:
+                raise RuntimeError("invalid snapshot inventory")
+            previous, count = key, count + 1
+            yield record
+        if count != manifest["summary"]["documents"]:
             raise RuntimeError("invalid snapshot inventory")
-        return records
 
     def _frame(self, frame: Frame, limit: int = 8 * FRAME_BYTES) -> bytes:
         _schema(frame, ("digest", "bytes"), ("profile",))
@@ -451,7 +434,7 @@ class Store:
         code: CodeVersion,
         base: Snapshot | None = None,
     ) -> Snapshot:
-        return self.capture_inputs(corpus, [(s.key, s.text) for s in sources], [], code, base)
+        return self.capture_inputs(corpus, ((s.key, s.text) for s in sources), (), code, base)
 
     def capture_inputs(
         self,
@@ -463,13 +446,15 @@ class Store:
         *,
         stream: bool = False,
     ) -> Snapshot:
+        corpus_id = digest(corpus, 16).hex()
+
         def sources() -> Iterator[tuple[str, str | Document]]:
             try:
                 for key, text in chain(
                     texts, ((key, Path(path).read_bytes().decode()) for key, path in files)
                 ):
                     if stream:
-                        doc = Document(digest(corpus, 16).hex(), key, text)
+                        doc = Document(corpus_id, key, text)
                         record = self._document_record(doc, FRAME_BYTES)
                         yield key, StoredDocument(doc.corpus_id, key, record, self, doc.id)
                     else:

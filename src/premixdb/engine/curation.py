@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from fractions import Fraction
 from functools import cmp_to_key
 from typing import (
     TYPE_CHECKING,
@@ -16,7 +15,6 @@ from typing import (
     ContextManager,
     Iterable,
     Iterator,
-    Mapping,
     Protocol,
     Sequence,
 )
@@ -30,9 +28,11 @@ if TYPE_CHECKING:
 
 from blake3 import blake3
 
-from .._mixing import _domain_key
+from .._mixing import _domain_key, allocations
 from .identity import identity_domain
 from .snapshots import Document
+from .spill import cosine_edges as cosine_edges
+from .spill import jaccard_edges as jaccard_edges
 
 type SelectedDocument = Document | RetainedDocument
 type Unit = bytes | tuple[str, ...]
@@ -234,36 +234,25 @@ def greedy(
     return result
 
 
-def jaccard_edges(
-    documents: list[SelectedDocument],
-    n: int,
-    threshold: float,
-    candidates: Iterable[Edge] | None = None,
-) -> Iterator[Edge]:
-    from .spill import jaccard_edges as verified_edges
-
-    yield from verified_edges(documents, n, threshold, candidates)
-
-
-def cosine_edges(
-    vectors: Mapping[str, Sequence[float] | None],
-    threshold: float,
-    *,
-    selected: set[str] | None = None,
-) -> Iterator[Edge]:
-    from .spill import cosine_edges as verified_edges
-
-    yield from verified_edges(vectors, threshold, selected)
+def intrinsic_value(document: SelectedDocument, field: q.IntrinsicField) -> int | str:
+    """Project captured metadata or the current retained text's size."""
+    if field == q.FIELD_TEXT_BYTES:
+        return document.size
+    if field == q.FIELD_TEXT_CHARACTERS:
+        return document.characters
+    if field == q.FIELD_OBJECT_URI:
+        return document.source_key
+    if field == q.FIELD_SOURCE_CORPUS_ID:
+        return document.corpus_id
+    raise ValueError(f"unknown intrinsic field: {field}")
 
 
 def label(
     document: SelectedDocument, selector: q.FieldComparison, values: FieldValues
 ) -> FieldValue:
-    if selector.field == 1:
-        return document.size
-    if selector.field == 2:
-        return document.characters
-    # Actual intrinsic enum values are resolved by the planner, via values.
+    # Span curation changes counts after the planner resolves field values.
+    if selector.field in (q.FIELD_TEXT_BYTES, q.FIELD_TEXT_CHARACTERS):
+        return intrinsic_value(document, selector.field)
     return values[selector_key(selector)].get(document.id)
 
 
@@ -281,18 +270,6 @@ def selector_key(selector: q.FieldComparison) -> str:
     if selector.HasField("component"):
         digest.u64(selector.component)
     return "external:" + digest.finish().hex()
-
-
-def allocations(weights: Mapping[str, int | float], total: int) -> dict[str, int]:
-    quotas = {
-        k: Fraction(v) * total / sum(Fraction(w) for w in weights.values())
-        for k, v in weights.items()
-    }
-    result = {k: int(v) for k, v in quotas.items()}
-    order = sorted(quotas, key=lambda k: (-(quotas[k] - result[k]), k))
-    for key in order[: total - sum(result.values())]:
-        result[key] += 1
-    return result
 
 
 def sample(
@@ -340,6 +317,8 @@ def sample(
             provenance[document.id]["selection"] = dict(kind="not_sampled")
         return []
 
+    token_sizes: dict[str, int] = {}
+
     def size(d: SelectedDocument) -> int:
         if budget in ("documents", "fraction"):
             return 1
@@ -347,7 +326,11 @@ def sample(
             return d.size
         if budget == "characters":
             return d.characters
-        return len(tokenizer.encode(d.text)) if tokenizer else d.size
+        if tokenizer is None:
+            return d.size
+        if d.id not in token_sizes:
+            token_sizes[d.id] = len(tokenizer.encode(d.text))
+        return token_sizes[d.id]
 
     weights = dict(policy.weights) or {k: sum(size(d) for d in v) for k, v in strata.items()}
     if not sum(weights.values()):

@@ -64,9 +64,8 @@ class PackagingTests(unittest.TestCase):
             for suffix in (".py", ".pyi")
         }
 
-    def assert_importable(self, path: Path) -> None:
-        self.run_python(
-            f"""
+    def assert_importable(self, path: Path, *, training: bool = False) -> None:
+        code = f"""
 import importlib.abc
 import sys
 from pathlib import Path
@@ -93,7 +92,6 @@ assert sources[0].text.startswith('First Citizen:')
 import os
 import tempfile
 os.environ.pop('PREMIXDB_GIT_COMMIT', None)
-from torch.utils.data import DataLoader
 with tempfile.TemporaryDirectory() as storage:
     with premixdb.PremixDB(storage=storage) as db:
         snapshot = db.corpus('wheel-workflow', [premixdb.Source('a', 'hello')])
@@ -101,7 +99,16 @@ with tempfile.TemporaryDirectory() as storage:
         query = snapshot.query()
         assert query.profile().output_documents == 1
         assert query.preview()[0]['text'] == 'hello'
-        dataset = query.dataset(sequence_length=8)
+        dataset = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)
+        assert dataset[0].tokens == list(b'hello') + [256, 257, 257]
+        assert dataset[0].mask == [True] * 6 + [False] * 2
+"""
+        if training:
+            code += """
+from torch.utils.data import DataLoader
+with tempfile.TemporaryDirectory() as storage:
+    with premixdb.PremixDB(storage=storage) as db:
+        dataset = db.corpus('training', [premixdb.Source('a', 'hello')]).query().dataset(sequence_length=8)
         assert dataset[0].tokens == [31373] + [50256] * 7
         data = dataset.torch()
     batch = next(iter(DataLoader(data, batch_size=1)))
@@ -109,9 +116,9 @@ with tempfile.TemporaryDirectory() as storage:
     assert batch['attention_mask'].tolist() == [[1, 1] + [0] * 6]
     assert batch['labels'].tolist() == [[31373, 50256] + [-100] * 6]
 """
-        )
+        self.run_python(code)
 
-    def assert_wheel(self, root: Path) -> None:
+    def assert_wheel(self, root: Path, *, training: bool = False) -> None:
         wheel = next((root / "dist").glob("*.whl"))
         with zipfile.ZipFile(wheel) as archive:
             names = set(archive.namelist())
@@ -144,7 +151,7 @@ with tempfile.TemporaryDirectory() as storage:
             self.assertEqual(entry_points["console_scripts"]["premixdb"], "premixdb._cli:main")
             installed = root / "installed"
             archive.extractall(installed)
-        self.assert_importable(installed)
+        self.assert_importable(installed, training=training)
 
     def test_sdist_contains_schemas_and_rebuilds_bindings(self) -> None:
         # Even a developer's ignored local outputs must stay out of the sdist.
@@ -187,7 +194,7 @@ with tempfile.TemporaryDirectory() as storage:
         (removed / "inspector.html").write_text("stale browser interface")
         (removed / "inspector.py").write_text("raise AssertionError('removed module')")
         self.run_python("from setuptools.build_meta import build_wheel; build_wheel('dist')")
-        self.assert_wheel(self.root)
+        self.assert_wheel(self.root, training=True)
 
     def test_editable_builds_generate_local_bindings(self) -> None:
         for mode in ("default", "strict"):

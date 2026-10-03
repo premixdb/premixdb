@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .contracts import Counts, PackingGeometry, PackingProfile
+from .contracts import Counts, PackingGeometry, PackingProfile, PackingSummary
 from .identity import Canonical, CodeVersion, digest, unsigned
 
 BYTE_DEFINITION = (
@@ -23,6 +23,18 @@ class PackingTotals:
     sequences: int
     output: int
     occurrences: int
+
+    def summary(self, counts: Counts) -> PackingSummary:
+        return PackingSummary(
+            input=counts.copy(),
+            content_tokens=self.content,
+            separator_tokens=self.separators,
+            dropped_content_tokens=self.dropped_content,
+            dropped_separator_tokens=self.dropped_separators,
+            padding_tokens=self.padding,
+            sequences=self.sequences,
+            output_tokens=self.output,
+        )
 
     def profile(self, counts: Counts) -> PackingProfile:
         return PackingProfile(

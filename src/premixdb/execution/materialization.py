@@ -57,9 +57,10 @@ class Materializer[R]:
         key = kind, id
         with self._lock:
             future = self._active.get(key)
-            if future is None:
-                future = self._pool.submit(work)
-                self._active[key] = future
+            if future is not None:
+                return future
+            future = self._pool.submit(work)
+            self._active[key] = future
         # Register outside the lock: already finished futures invoke callbacks inline.
         future.add_done_callback(lambda done: self._forget(key, done))
         return future

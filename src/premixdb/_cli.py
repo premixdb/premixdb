@@ -19,6 +19,7 @@ from google.protobuf.message import Message
 
 import premixdb as p
 
+from ._catalog import _pages
 from ._ids import _encode_id
 from ._typing import JSON, is_json
 from .v1 import corpus_pb2 as c
@@ -106,9 +107,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Explore local data from Python or the terminal.",
     )
     parser.add_argument("--storage", help="local database directory")
-    parser.add_argument(
-        "--read-only", action="store_true", help="open a shell without compute or writes"
-    )
+    parser.add_argument("--read-only", action="store_true", help="disable compute and writes")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("shell", help="open a shell with db and p already available")
     corpora = commands.add_parser("corpora", help="list published corpus names and snapshot IDs")
@@ -116,7 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     profile.add_argument("kind", choices=("snapshot", "query", "dataset"))
     profile.add_argument("id", help="published resource ID")
     profile.add_argument("--field", help="summarize one snapshot/query field, e.g. text.characters")
-    preview = commands.add_parser("preview", help="browse a bounded page of published documents")
+    preview = commands.add_parser("preview", help="browse published documents or packed sequences")
     preview.add_argument("kind", choices=("snapshot", "query", "dataset"))
     preview.add_argument("id", help="published resource ID")
     preview.add_argument("--limit", type=int, default=3)
@@ -162,22 +161,19 @@ def _display(value: object, json_output: bool) -> None:
 
 
 def _corpora(db: p.PremixDB) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    page = b""
-    while True:
-        response = db._executor.ListCorpus(c.ListCorpusRequest(page_token=page))
-        for corpus in response.corpora:
-            latest = db._executor.GetCorpus(c.GetCorpusRequest(id=corpus.id)).corpus
-            rows.append(
-                dict(
-                    name=corpus.name,
-                    id=_encode_id(corpus.id),
-                    snapshot_id=_encode_id(latest.latest_snapshot_id),
-                )
-            )
-        page = response.next_page_token
-        if not page:
-            return rows
+    return [
+        dict(
+            name=corpus.name,
+            id=_encode_id(corpus.id),
+            snapshot_id=_encode_id(db._get("Corpus", corpus.id).latest_snapshot_id),
+        )
+        for corpus in _pages(
+            db,
+            db._executor.ListCorpus,
+            c.ListCorpusRequest(),
+            lambda response: response.corpora,
+        )
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,11 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "profile" and args.field and args.kind == "dataset":
         parser.error("--field summarizes snapshots or queries; datasets have packing profiles")
     try:
-        db = p.PremixDB(
+        with p.PremixDB(
             storage=args.storage,
             read_only=True if args.read_only or args.command != "shell" else None,
-        )
-        try:
+        ) as db:
             if args.command == "shell":
                 with _shell_exit_signals():
                     from pathlib import Path
@@ -225,12 +220,10 @@ def main(argv: list[str] | None = None) -> int:
                         limit=args.limit, offset=args.offset, max_characters=args.max_characters
                     )
                 _display(value, args.json)
-        finally:
-            db.close()
     except (
         ValueError,
         KeyError,
-        PermissionError,
+        OSError,
         sqlite3.Error,
         p.ExecutionError,
         NotImplementedError,

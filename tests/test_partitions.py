@@ -19,7 +19,9 @@ import pytest
 from _type_support import invalid_call
 from blake3 import blake3
 
+from premixdb import _files
 from premixdb.execution.partitions import (
+    CHUNK_SIZE,
     CONTROL_LIMIT,
     Artifact,
     IntegrityError,
@@ -193,15 +195,104 @@ class PartitionTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             artifacts = list(
                 pool.map(
-                    lambda _: self.store.publish_file(self.task.output_uri, self.source), range(8)
+                    lambda i: (
+                        self.store.publish_file(self.task.output_uri, self.source)
+                        if i % 2
+                        else self.store.publish_bytes(self.task.output_uri, b"document")
+                    ),
+                    range(8),
                 )
             )
         self.assertTrue(all(artifact == artifacts[0] for artifact in artifacts))
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            self.store.publish_bytes(self.task.output_uri, b"conflict")
         with self.assertRaisesRegex(ValueError, "checksum"):
             self.worker(self.task)
         self.assertEqual(self.output_path.read_bytes(), b"document")
         self.assertIsNone(self.store.find(self.task))
         self.assertEqual(list(self.output_path.parent.iterdir()), [self.output_path])
+
+    def test_memory_reads_verify_empty_and_multichunk_objects(self) -> None:
+        for data in (b"", b"first" * CHUNK_SIZE + b"last"):
+            with self.subTest(length=len(data)):
+                uri = self.store.root + "/objects/" + blake3(data).hexdigest()
+                artifact = self.store.publish_bytes(uri, data)
+                self.assertEqual(artifact.digest, blake3(data).digest())
+                self.assertEqual(self.store.read(artifact), data)
+                destination = self.root / "download"
+                self.store.download(artifact, destination)
+                self.assertEqual(destination.read_bytes(), data)
+                self.assertEqual(self.store.publish_file(uri, destination), artifact)
+                Path(unquote(urlsplit(uri).path)).write_bytes(b"corrupt")
+                with self.assertRaisesRegex(IntegrityError, "checksum"):
+                    self.store.read(artifact)
+
+    def test_partition_rows_are_verified_before_being_exposed(self) -> None:
+        pipeline = PartitionPipeline(self.store)
+        self.addCleanup(pipeline.close)
+        data = json.dumps({"version": 1, "rows": [{"id": "original"}]}).encode()
+        artifact = self.store.publish_bytes(self.task.output_uri, data)
+        self.assertEqual(list(pipeline.rows((artifact,))), [{"id": "original"}])
+        self.output_path.write_bytes(
+            json.dumps({"version": 1, "rows": [{"id": "changed"}]}).encode()
+        )
+        with self.assertRaisesRegex(IntegrityError, "checksum"):
+            next(pipeline.rows((artifact,)))
+
+    def test_reconciliation_failure_cancels_pending_tasks_with_a_live_traceback(self) -> None:
+        pipeline = PartitionPipeline(self.store)
+        self.addCleanup(pipeline.close)
+        tasks = [
+            replace(self.task, key=i.to_bytes(32, "big"), engine_digest=pipeline.engine)
+            for i in range(3)
+        ]
+        output = self.store.publish_bytes(self.task.output_uri, b"result")
+        receipts = [Receipt(task.key, task.engine_digest, output) for task in tasks]
+        for phase in ("receipt", "checksum"):
+            with self.subTest(phase=phase):
+                bad = (
+                    replace(receipts[0], task_key=b"x" * 32)
+                    if phase == "receipt"
+                    else replace(receipts[0], output=replace(output, digest=b"x" * 32))
+                )
+                futures = [Mock() for _ in tasks]
+                for future, receipt in zip(futures, [bad, *receipts[1:]], strict=True):
+                    future.result.return_value = receipt
+                with patch.object(pipeline._pool, "submit", side_effect=futures) as submit:
+                    with pytest.raises(IntegrityError, match=phase) as failure:
+                        pipeline._execute(iter(tasks))
+                self.assertIsNotNone(failure.value.__traceback__)
+                self.assertEqual(submit.call_count, pipeline._window)
+                futures[1].cancel.assert_called_once()
+                futures[2].result.assert_not_called()
+
+        futures = [Mock() for _ in tasks]
+        for future, receipt in zip(futures, receipts, strict=True):
+            future.result.return_value = receipt
+        with patch.object(pipeline._pool, "submit", side_effect=futures) as submit:
+            self.assertEqual(pipeline._execute(iter(tasks)), (output,) * len(tasks))
+            self.assertEqual(pipeline._execute(iter(())), ())
+        self.assertEqual(submit.call_count, len(tasks))
+
+    def test_failed_publication_closes_input_and_cleans_staging_with_live_tracebacks(self) -> None:
+        for phase in ("read", "link"):
+            with self.subTest(phase=phase):
+                source = self.source.open("rb")
+                self.addCleanup(source.close)
+                fault = (
+                    patch.object(
+                        source, "read", side_effect=[b"document", OSError("publish failed")]
+                    )
+                    if phase == "read"
+                    else patch.object(_files.os, "link", side_effect=OSError("publish failed"))
+                )
+                with patch.object(Path, "open", return_value=source), fault:
+                    with pytest.raises(OSError, match="publish failed") as failure:
+                        self.store.publish_file(self.task.output_uri, self.source)
+                self.assertIsNotNone(failure.value.__traceback__)
+                self.assertTrue(source.closed)
+                self.assertFalse(self.output_path.exists())
+                self.assertEqual(list(self.output_path.parent.iterdir()), [])
 
     def test_receipt_requires_verified_output(self) -> None:
         output = Artifact(self.task.output_uri, blake3(b"DOCUMENT").digest())

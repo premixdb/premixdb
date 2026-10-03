@@ -17,18 +17,15 @@ from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.execution import Coordinator, catalog, compile_query, enrichment, profiles
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import profile_pb2 as p
-from premixdb.v1 import profile_pb2 as profile_pb
 from premixdb.v1 import query_pb2 as q
-from premixdb.v1 import query_pb2 as query_pb
 from premixdb.v1 import snapshot_pb2 as s
-from premixdb.v1 import snapshot_pb2 as snapshot_pb
 from premixdb.v1 import storage_pb2 as storage
 
 
 class HistogramTests(unittest.TestCase):
     def scalar(
         self, values: Iterable[float | int | None], *, integer: bool = False
-    ) -> profile_pb.FieldProfile:
+    ) -> p.FieldProfile:
         profiler = profiles.FieldProfiler(
             field(
                 "datatrove.n_words" if integer else "language.en",
@@ -40,8 +37,8 @@ class HistogramTests(unittest.TestCase):
         return profiler.proto()
 
     def selector(
-        self, profile: profile_pb.FieldProfile, op: query_pb.Comparison.Operator, value: float
-    ) -> query_pb.FieldComparison:
+        self, profile: p.FieldProfile, op: q.Comparison.Operator, value: float
+    ) -> q.FieldComparison:
         return q.FieldComparison(
             field=profile.field, projection=q.FieldComparison.SCALAR, operator=op, number=value
         )
@@ -204,8 +201,8 @@ class PlanningTests(unittest.TestCase):
         self.snapshot = self.capture("profiles", ["", "ab"])
 
     def capture(
-        self, name: str, texts: Iterable[str], *, base: snapshot_pb.Snapshot | None = None
-    ) -> snapshot_pb.Snapshot:
+        self, name: str, texts: Iterable[str], *, base: s.Snapshot | None = None
+    ) -> s.Snapshot:
         corpus = self.service.CreateCorpus(premixdb.corpus(name)).id
         return self.service.CreateSnapshot(
             premixdb.snapshot(

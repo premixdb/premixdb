@@ -9,6 +9,13 @@ from .._types import SnapshotSummary as Counts
 from .._typing import Interval
 
 
+class EncodedTokens(TypedDict):
+    byte_tokens: NotRequired[str]
+    byte_ranges: NotRequired[list[list[int]]]
+    tokens: NotRequired[list[int]]
+    ranges: NotRequired[list[list[list[int]]]]
+
+
 class TextProfile(TypedDict):
     content_bytes: int
     characters: int

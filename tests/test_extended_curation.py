@@ -5,16 +5,55 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from _type_support import coordinator
 from blake3 import blake3
 
 import premixdb as p
-import premixdb as sdk
+from premixdb.engine.datasets import HuggingFaceTokenizer
 from premixdb.execution.enrichment import numeric_vector
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_token_sampling_measures_retained_and_empty_text_once_per_query(
+    tmp_path: Path, replacement: bool
+) -> None:
+    asset = Path(__file__).parent / "fixtures" / "wordpiece.json"
+    tokenizer = p.hugging_face_tokenizer(asset, digest=blake3(asset.read_bytes()).hexdigest())
+    calls: Counter[str] = Counter()
+    encode = HuggingFaceTokenizer.encode
+
+    def measured(model: HuggingFaceTokenizer, text: str) -> list[int]:
+        calls[text] += 1
+        return encode(model, text)
+
+    with p.PremixDB(storage=tmp_path) as db:
+        target = db.corpus("target", [p.Source("a", "hello\n秘密\nworld"), p.Source("empty", "")])
+        reference = db.corpus("reference", [p.Source("b", "秘密")])
+        budget = 5 if replacement else 1
+        realized = 6 if replacement else 2
+        with patch.object(HuggingFaceTokenizer, "encode", autospec=True, side_effect=measured):
+            for measurements, seed in enumerate((4, 5), 1):
+                query = target.query(
+                    decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
+                    sampling=p.sample(
+                        seed=seed, tokens=budget, tokenizer=tokenizer, replacement=replacement
+                    ),
+                )
+                profile = query.profile()
+                assert calls == {"hello\n\nworld": measurements, "": measurements}
+                assert profile.sampling.realized == realized
+                assert profile.sampling.overshoot == 1
+                assert dict(profile.sampling.requested_domains) == {"[]": budget}
+                assert dict(profile.sampling.realized_domains) == {"[]": realized}
+                assert profile.output_content_bytes == realized // 2 * len(
+                    "hello\n\nworld".encode()
+                )
 
 
 class ExtendedCurationTests(unittest.TestCase):
@@ -27,7 +66,7 @@ class ExtendedCurationTests(unittest.TestCase):
         self.client.close()
         self.directory.cleanup()
 
-    def snapshot(self, name: str, texts: Iterable[str]) -> sdk.Snapshot:
+    def snapshot(self, name: str, texts: Iterable[str]) -> p.Snapshot:
         return self.client.corpus(name, [p.Source(str(i), text) for i, text in enumerate(texts)])
 
     def test_decontamination_trims_utf8_ranges_and_persists_witnesses(self) -> None:
@@ -80,6 +119,20 @@ class ExtendedCurationTests(unittest.TestCase):
             rows(coordinator(self.client), "query", query.id, {"stratum": ["[6]"]})["total"], 2
         )
 
+    def test_character_strata_use_retained_unicode_text(self) -> None:
+        from premixdb.execution.inspection import rows
+
+        target = self.snapshot("target", ["pré\n秘密\nfin", "abcdefgh"])
+        reference = self.snapshot("reference", ["秘密"])
+        query = target.query(
+            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
+            sampling=p.sample(seed=3, documents=2, domains=p.text.characters, weights={"[8]": 1.0}),
+        )
+        self.assertEqual(dict(query.profile().sampling.realized_domains), {"[8]": 2})
+        self.assertEqual(
+            rows(coordinator(self.client), "query", query.id, {"stratum": ["[8]"]})["total"], 2
+        )
+
     def test_cosine_spill_covers_block_boundaries_and_extreme_finite_scales(self) -> None:
         from premixdb.engine.curation import cosine_edges
         from premixdb.engine.value_cache import ValueCache
@@ -88,16 +141,17 @@ class ExtendedCurationTests(unittest.TestCase):
             (f"{i:064x}", [1e200, 0] if i % 3 == 0 else [1e-200, 0] if i % 3 == 1 else [0, 1])
             for i in range(65)
         )
+        self.addCleanup(vectors.close)
         vectors[f"{65:064x}"] = None
         vectors[f"{66:064x}"] = [0, 0]
         self.assertEqual(
             sum(
                 1
                 for _ in cosine_edges(
-                    {
-                        key: numeric_vector(value) if value is not None else None
+                    (
+                        (key, numeric_vector(value) if value is not None else None)
                         for key, value in vectors.items()
-                    },
+                    ),
                     1.0,
                 )
             ),
@@ -107,10 +161,10 @@ class ExtendedCurationTests(unittest.TestCase):
         self.assertEqual(
             list(
                 cosine_edges(
-                    {
-                        key: numeric_vector(value) if value is not None else None
+                    (
+                        (key, numeric_vector(value) if value is not None else None)
                         for key, value in vectors.items()
-                    },
+                    ),
                     1.0,
                     selected=selected,
                 )

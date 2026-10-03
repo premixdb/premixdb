@@ -8,7 +8,7 @@ from blake3 import blake3
 from google.protobuf.message import Message
 
 from .. import _runtime
-from .._protobuf import copy_message, parse
+from .._protobuf import copy_message
 from .._wire import copy_fields, reject_unknown
 from ..engine import plans as execution
 from ..engine.identity import identity_domain
@@ -63,14 +63,7 @@ def execution_steps(plan: query.Query | query.CreateQueryRequest) -> list[execut
             }
             if policy.algorithm not in units:
                 raise ValueError("invalid exact comparison unit")
-            orders = []
-            for order in policy.order_by:
-                if order.direction not in (
-                    query.OrderBy.DIRECTION_ASC,
-                    query.OrderBy.DIRECTION_DESC,
-                ):
-                    raise ValueError("invalid ordering direction")
-                orders.append((order_field(order), order.direction == query.OrderBy.DIRECTION_DESC))
+            orders = _orders(policy)
             separator = (
                 policy.source_group_separator if policy.HasField("source_group_separator") else None
             )
@@ -96,14 +89,7 @@ def execution_steps(plan: query.Query | query.CreateQueryRequest) -> list[execut
             policy = operation.indexed_dedupe
             if len(policy.index_snapshot_id) != 32:
                 raise ValueError("indexed dedupe requires a build ID")
-            orders = []
-            for order in policy.order_by:
-                if order.direction not in (
-                    query.OrderBy.DIRECTION_ASC,
-                    query.OrderBy.DIRECTION_DESC,
-                ):
-                    raise ValueError("invalid ordering direction")
-                orders.append((order_field(order), order.direction == query.OrderBy.DIRECTION_DESC))
+            orders = _orders(policy)
             if policy.index_name == "dupekit.lsh":
                 if (
                     not policy.HasField("threshold")
@@ -121,16 +107,20 @@ def execution_steps(plan: query.Query | query.CreateQueryRequest) -> list[execut
         elif kind == "similarity_dedupe":
             policy = operation.similarity_dedupe
             if (
-                policy.algorithm not in (1, 2)
+                policy.algorithm
+                not in (query.SimilarityDedupe.JACCARD, query.SimilarityDedupe.COSINE)
                 or not math.isfinite(policy.threshold)
                 or not 0 <= policy.threshold <= 1
             ):
                 raise ValueError("similarity requires a valid algorithm and threshold in [0,1]")
-            if policy.algorithm == 1 and not 1 <= policy.n <= 1024:
+            if policy.algorithm == query.SimilarityDedupe.JACCARD and not 1 <= policy.n <= 1024:
                 raise ValueError("Jaccard n-gram size must be in [1,1024]")
-            if policy.algorithm == 2 and policy.embedding.field not in (400, 401):
+            if (
+                policy.algorithm == query.SimilarityDedupe.COSINE
+                and policy.embedding.field != query.FIELD_EMBEDDING_HARRIER
+            ):
                 raise ValueError("cosine dedupe requires a pinned embedding field")
-            orders = [(order_field(o), descending(o)) for o in policy.order_by]
+            orders = _orders(policy)
             steps.append(
                 execution.policy(policy_definition(operation), ("similarity", orders, None))
             )
@@ -167,8 +157,6 @@ def execution_steps(plan: query.Query | query.CreateQueryRequest) -> list[execut
         ):
             raise ValueError("tokenizer assets require a token budget and digest")
         if policy.tokenizer_json:
-            from blake3 import blake3
-
             if (
                 not policy.HasField("tokenizer_asset")
                 or blake3(policy.tokenizer_json).digest() != policy.tokenizer_asset.blake3_digest
@@ -228,7 +216,7 @@ def compile_query(plan: query.CreateQueryRequest | query.Query) -> query.Query:
         if selector.WhichOneof("value") is None:
             validate_projection(
                 selector,
-                vector=selector.field in (400, 401)
+                vector=selector.field == query.FIELD_EMBEDDING_HARRIER
                 and selector.projection == query.FieldComparison.SCALAR
                 and (
                     selector in resolved.fields
@@ -267,10 +255,15 @@ def external_definition(operation: query.Operation) -> bytes:
     ).digest()
 
 
-def descending(order: query.OrderBy) -> bool:
-    if order.direction not in (1, 2):
-        raise ValueError("invalid ordering direction")
-    return order.direction == 2
+def _orders(
+    policy: query.Dedupe | query.IndexedDedupe | query.SimilarityDedupe,
+) -> list[tuple[str, bool]]:
+    orders = []
+    for order in policy.order_by:
+        if order.direction not in (query.OrderBy.DIRECTION_ASC, query.OrderBy.DIRECTION_DESC):
+            raise ValueError("invalid ordering direction")
+        orders.append((order_field(order), order.direction == query.OrderBy.DIRECTION_DESC))
+    return orders
 
 
 def order_field(order: query.OrderBy) -> str:
@@ -315,7 +308,7 @@ def validate_projection(selector: query.FieldComparison, *, vector: bool = False
     from ..fields import ContentType, Topic
     from .catalog import validate_logical_selector
 
-    probe = parse(query.FieldComparison, selector.SerializeToString())
+    probe = copy_message(selector)
     probe.operator = query.Comparison.OPERATOR_EQ
     if probe.projection == query.FieldComparison.TOP_CLASS:
         probe.text = next(

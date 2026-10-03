@@ -7,6 +7,7 @@ values; summing those values is never a substitute for their distribution.
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from collections import Counter
 from typing import TYPE_CHECKING, Literal, Mapping, NotRequired, Sequence, TypedDict
 
@@ -114,7 +115,7 @@ def output_profiles(service: Coordinator, recipe: q.Query, handle: Query) -> lis
 
     occurrences = Counter()
     text = TextProfiler()
-    for row in handle.rows():
+    for row in handle:
         occurrences[row.id] += 1
         text.add(row.document.size, row.document.characters, row.source_key, row.corpus_id)
     result = text.proto()
@@ -122,8 +123,8 @@ def output_profiles(service: Coordinator, recipe: q.Query, handle: Query) -> lis
         build, manifest = load_build(service, "field", identity, recipe.snapshot_ids)
         profiler = FieldProfiler(build.field)
         for value_row in read_rows(service, "field", manifest):
-            for _ in range(occurrences[value_row.document_id.hex()]):
-                profiler.add(decode_value(build.field, value_row))
+            if count := occurrences[value_row.document_id.hex()]:
+                profiler.add(decode_value(build.field, value_row), occurrences=count)
         result.append(profiler.proto())
     return result
 
@@ -188,15 +189,13 @@ class Histogram:
             delta = offset - self.mean_offset
             self.mean_offset += delta / self.documents
             self.squared_deviations += delta * (offset - self.mean_offset)
-        for index, (lower, upper, count) in enumerate(self.buckets):
-            if compare(lower, item) <= 0 and compare(item, upper) <= 0:
-                self.buckets[index] = (lower, upper, count + 1)
+        index = bisect_right(self.buckets, item, key=lambda bucket: bucket[0])
+        if index:
+            lower, upper, count = self.buckets[index - 1]
+            if compare(item, upper) <= 0:
+                self.buckets[index - 1] = (lower, upper, count + 1)
                 return
-            if compare(item, lower) < 0:
-                self.buckets.insert(index, (item, item, 1))
-                break
-        else:
-            self.buckets.append((item, item, 1))
+        self.buckets.insert(index, (item, item, 1))
         if len(self.buckets) > MAX_BUCKETS:
             index = min(
                 range(len(self.buckets) - 1),
@@ -259,10 +258,15 @@ class FieldProfiler:
                 Histogram(kinds[spec.element_type], projection=p.FieldDistribution.SCALAR)
             )
 
-    def add(self, item: FieldValue) -> None:
-        self.profile.documents += 1
+    def add(self, item: FieldValue, *, occurrences: int = 1) -> None:
+        """Project once; repeated occurrences keep the original histogram arithmetic."""
+        if type(occurrences) is not int or occurrences < 0:
+            raise ValueError("profile occurrences must be a nonnegative integer")
+        if not occurrences:
+            return
+        self.profile.documents += occurrences
         if item is None:
-            self.profile.null_documents += 1
+            self.profile.null_documents += occurrences
             return
         if self.spec.HasField("classification"):
             if not isinstance(item, list) or not all(isinstance(v, (int, float)) for v in item):
@@ -271,13 +275,16 @@ class FieldProfiler:
                 self.spec, [float(v) for v in item if isinstance(v, (float, int))]
             )
             for histogram in self.histograms:
-                histogram.add(
+                value = (
                     max(scores, key=scores.__getitem__)
                     if histogram.projection["projection"] == p.FieldDistribution.TOP_CLASS
                     else scores[histogram.projection["class_name"]]
                 )
+                for _ in range(occurrences):
+                    histogram.add(value)
         elif self.histograms:
-            self.histograms[0].add(item)
+            for _ in range(occurrences):
+                self.histograms[0].add(item)
 
     def proto(self) -> p.FieldProfile:
         result = p.FieldProfile()

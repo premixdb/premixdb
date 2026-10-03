@@ -1,4 +1,4 @@
-"""Integration tests against the installed extension; no network or test framework needed."""
+"""Capture, curation, packing, and resume through the direct local API."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import operator
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Unpack
@@ -81,6 +81,15 @@ class PremixDBTests(unittest.TestCase):
         self.assertNotEqual(next_snapshot.id, full.id)
         with self.assertRaises(ValueError):
             self.client.corpus("other").snapshot(source=[], base=first)
+        consumed = []
+
+        def sources() -> Iterator[Source]:
+            consumed.append("read")
+            yield Source("a", "unused")
+
+        with self.assertRaisesRegex(ValueError, "base belongs to another corpus"):
+            self.client.corpus("other").snapshot(source=sources(), base=first)
+        self.assertEqual(consumed, [])
 
     def test_file_inputs_preserve_newlines_and_unicode(self) -> None:
         inputs = self.root / "inputs"

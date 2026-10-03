@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
-import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from threading import RLock
 from types import TracebackType
 from typing import Self
@@ -15,6 +13,7 @@ from urllib.parse import urlsplit
 from blake3 import blake3
 from google.protobuf.message import Message
 
+from .._files import publish
 from ..v1.status_pb2 import STATUS_ERROR
 from ..v1.storage_pb2 import ObjectProfile, ObjectRef, SpanRef
 from .metadata import MetadataStore
@@ -34,23 +33,6 @@ PREFIXES = frozenset(
         "tokenizer",
     )
 )
-
-
-def _atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                if path.read_bytes() != data:
-                    raise ValueError("conflicting immutable storage object")
-        finally:
-            temporary.unlink(missing_ok=True)
 
 
 class ObjectStore:
@@ -132,15 +114,19 @@ class ObjectStore:
 
     def _put(self, relative: str | Path, data: bytes) -> None:
         """Write once; a concurrent publisher must have identical bytes."""
-        _atomic(self.root / relative, data)
+        path = self.root / relative
+        if not publish(path, data) and path.read_bytes() != data:
+            raise ValueError("conflicting immutable storage object")
 
     def _get(self, relative: str | Path, limit: int = 64 * 1024 * 1024) -> bytes:
-        path = self.root / relative
-        if not path.exists():
-            raise KeyError(relative)
-        if path.stat().st_size > limit:
+        try:
+            with (self.root / relative).open("rb") as stream:
+                data = stream.read(max(0, limit + 1))
+        except FileNotFoundError:
+            raise KeyError(relative) from None
+        if len(data) > limit:
             raise ValueError("storage object exceeds size limit")
-        return path.read_bytes()
+        return data
 
     def put(self, prefix: str, data: bytes, *, profile: ObjectProfile | None = None) -> ObjectRef:
         if self.read_only:
@@ -157,25 +143,6 @@ class ObjectStore:
             size_bytes=len(data),
             uri=self.object_uri(relative),
         )
-
-    def _replace_pointer(self, relative: str | Path, data: bytes) -> None:
-        """Atomically update a mutable head or diagnostic pointer."""
-        path = self.root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            try:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-                os.replace(temporary, path)
-                fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-            finally:
-                temporary.unlink(missing_ok=True)
 
     def save(
         self, prefix: str, id: bytes, message: Message, *, suffix: str = "", failure: bool = False
@@ -223,15 +190,14 @@ class ObjectStore:
     ) -> builtins.list[T]:
         return self.metadata.list(prefix, message_type, suffix=suffix)
 
-    def snapshot_files(self, id: bytes, *, text: bool) -> set[str]:
-        """Resolve only the manifest graph; metadata reports skip text frames."""
+    def verify_snapshot_metadata(self, id: bytes) -> None:
+        """Verify committed manifest and inventory pages without reading text frames."""
         from ..engine.snapshots import COMMIT_HEADER
 
         name = id.hex()
         commit = self._get(f"snapshot/snapshots/{name}", len(COMMIT_HEADER) + 32)
         if len(commit) != len(COMMIT_HEADER) + 32 or not commit.startswith(COMMIT_HEADER):
             raise ValueError("invalid snapshot commit")
-        files = {f"snapshot/snapshots/{name}"}
 
         def object(digest: bytes | list[int]) -> bytes:
             digest = bytes(digest)
@@ -241,15 +207,8 @@ class ObjectStore:
             data = self._get(relative)
             if blake3(data).digest() != digest:
                 raise ValueError("snapshot object integrity check failed")
-            files.add(relative)
             return data
 
         manifest = json.loads(object(commit[-32:]))
-        documents = manifest.get("documents") or []
         for page in manifest.get("pages") or []:
-            documents.extend(json.loads(object(page["digest"])))
-        if text:
-            for document in documents:
-                for frame in document["frames"]:
-                    object(frame["digest"])
-        return files
+            json.loads(object(page["digest"]))

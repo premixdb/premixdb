@@ -6,21 +6,26 @@ import json
 import tempfile
 import threading
 import unittest
-from collections.abc import Sequence
+import weakref
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 from _type_support import coordinator
 
 import premixdb as p
-import premixdb as sdk
 from premixdb._ids import _decode_id
 from premixdb._reader import permutation
+from premixdb._typing import FieldValue
+from premixdb.engine.identity import CodeVersion
+from premixdb.engine.plans import Step
+from premixdb.engine.queries import CorpusIndex, Query
+from premixdb.engine.snapshots import FRAME_BYTES, StoredDocument
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.internal import derivation_pb2 as derivation_pb
+from premixdb.execution import enrichment
 from premixdb.internal import derivation_pb2 as e
 from premixdb.v1 import dataset_pb2 as dataset_pb
 from premixdb.v1 import snapshot_pb2 as s
@@ -30,7 +35,7 @@ from premixdb.v1 import storage_pb2 as storage
 class InspectionFields:
     definition = {"provider": "test-extended-fields", "version": 1}
 
-    def __init__(self, spec: derivation_pb.EnrichmentProducer) -> None:
+    def __init__(self, spec: e.EnrichmentProducer) -> None:
         if spec.model.kind == e.ModelProducer.QUALITY:
             self.fields = (field("quality.educational_value"),)
         elif spec.model.kind == e.ModelProducer.TOPIC:
@@ -146,7 +151,7 @@ class ExtendedResourceTests(unittest.TestCase):
         self.client.close()
         self.directory.cleanup()
 
-    def population(self) -> sdk.Snapshot:
+    def population(self) -> p.Snapshot:
         return self.client.corpus(
             "population",
             [
@@ -202,6 +207,92 @@ class ExtendedResourceTests(unittest.TestCase):
             .wait()
         )
         self.assertEqual(exact.profile().output_documents, 2)
+
+    def test_cosine_streams_only_selected_embeddings(self) -> None:
+        snapshot = self.client.corpus(
+            "streamed-embeddings",
+            [p.Source("https://test/a", "same text"), p.Source("https://test/b", "same text")]
+            + [p.Source(f"https://test/other/{i}", "different outside") for i in range(32)],
+        )
+        with patch.object(enrichment, "producer", InspectionFields):
+            snapshot.query()._with_fields([p.embedding.harrier]).wait()
+
+        class Vector(list[float]):
+            pass
+
+        project = enrichment.numeric_vector
+        live = peak = calls = 0
+
+        def released() -> None:
+            nonlocal live
+            live -= 1
+
+        def measured(value: FieldValue) -> list[float]:
+            nonlocal live, peak, calls
+            vector = Vector(project(value))
+            calls += 1
+            live += 1
+            peak = max(peak, live)
+            weakref.finalize(vector, released)
+            return vector
+
+        execute = CorpusIndex.execute
+
+        def tracked(
+            index: CorpusIndex,
+            plan: Iterable[Step],
+            version: CodeVersion,
+            fields: tuple[bytes, ...],
+        ) -> Query:
+            with patch.object(enrichment, "numeric_vector", side_effect=measured):
+                return execute(index, plan, version, fields)
+
+        for filtered in (False, True):
+            with self.subTest(filtered=filtered):
+                live = peak = calls = 0
+                steps = [p.where(p.text.bytes < 10)] if filtered else []
+                steps.append(p.similarity_dedupe(embedding=p.embedding.harrier, threshold=1.0))
+                with patch.object(CorpusIndex, "execute", autospec=True, side_effect=tracked):
+                    query = snapshot.query(steps=steps).wait()
+                self.assertEqual(query.profile().output_documents, 1 if filtered else 2)
+                self.assertEqual(calls, 2 if filtered else 34)
+                self.assertLessEqual(peak, 2)
+                self.assertEqual(live, 0)
+
+    def test_similarity_dedupe_pins_and_reuses_derived_ordering(self) -> None:
+        snapshot = self.population()
+        for embedding in (None, p.embedding.harrier):
+            with self.subTest(embedding=embedding):
+                with patch(
+                    "premixdb.execution.enrichment.producer", side_effect=InspectionFields
+                ) as producer:
+                    query = snapshot.query(
+                        steps=[
+                            p.similarity_dedupe(
+                                embedding=embedding,
+                                threshold=1.0,
+                                n=1,
+                                order_by=[p.quality.educational_value.desc()],
+                            )
+                        ]
+                    )
+                    producer.assert_not_called()
+                    ordering = query._proto.operations[0].similarity_dedupe.order_by[0].selector
+                    self.assertEqual(len(ordering.field_snapshot_id), 32)
+                    self.assertIn(ordering.field_snapshot_id, query._proto.field_snapshot_ids)
+                    query.wait()
+                self.assertEqual(
+                    {
+                        row.source_key
+                        for row in coordinator(self.client)._query(_decode_id(query.id)).rows()
+                    },
+                    {"https://test/b", "https://test/null"},
+                )
+                with patch(
+                    "premixdb.execution.enrichment.producer",
+                    side_effect=AssertionError("recomputed a completed build"),
+                ):
+                    self.assertEqual(self.client._query(query.id).wait().id, query.id)
 
     def test_shuffle_partitions_and_checkpoint_policy(self) -> None:
         for count in (1, 2, 3, 4, 5, 15, 16, 17, 63, 64, 65, 127, 128, 129):
@@ -387,13 +478,170 @@ class ExtendedResourceTests(unittest.TestCase):
         index = next(
             index for index in available["indexes"] if index["name"] == "dupekit.exact_candidates"
         )
-        statistics = index_statistics(coordinator(self.client), index["id"], {"size": ["2"]})
+        with patch.object(
+            StoredDocument,
+            "text",
+            new_callable=PropertyMock,
+            side_effect=AssertionError("decoded whole duplicate"),
+        ):
+            statistics = index_statistics(coordinator(self.client), index["id"], {"size": ["2"]})
         self.assertEqual(statistics["group_sizes"], {"2": "1"})
         self.assertEqual(statistics["duplicate_documents"], "1")
         self.assertEqual(
             {r["source"] for r in statistics["examples"]}, {"https://test/a", "https://test/b"}
         )
         self.assertEqual(query.profile().output_documents, 2)
+
+    def test_inspection_drilldown_uses_shared_field_projections(self) -> None:
+        from premixdb.execution.inspection import rows
+
+        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+            query = (
+                self.population()
+                .query()
+                ._with_fields(
+                    [
+                        p.topic.label,
+                        p.quality.educational_value,
+                        p.embedding.harrier.component(0),
+                    ]
+                )
+                .wait()
+            )
+        cases = [
+            (
+                "FIELD_QUALITY_EDUCATIONAL_VALUE",
+                "SCALAR",
+                {},
+                '{"number":0.5}',
+                '{"number":1}',
+                {"b"},
+            ),
+            (
+                "FIELD_WEBORGANIZER_TOPIC",
+                "TOP_CLASS",
+                {},
+                json.dumps({"text": p.Topic.SCIENCE_AND_TECH.value}),
+                json.dumps({"text": p.Topic.SCIENCE_AND_TECH.value}),
+                {"a", "b"},
+            ),
+            (
+                "FIELD_WEBORGANIZER_TOPIC",
+                "CLASS_PROBABILITY",
+                {"class_name": [p.Topic.SCIENCE_AND_TECH.value]},
+                '{"number":0.9}',
+                '{"number":1}',
+                {"a", "b"},
+            ),
+            (
+                "FIELD_QUALITY_EDUCATIONAL_VALUE",
+                "IS_NULL",
+                {},
+                '{"boolean":true}',
+                '{"boolean":true}',
+                {"null"},
+            ),
+            (
+                "FIELD_EMBEDDING_HARRIER",
+                "VECTOR_COMPONENT",
+                {"component": ["0"]},
+                '{"number":1}',
+                '{"number":1}',
+                {"a", "b"},
+            ),
+        ]
+        with patch.object(
+            StoredDocument,
+            "text",
+            new_callable=PropertyMock,
+            side_effect=AssertionError("decoded whole drilldown document"),
+        ):
+            for field, projection, extra, lower, upper, expected in cases:
+                with self.subTest(projection=projection):
+                    page = rows(
+                        coordinator(self.client),
+                        "query",
+                        query.id,
+                        dict(
+                            field=[field],
+                            projection=[projection],
+                            lower=[lower],
+                            upper=[upper],
+                            **extra,
+                        ),
+                    )
+                    self.assertEqual(
+                        {item["source"].rsplit("/", 1)[-1] for item in page["rows"]}, expected
+                    )
+                    self.assertEqual(page["total"], len(expected))
+            with self.assertRaises(ValueError):
+                rows(
+                    coordinator(self.client),
+                    "query",
+                    query.id,
+                    dict(field=["FIELD_QUALITY_EDUCATIONAL_VALUE"], projection=["invalid"]),
+                )
+
+    def test_sampled_profiles_decode_and_project_each_selected_document_once(self) -> None:
+        from premixdb.execution import enrichment, profiles
+
+        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+            query = (
+                self.population()
+                .query(sampling=p.sample(seed=7, documents=200, replacement=True))
+                ._with_fields([p.topic.label, p.quality.educational_value])
+                .wait()
+            )
+        service = coordinator(self.client)
+        handle = service._query(_decode_id(query.id))
+        self.assertEqual(len({row.id for row in handle}), 3)
+        with (
+            patch.object(enrichment, "decode_value", wraps=enrichment.decode_value) as decode,
+            patch.object(profiles, "probabilities", wraps=profiles.probabilities) as project,
+        ):
+            fields = profiles.output_profiles(service, query._proto, handle)
+        self.assertEqual(decode.call_count, 6)
+        self.assertEqual(project.call_count, 2)
+        self.assertEqual(fields, list(query._proto.profile.fields))
+        nulls = sum(row.source_key.endswith("null") for row in handle)
+        self.assertGreater(nulls, 0)
+        for profile in fields[4:]:
+            self.assertEqual(profile.documents, 200)
+            self.assertEqual(profile.null_documents, nulls)
+
+    def test_matrix_examples_read_retained_unicode_prefixes(self) -> None:
+        from premixdb.execution.inspection import matrix
+
+        text = "DROP\n" + "é🌍" * (FRAME_BYTES // 6 + 100) + "\nDROP"
+        snapshot = self.client.corpus("large", [p.Source("https://test/a", text)])
+        reference = self.client.corpus("reference", [p.Source("remove", "DROP")])
+        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+            query = (
+                snapshot.query(
+                    decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
+                )
+                ._with_fields([p.topic.label, p.quality.educational_value])
+                .wait()
+            )
+        service = coordinator(self.client)
+        with (
+            patch.object(
+                StoredDocument,
+                "text",
+                new_callable=PropertyMock,
+                side_effect=AssertionError("decoded whole matrix document"),
+            ),
+            patch.object(service._storage, "_get", wraps=service._storage._get) as read,
+        ):
+            cells = matrix(service, query.id)
+        self.assertEqual(len(cells), 1)
+        self.assertEqual(cells[0]["documents"], 1)
+        self.assertEqual(cells[0]["bytes"], len(text.replace("DROP", "").encode()))
+        self.assertEqual(cells[0]["examples"][0]["text"], text.replace("DROP", "")[:4096])
+        self.assertEqual(
+            sum(str(call.args[0]).startswith("snapshot/objects/") for call in read.call_args_list),
+            1,
+        )
 
     def test_fluent_recipes_reuse_completed_results_after_restart(self) -> None:
         path = self.root / "source.txt"
@@ -440,6 +688,7 @@ class ExtendedResourceTests(unittest.TestCase):
             all(97 in row["tokens"] or 101 in row["tokens"] for row in source_page["rows"])
         )
         mixed = query.mix(
+            tokenizer=p.ByteTokenizer(),
             domains=p.source.corpus_id,
             tokens=8,
             n_candidates=1,
@@ -465,7 +714,7 @@ class ExtendedResourceTests(unittest.TestCase):
         parallel = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
 
         def sequences(
-            dataset: sdk.Dataset,
+            dataset: p.Dataset,
         ) -> list[tuple[list[int], list[bool], list[bool], list[dataset_pb.TokenRegion]]]:
             return [(seq.tokens, seq.mask, seq.attention_mask, seq.spans) for seq in dataset]
 

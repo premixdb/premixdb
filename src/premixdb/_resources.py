@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import os
-import struct
 import time
-from dataclasses import dataclass
 from functools import cached_property
-from itertools import islice
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
@@ -20,23 +17,25 @@ from . import _requests
 from ._catalog import CorpusCollection, _CorpusListings, _list_documents, _pages, _timestamp
 from ._enums import ExecutionStatus
 from ._field_expr import FieldProjection
-from ._ids import _decode_id, _encode_id, _public_dataset_profile, _public_lineage
-from ._inputs import HuggingFaceSource
-from ._inputs import Source as Source
+from ._ids import _decode_id, _encode_id, _public_dataset_profile
+from ._inputs import SourceInput, source_proto
+from ._lineage import decode_lineage
 from ._mixing import Bounds, RegMixSampler, Tokens
 from ._policies import ByteTokenizer as BytePolicy
 from ._policies import Concat as ConcatPolicy
 from ._profiles import DistributionSummary, ProfileSelector, _MixProfiles
 from ._progress import report_progress
-from ._protobuf import copy_message, parse
+from ._protobuf import copy_message
 from ._reader import Reader as Reader
 from ._reader import Topology as Topology
 from ._requests import _Field
+from ._sequences import Sequence, read_page
 from ._storage import RangeReader
 from ._types import (
     Checkpoint,
     DatasetSummary,
     DocumentListing,
+    ExecutionError,
     ExecutionRecord,
     PreviewDocument,
     PreviewSequence,
@@ -45,7 +44,6 @@ from ._types import (
     QuerySummary,
     SnapshotSummary,
 )
-from ._typing import load_json
 from ._unions import SnapshotUnion as SnapshotUnion
 from ._unions import _SnapshotOperations
 from .engine.contracts import Provenance
@@ -61,13 +59,9 @@ from .v1 import storage_pb2 as source_types
 if TYPE_CHECKING:
     from ._torch import StreamingDataset, TorchDataset
 
-SourceInput = (
-    str
-    | PathLike[str]
-    | source_types.Source
-    | source_types.HuggingFaceDataset
-    | HuggingFaceSource
-    | Iterable[Source]
+type _ResourceKind = Literal["Corpus", "Snapshot", "Query", "Dataset", "Mix"]
+type _ResourceValue = (
+    corpora.Corpus | snapshots.Snapshot | queries.Query | datasets.Dataset | datasets.Mix
 )
 
 DomainInput = (
@@ -102,12 +96,21 @@ def _query_counts(
     )
 
 
-class ExecutionError(RuntimeError):
-    pass
+def _duration(value: float, name: str) -> float:
+    message = f"{name} must be positive and finite"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(message)
+    try:
+        seconds = float(value)
+    except OverflowError:
+        raise ValueError(message) from None
+    if not 0 < seconds < float("inf"):
+        raise ValueError(message)
+    return seconds
 
 
 class PremixDB:
-    """Open a local demo database and execute recipes in this Python process."""
+    """Open local storage for reusable capture, curation, and training recipes."""
 
     @property
     def version(self) -> str:
@@ -138,7 +141,8 @@ class PremixDB:
                 str(Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "premixdb"),
             )
         )
-        if urlsplit(str(storage)).scheme:
+        storage = os.fspath(storage)
+        if urlsplit(storage).scheme:
             raise ValueError("storage must be a local filesystem path")
         read_only = False if read_only is None else read_only
         if type(read_only) is not bool:
@@ -147,20 +151,22 @@ class PremixDB:
             raise TypeError("progress must be boolean")
         if read_only and process_workers:
             raise ValueError("read-only sessions cannot configure compute workers")
-        if not 0 < timeout < float("inf") or not 0 < poll_interval < float("inf"):
-            raise ValueError("timeout and poll_interval must be positive and finite")
-        self._storage, self._read_only = str(storage), read_only
-        self._timeout, self._poll_interval = timeout, poll_interval
+        self._timeout = _duration(timeout, "timeout")
+        self._poll_interval = _duration(poll_interval, "poll_interval")
+        self._storage, self._read_only = storage, read_only
         self._closed = False
         self._progress_enabled = progress
-        self._object_reader = object_reader or RangeReader(local_root=Path(storage))
+        self._owns_object_reader = object_reader is None
+        self._object_reader = (
+            RangeReader(local_root=storage) if object_reader is None else object_reader
+        )
         if read_only:
             from .execution.catalog_reader import Catalog
             from .execution.storage import ObjectStore
 
             self._executor = Catalog(
                 ObjectStore(
-                    Path(storage),
+                    storage,
                     metadata_path=Path(metadata_path) if metadata_path is not None else None,
                     read_only=True,
                 )
@@ -169,7 +175,7 @@ class PremixDB:
             from .execution import Coordinator
 
             self._executor = Coordinator(
-                Path(storage),
+                storage,
                 allow_local_files=True,
                 workers=workers,
                 cache_bytes=cache_bytes,
@@ -182,7 +188,11 @@ class PremixDB:
         """Wait for local work and release session resources, keeping saved data."""
         if not self._closed:
             self._closed = True
-            self._executor.close()
+            try:
+                self._executor.close()
+            finally:
+                if self._owns_object_reader:
+                    self._object_reader.close()
 
     def __enter__(self) -> PremixDB:
         return self
@@ -194,6 +204,15 @@ class PremixDB:
         traceback: TracebackType | None,
     ) -> None:
         self.close()
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise ValueError("PremixDB is closed")
+
+    def _require_writable(self, action: str = "execute recipes") -> None:
+        self._require_open()
+        if self._read_only:
+            raise PermissionError(f"read-only session: reopen with read_only=False to {action}")
 
     @overload
     def _submit(
@@ -232,12 +251,7 @@ class PremixDB:
         | datasets.CreateDatasetResponse
         | datasets.CreateMixResponse
     ):
-        if self._closed:
-            raise ValueError("PremixDB is closed")
-        if self._read_only:
-            raise PermissionError(
-                "read-only session: reopen with read_only=False to execute recipes"
-            )
+        self._require_writable()
         from .execution.coordinator import Coordinator
 
         assert isinstance(self._executor, Coordinator)
@@ -255,6 +269,10 @@ class PremixDB:
 
     @overload
     def _get(
+        self, kind: Literal["Corpus"], id: bytes, *, timeout: float | None = None
+    ) -> corpora.Corpus: ...
+    @overload
+    def _get(
         self, kind: Literal["Snapshot"], id: bytes, *, timeout: float | None = None
     ) -> snapshots.Snapshot: ...
     @overload
@@ -267,21 +285,30 @@ class PremixDB:
     ) -> datasets.Dataset: ...
     @overload
     def _get(
-        self,
-        kind: Literal["Snapshot", "Query", "Dataset"],
-        id: bytes,
-        *,
-        timeout: float | None = None,
-    ) -> snapshots.Snapshot | queries.Query | datasets.Dataset: ...
+        self, kind: Literal["Mix"], id: bytes, *, timeout: float | None = None
+    ) -> datasets.Mix: ...
+    @overload
     def _get(
         self,
-        kind: Literal["Snapshot", "Query", "Dataset"],
+        kind: _ResourceKind,
         id: bytes,
         *,
         timeout: float | None = None,
-    ) -> snapshots.Snapshot | queries.Query | datasets.Dataset:
+    ) -> _ResourceValue: ...
+    def _get(
+        self,
+        kind: _ResourceKind,
+        id: bytes,
+        *,
+        timeout: float | None = None,
+    ) -> _ResourceValue:
+        self._require_open()
         duration = self._timeout if timeout is None else timeout
-        if kind == "Snapshot":
+        if kind == "Corpus":
+            resource = self._executor.GetCorpus(
+                corpora.GetCorpusRequest(id=id), timeout=duration
+            ).corpus
+        elif kind == "Snapshot":
             resource = self._executor.GetSnapshot(
                 snapshots.GetSnapshotRequest(id=id), timeout=duration
             ).snapshot
@@ -293,6 +320,8 @@ class PremixDB:
             resource = self._executor.GetDataset(
                 datasets.GetDatasetRequest(id=id), timeout=duration
             ).dataset
+        elif kind == "Mix":
+            resource = self._executor.GetMix(datasets.GetMixRequest(id=id), timeout=duration).mix
         else:
             raise ValueError("unknown resource kind")
         if resource.id != id:
@@ -324,15 +353,14 @@ class PremixDB:
 
             _requests.corpus(name)
             try:
-                resource = self._executor.GetCorpus(
-                    corpora.GetCorpusRequest(id=_corpus_id(name)),
-                    timeout=self._timeout,
-                ).corpus
+                resource = self._get("Corpus", _corpus_id(name))
             except KeyError:
+                resource = None
+            if resource is None or not resource.latest_snapshot_id:
                 raise ValueError(
                     f"corpus {name!r} has no snapshot; capture with db.corpus(name, source=...)"
                 ) from None
-            return Corpus(self, resource).latest()
+            return self._snapshot(resource.latest_snapshot_id)
         handle = self._create_corpus(name)
         return handle.snapshot(source=source, limit=limit, base=base)
 
@@ -340,10 +368,7 @@ class PremixDB:
         """Create/reopen the mutable named handle for explicit snapshot management."""
         request = _requests.corpus(name, request_id=request_id)
         id = self._submit(request).id
-        resource = self._executor.GetCorpus(
-            corpora.GetCorpusRequest(id=id), timeout=self._timeout
-        ).corpus
-        return Corpus(self, resource, request)
+        return Corpus(self, self._get("Corpus", id), request)
 
     def _executions(self, resource_id: bytes | str | None = None) -> list[ExecutionRecord]:
         """List history with base64url IDs and UTC timestamps to whole seconds.
@@ -369,8 +394,7 @@ class PremixDB:
     def _execution_events(
         self, resource_id: bytes | str | None = None
     ) -> list[status.ExecutionEvent]:
-        if self._closed:
-            raise ValueError("PremixDB is closed")
+        self._require_open()
         from .v1.status_pb2 import ListExecutionRequest
 
         identity = (
@@ -403,55 +427,10 @@ class PremixDB:
 
     def _datasets(self, id: bytes | str) -> Datasets:
         """Open a saved mixture collection without packing its candidates."""
-        id = _requests._id(id, 32)
-        response = self._executor.GetMix(
-            datasets.GetMixRequest(id=id),
-            timeout=self._timeout,
-        )
-        if response.mix.id != id:
-            raise ValueError("catalog returned a different mixture collection")
-        return Mix(self, response.mix)
-
-    def _source(self, value: SourceInput, *, limit: int | None = None) -> source_types.Source:
-        if isinstance(value, HuggingFaceSource):
-            value = value._to_proto()
-        if isinstance(value, source_types.HuggingFaceDataset):
-            value = source_types.Source(hugging_face=value)
-        if isinstance(value, source_types.Source):
-            value = copy_message(value)
-            if limit is not None:
-                value.limit = limit
-            return value
-        if isinstance(value, (str, PathLike)):
-            path = str(value)
-            location = urlsplit(path)
-            if location.scheme:
-                raise ValueError("source paths must be local files")
-            return source_types.Source(
-                limit=limit,
-                files=source_types.FileSources(
-                    documents=[source_types.FileSource(path=str(Path(path).resolve()))]
-                ),
-            )
-        return source_types.Source(
-            limit=limit,
-            memory=source_types.MemorySources(
-                documents=[
-                    source_types.MemorySource(uri=item.key, text=item.text)
-                    for item in islice(value, limit)
-                ]
-            ),
-        )
+        return Mix(self, self._get("Mix", _requests._id(id, 32)))
 
 
-class _Resource[
-    ResourceT: corpora.Corpus
-    | snapshots.Snapshot
-    | queries.Query
-    | datasets.Dataset
-    | datasets.Mix,
-    RequestT: Message,
-]:
+class _Resource[ResourceT: _ResourceValue, RequestT: Message]:
     def __init__(
         self, client: PremixDB, resource: ResourceT, request: RequestT | None = None
     ) -> None:
@@ -489,15 +468,11 @@ class Corpus(_Resource[corpora.Corpus, corpora.CreateCorpusRequest], _CorpusList
     @property
     def name(self) -> str:
         """Return the saved corpus name."""
-        assert isinstance(self._resource, corpora.Corpus)
         return self._resource.name
 
     def latest(self) -> Snapshot:
         """Load the last successful capture; the returned snapshot is immutable."""
-        resource = self._db._executor.GetCorpus(
-            corpora.GetCorpusRequest(id=self._resource.id),
-            timeout=self._db._timeout,
-        ).corpus
+        resource = self._db._get("Corpus", self._resource.id)
         if not resource.latest_snapshot_id:
             raise ValueError(
                 f"corpus {self.name!r} has no snapshot; capture with corpus(source=...) first"
@@ -513,14 +488,17 @@ class Corpus(_Resource[corpora.Corpus, corpora.CreateCorpusRequest], _CorpusList
         base: Snapshot | None = None,
     ) -> Snapshot:
         """Capture sources into a new immutable snapshot, optionally reusing a base."""
+        self._db._require_writable("capture snapshots")
         if limit is not None:
             _requests._uint(limit, 64, "limit")
         if base is not None:
             self._same_session(base)
+            if base._resource.corpus_id != self._resource.id:
+                raise ValueError("base snapshot must belong to the same corpus")
             base = base.wait()
         request = _requests.snapshot(
-            cast(corpora.Corpus, self._resource),
-            source=self._db._source(source, limit=limit),
+            self._resource,
+            source=source_proto(source, limit=limit),
             base=base._proto if base else None,
         )
         result = self._db._submit(request).snapshot
@@ -547,10 +525,22 @@ class _Execution[
     @report_progress("Waiting for {kind} {id}")
     def wait(self, *, timeout: float | None = None) -> Self:
         """Return a completed handle; propagate failure and enforce one total deadline."""
-        budget = self._db._timeout if timeout is None else timeout
-        if not 0 < budget < float("inf"):
-            raise ValueError("timeout must be positive and finite")
+        budget = self._db._timeout if timeout is None else _duration(timeout, "timeout")
         deadline = time.monotonic() + budget
+        kind: Literal["Snapshot", "Query", "Dataset"] = (
+            "Snapshot"
+            if isinstance(self, Snapshot)
+            else "Query"
+            if isinstance(self, Query)
+            else "Dataset"
+        )
+
+        def remaining() -> float:
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                raise TimeoutError(f"timed out waiting for {kind.lower()} {self.id}")
+            return seconds
+
         value = self._resource
         if self._db._read_only and value.status != status.STATUS_COMPLETED:
             raise ExecutionError(
@@ -569,16 +559,9 @@ class _Execution[
             )
             if response.id != value.id:
                 raise ExecutionError("materialization returned a different resource")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for dataset {self.id}")
             value = cast(
                 ResourceT,
-                self._db._get(
-                    "Query" if isinstance(self, Query) else "Dataset",
-                    response.id,
-                    timeout=remaining,
-                ),
+                self._db._get(kind, response.id, timeout=remaining()),
             )
         while value.status != status.STATUS_COMPLETED:
             if value.status == status.STATUS_ERROR:
@@ -587,24 +570,25 @@ class _Execution[
                 )
             if value.status not in (status.STATUS_PENDING, status.STATUS_RUNNING):
                 raise ExecutionError("resource has an unspecified execution status")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for {type(self).__name__.lower()} {self.id}")
-            time.sleep(min(self._db._poll_interval, remaining))
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for {self.id}")
+            waited = False
+            if isinstance(self, (Query, Dataset)):
+                from .execution.coordinator import Coordinator
+
+                assert isinstance(self._db._executor, Coordinator)
+                waited = self._db._executor._wait_for_materialization(
+                    "query" if isinstance(self, Query) else "dataset", value.id, remaining()
+                )
+                if not waited:
+                    # A job can finish and leave the registry before this handle
+                    # refreshes its running state. Check publication before sleeping.
+                    value = cast(ResourceT, self._db._get(kind, value.id, timeout=remaining()))
+                    if value.status not in (status.STATUS_PENDING, status.STATUS_RUNNING):
+                        continue
+            if not waited:
+                time.sleep(min(self._db._poll_interval, remaining()))
             value = cast(
                 ResourceT,
-                self._db._get(
-                    "Snapshot"
-                    if isinstance(self, Snapshot)
-                    else "Query"
-                    if isinstance(self, Query)
-                    else "Dataset",
-                    value.id,
-                    timeout=remaining,
-                ),
+                self._db._get(kind, value.id, timeout=remaining()),
             )
         self._resource = value
         return self
@@ -617,11 +601,12 @@ class _Execution[
         self, *, limit: int = 3, offset: int = 0, max_characters: int = 1024
     ) -> list[PreviewDocument]:
         """Browse selected documents in deterministic order, with bounded text."""
-        request = queries.PreviewRequest(
-            limit=_requests._uint(limit, 32, "limit"),
-            offset=_requests._uint(offset, 64, "offset"),
-            max_characters=_requests._uint(max_characters, 32, "max_characters"),
+        limit, offset, max_characters = _requests._preview_options(
+            limit, offset, max_characters, unit="documents"
         )
+        if not limit:
+            return []
+        request = queries.PreviewRequest(limit=limit, offset=offset, max_characters=max_characters)
         ready = self.wait()._resource
         if isinstance(ready, snapshots.Snapshot):
             request.snapshot_id = ready.id
@@ -706,16 +691,13 @@ class Snapshot(
         decontaminate: queries.Decontaminate | None = None,
         sampling: queries.QuerySampling | None = None,
     ) -> Query:
+        self._db._require_writable("plan queries")
         request = _requests.query(
             *(s._resource.id for s in snapshots),
             steps=steps,
             decontaminate=decontaminate,
             sampling=sampling,
         )
-        if self._db._closed:
-            raise ValueError("PremixDB is closed")
-        if self._db._read_only:
-            raise PermissionError("query planning requires a writable session")
         from .execution import Coordinator
 
         assert isinstance(self._db._executor, Coordinator)
@@ -748,6 +730,7 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         return _list_documents(self, limit=limit, offset=offset)
 
     def _with_fields(self, fields: Iterable[ProfileSelector]) -> Query:
+        self._db._require_open()
         request = _requests.query(
             *self._resource.snapshot_ids,
             steps=self._resource.operations,
@@ -778,22 +761,16 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
 
     def _provenance(self) -> dict[str, Provenance]:
         """Trace each selected document to its source and query decisions."""
-        import json
-
-        from .execution.selections import decode_lineage
-
         resource = self.wait()._resource
         ref = resource.lineage
-        public = _public_lineage(
-            load_json(
-                self._db._object_reader.read(
-                    source_types.SpanRef(
-                        object=ref, end=ref.size_bytes, blake3_digest=ref.blake3_digest
-                    )
+        return decode_lineage(
+            self._db._object_reader.read(
+                source_types.SpanRef(
+                    object=ref, end=ref.size_bytes, blake3_digest=ref.blake3_digest
                 )
-            )
+            ),
+            public=True,
         )
-        return decode_lineage(json.dumps(public).encode())
 
     @property
     def _estimate(self) -> profiles.QueryEstimate:
@@ -808,16 +785,13 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         packing: datasets.Packing | ConcatPolicy | None = None,
     ) -> Dataset:
         """Plan a lazy dataset; profiling, reading and torch() consume its recipe."""
+        self._db._require_writable("plan datasets")
         request = _requests.dataset(
             self._resource.id,
             tokenizer=tokenizer,
             sequence_length=sequence_length,
             packing=packing,
         )
-        if self._db._closed:
-            raise ValueError("PremixDB is closed")
-        if self._db._read_only:
-            raise PermissionError("dataset planning requires a writable session")
         from .execution import Coordinator
 
         assert isinstance(self._db._executor, Coordinator)
@@ -840,8 +814,9 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         seed: int = 0,
     ) -> Datasets:
         """Register three lazy datasets by default, with reproducible sampling."""
+        self._db._require_writable("plan mixtures")
         request = _requests.mix(
-            self.wait()._proto,
+            self._resource.id,
             domains=domains,
             sampler=sampler,
             size=size,
@@ -854,6 +829,7 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
             replacement=replacement,
             seed=seed,
         )
+        self.wait()
         id = self._db._submit(request).id
         response = self._db._executor.GetMix(
             datasets.GetMixRequest(id=id),
@@ -946,67 +922,6 @@ class Mix(_Resource[datasets.Mix, datasets.CreateMixRequest]):
 Datasets = Mix
 
 
-@dataclass(frozen=True)
-class Sequence:
-    _value: datasets.Sequence
-    _reader: RangeReader
-
-    def __repr__(self) -> str:
-        return f"Sequence(ordinal={self.ordinal}, documents={self.document_ids()!r})"
-
-    @property
-    def ordinal(self) -> int:
-        """Return the zero-based position of this sequence in its dataset."""
-        return self._value.ordinal
-
-    @cached_property
-    def _tokens(self) -> tuple[int, ...]:
-        data = self._reader.read(self._value.tokens)
-        if self._value.tokens.start % 4 or len(data) % 4:
-            raise ValueError("token range is not uint32 aligned")
-        return tuple(int(value) for value in struct.unpack(f"<{len(data) // 4}I", data))
-
-    @property
-    def tokens(self) -> list[int]:
-        """Read the token IDs for this packed sequence."""
-        return list(self._tokens)
-
-    @cached_property
-    def _mask(self) -> tuple[bool, ...]:
-        data = self._reader.read(self._value.loss_mask)
-        if any(value > 1 for value in data):
-            raise ValueError("invalid stored token mask")
-        return tuple(bool(value) for value in data)
-
-    @property
-    def mask(self) -> list[bool]:
-        """Mark content and separator tokens as True and padding tokens as False."""
-        return list(self._mask)
-
-    @cached_property
-    def attention_mask(self) -> list[bool]:
-        """Return the sequence mask used to exclude padding from attention."""
-        data = self._reader.read(self._value.attention_mask)
-        if any(value > 1 for value in data):
-            raise ValueError("invalid stored attention mask")
-        return [bool(value) for value in data]
-
-    @property
-    def spans(self) -> list[datasets.TokenRegion]:
-        """Return source, separator, and padding regions within this sequence."""
-        return [copy_message(region) for region in self._value.regions]
-
-    def document_ids(self) -> list[str]:
-        """Unique source IDs in first-content order, excluding separators and padding."""
-        return list(
-            dict.fromkeys(
-                _encode_id(region.document_id)
-                for region in self._value.regions
-                if region.kind == datasets.TokenRegion.KIND_CONTENT
-            )
-        )
-
-
 class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
     @report_progress("Previewing dataset {id}")
     def preview(
@@ -1037,6 +952,7 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
     def profile(self) -> datasets.DatasetProfile:
         """Compute the planned profile if needed, without packing candidate tokens."""
         if not self._resource.HasField("profile"):
+            self._db._require_open()
             if self._db._read_only:
                 raise ExecutionError(
                     "dataset profile is not computed; use a writable session first"
@@ -1128,9 +1044,9 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
     def __iter__(self) -> Reader[Sequence]:
         return self.reader()
 
-    def _page(self, ordinal: int, size: int = 128) -> list[Sequence]:
+    def _page(self, ordinal: int, size: int | None = None) -> list[Sequence]:
         self.wait()
-        return _read_page(self._resource, self._db._object_reader, ordinal, size)
+        return read_page(self._resource, self._db._object_reader, ordinal, size)
 
     def __getitem__(self, index: int) -> Sequence:
         if type(index) is not int:
@@ -1154,23 +1070,3 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
         with the same seed and topology to resume from the next sequence.
         """
         return Reader(self, Topology() if topology is None else topology, checkpoint, seed)
-
-
-def _read_page(
-    resource: datasets.Dataset, reader: RangeReader, ordinal: int, size: int = 128
-) -> list[Sequence]:
-    page = ordinal // 128
-    sequences = _sequence_page(resource, reader.read(resource.sequences[page]), page)
-    return [Sequence(seq, reader) for seq in sequences if ordinal <= seq.ordinal < ordinal + size]
-
-
-def _sequence_page(
-    resource: datasets.Dataset, data: bytes, page: int
-) -> tuple[datasets.Sequence, ...]:
-    sequences = parse(datasets.SequenceBatch, data).sequences
-    expected = min(128, resource.profile.sequences - page * 128)
-    if len(sequences) != expected or [seq.ordinal for seq in sequences] != list(
-        range(page * 128, page * 128 + expected)
-    ):
-        raise ExecutionError("stored sequence index is incomplete or out of order")
-    return tuple(sequences)

@@ -21,14 +21,13 @@ from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.execution import catalog
 from premixdb.execution import enrichment as worker
 from premixdb.internal import derivation_pb2 as d
-from premixdb.internal import derivation_pb2 as derivation_pb
 from premixdb.v1 import query_pb2 as q
 
 
 class ControlledFields:
     definition = {"provider": "test-controlled-model", "version": 1}
 
-    def __init__(self, policy: derivation_pb.EnrichmentProducer) -> None:
+    def __init__(self, policy: d.EnrichmentProducer) -> None:
         self.policy = policy
         if policy.HasField("language"):
             self.fields = (field("language.en"), field("language.fr"))

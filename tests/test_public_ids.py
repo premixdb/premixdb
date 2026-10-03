@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -50,7 +54,12 @@ def test_public_ids_match_listings_provenance_profiles_and_old_checkpoints(tmp_p
             value["corpus_id"] == snapshot.corpus_id for value in query._provenance().values()
         )
         assert all(value["snapshots"] == [snapshot.id] for value in query._provenance().values())
-        mix = query.mix(tokens=8, sequence_length=4, bounds=p.Bounds(lower={snapshot.corpus_id: 1}))
+        mix = query.mix(
+            tokenizer=p.ByteTokenizer(),
+            tokens=8,
+            sequence_length=4,
+            bounds=p.Bounds(lower={snapshot.corpus_id: 1}),
+        )
         assert mix.weights == [{snapshot.corpus_id: 1.0}] * 3
         assert f"Lower bounds: {{'{snapshot.corpus_id}': 1.0}}" in repr(mix)
         dataset = mix[0].wait()
@@ -70,3 +79,78 @@ def test_public_ids_match_listings_provenance_profiles_and_old_checkpoints(tmp_p
         assert db._executions(snapshot.id)[0].resource_id == snapshot.id
     finally:
         db.close()
+
+
+def test_line_dedupe_witnesses_use_public_document_ids(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        snapshot = db.corpus(
+            "dedupe", [p.Source("a", "same\nfirst"), p.Source("b", "same\nsecond")]
+        )
+        ids = {row["source_key"]: row["id"] for row in snapshot.preview()}
+        query = snapshot.query(
+            steps=[p.dedupe(algorithm=p.DedupeAlgorithm.EXACT_LINE, order_by=[p.object.uri.asc()])]
+        )
+        selection = query._provenance()[ids["b"]]["selection"]
+        kept = selection["kept"]
+        assert isinstance(kept, dict)
+        assert kept["document"] == ids["a"]
+        assert selection["matched"]["document"] == ids["b"]
+        assert (kept["start"], kept["end"]) == (0, 4)
+
+
+@pytest.mark.parametrize("granularity", ["document", "span"])
+def test_contamination_witnesses_use_public_reference_ids(
+    tmp_path: Path, granularity: Literal["document", "span"]
+) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        target = db.corpus("target", [p.Source("a", "pré\n秘密\nfin")])
+        reference = db.corpus("reference", [p.Source("ref", "秘密")])
+        query = target.query(
+            decontaminate=p.decontaminate(reference, algorithm="line", granularity=granularity)
+        )
+        origin = next(iter(query._provenance().values()))
+        witness = origin["contamination"][0]
+        assert witness["reference"] == reference.preview()[0]["id"]
+        assert (witness["start"], witness["end"]) == (5, 11)
+        if granularity == "document":
+            assert origin["selection"]["references"] == origin["contamination"]
+        else:
+            assert origin["retained_ranges"] == [(0, 5), (11, 15)]
+
+
+@pytest.mark.integration
+def test_read_only_lineage_needs_no_selection_or_query_execution_modules(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        target = db.corpus("target", [p.Source("a" * 64, "pré\n秘密\nfin")])
+        reference = db.corpus("reference", [p.Source("ref", "秘密")])
+        query = target.query(
+            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+        )
+        lineage = query._provenance()
+        assert next(iter(lineage.values()))["source_key"] == "a" * 64
+        expected = json.dumps(lineage, sort_keys=True)
+        identity = query.id
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import sys
+
+sys.modules["premixdb.execution.selections"] = None
+sys.modules["premixdb.engine.queries"] = None
+import premixdb as p
+
+with p.PremixDB(storage=sys.argv[1], read_only=True) as db:
+    print(json.dumps(db._query(sys.argv[2])._provenance(), sort_keys=True))
+""",
+            str(tmp_path),
+            identity,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert result.stdout.strip() == expected

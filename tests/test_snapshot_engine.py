@@ -1,17 +1,17 @@
-"""Persistence acceptance tests independent of the former PremixDB extension."""
+"""Snapshot storage, capture, and provenance contracts."""
 
 from __future__ import annotations
 
 import json
 import tempfile
 import unittest
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
+from premixdb import Source
 from premixdb.engine import snapshots
-from premixdb.engine import snapshots as engine_snapshots
 from premixdb.engine.contracts import Manifest
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.queries import CorpusIndex
@@ -28,8 +28,8 @@ class SnapshotEngineTests(unittest.TestCase):
         self.store = snapshots.Store(self.root)
 
     def capture(
-        self, sources: Iterable[tuple[str, str]], base: engine_snapshots.Snapshot | None = None
-    ) -> engine_snapshots.Snapshot:
+        self, sources: Iterable[tuple[str, str]], base: snapshots.Snapshot | None = None
+    ) -> snapshots.Snapshot:
         return self.store.capture_inputs(CORPUS, sources, [], CODE.as_tuple(), base)
 
     def rewrite(self, id: str, transform: Callable[[Manifest], None]) -> None:
@@ -50,13 +50,32 @@ class SnapshotEngineTests(unittest.TestCase):
         self.assertEqual(snapshot._summary, dict(documents=2, bytes=11, characters=8))
         query = CorpusIndex([snapshot]).execute([], CODE)
         self.assertEqual(query.row_count, 2)
-        self.assertEqual(query.dataset(4, 256, 257)._summary["content_tokens"], 11)
+        self.assertEqual(query.dataset(4, 256, 257).summary()["content_tokens"], 11)
+
+    def test_capture_stops_consuming_at_the_first_duplicate_key(self) -> None:
+        def sources() -> Iterator[Source]:
+            yield Source("a", "first")
+            yield Source("a", "duplicate")
+            raise AssertionError("read past the invalid inventory")
+
+        with self.assertRaisesRegex(ValueError, "duplicate source key"):
+            self.store.capture(CORPUS, sources(), CODE)
+
+    def test_capture_rejects_the_base_before_consuming_sources(self) -> None:
+        base = self.capture([("a", "original")])
+
+        def sources() -> Iterator[Source]:
+            raise AssertionError("consumed sources")
+            yield Source("a", "unused")
+
+        with self.assertRaisesRegex(ValueError, "base belongs to another corpus"):
+            self.store.capture("02" * 16, sources(), CODE, base)
 
     def test_legacy_inline_manifest_without_profiles_loads(self) -> None:
         snapshot = self.capture([("a", "é\r\n"), ("empty", "")])
 
         def inline(manifest: Manifest) -> None:
-            records = self.store._records(manifest)
+            records = list(self.store._records(manifest))
             for record in records:
                 for frame in record["frames"]:
                     frame.pop("profile")
@@ -136,7 +155,7 @@ class SnapshotEngineTests(unittest.TestCase):
 
     def test_corrupt_missing_and_oversized_committed_objects_fail(self) -> None:
         snapshot = self.capture([("a", "payload")])
-        record = self.store._records(self.store._manifest(snapshot.id))[0]
+        record = next(self.store._records(self.store._manifest(snapshot.id)))
         path = self.root / "objects" / bytes(record["frames"][0]["digest"]).hex()
         original = path.read_bytes()
         for data in (b"wrong", original + b"x"):
@@ -165,7 +184,7 @@ class SnapshotEngineTests(unittest.TestCase):
     def test_pages_validate_sorted_keys_sizes_and_profiles(self) -> None:
         snapshot = self.capture([("a", "text"), ("b", "other")])
         original = self.store._manifest(snapshot.id)
-        records = self.store._records(original)
+        records = list(self.store._records(original))
         for mutate in (
             lambda r: r.reverse(),
             lambda r: r[1].update(key="a"),

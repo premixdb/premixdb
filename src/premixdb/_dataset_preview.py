@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from . import _requests
 from ._ids import _encode_id
+from ._sequences import decode_preview, preview_decoder
 from ._types import PreviewSequence
 from .v1 import dataset_pb2 as d
-from .v1.storage_pb2 import SpanRef
 
 if TYPE_CHECKING:
     from ._resources import Dataset
@@ -17,18 +18,16 @@ if TYPE_CHECKING:
 def preview(
     dataset: Dataset, *, limit: int, offset: int, max_characters: int
 ) -> list[PreviewSequence]:
-    limit = _requests._uint(limit, 32, "limit")
-    offset = _requests._uint(offset, 64, "offset")
-    width = _requests._uint(max_characters, 32, "max_characters")
-    if limit > 1000 or width > 1_000_000:
-        raise ValueError("preview supports at most 1000 sequences and 1,000,000 characters")
+    limit, offset, width = _requests._preview_options(
+        limit, offset, max_characters, unit="sequences"
+    )
     if not limit:
         return []
     ready = dataset.wait()._resource
     end = min(offset + limit, ready.profile.sequences)
     result = []
     page = {}
-    decoder = None
+    decoder: Callable[[list[int]], str] | None = None
     for ordinal in range(offset, end):
         if ordinal < len(ready.preview.sequences):
             example = ready.preview.sequences[ordinal]
@@ -42,29 +41,13 @@ def preview(
             if ordinal not in page:
                 page = {sequence.ordinal: sequence for sequence in dataset._page(ordinal)}
             sequence = page[ordinal]
-            tokens = sequence.tokens[:256]
-            mask = sequence.mask[:256]
-            attention = sequence.attention_mask[:256]
+            tokens, mask, attention = sequence._preview(256)
             regions = sequence.spans
             if width:
-                from .execution.tokens import decode_preview
-
                 if decoder is None and ready.tokenizer.HasField("hugging_face"):
-                    from tokenizers import Tokenizer
+                    decoder = preview_decoder(ready.tokenizer, dataset._db._object_reader)
 
-                    asset = ready.tokenizer.hugging_face.asset
-                    data = dataset._db._object_reader.read(
-                        SpanRef(
-                            object=asset, end=asset.size_bytes, blake3_digest=asset.blake3_digest
-                        )
-                    )
-                    decoder = Tokenizer.from_str(data.decode())
-
-                text = (
-                    decoder.decode(tokens, skip_special_tokens=False)
-                    if decoder is not None
-                    else decode_preview(tokens, regions)
-                )
+                text = decode_preview(tokens, regions, decoder)
             else:
                 text = ""
             truncated = ready.sequence_length > len(tokens) or (not width and bool(tokens))

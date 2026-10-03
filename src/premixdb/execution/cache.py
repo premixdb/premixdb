@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections import OrderedDict
-from collections.abc import Hashable, MutableMapping
+from collections.abc import Hashable, ItemsView, MutableMapping, ValuesView
 from threading import RLock
 from typing import Iterator, cast
 
@@ -91,7 +91,23 @@ class _Namespace[K: Hashable, V](MutableMapping[K, V]):
             return iter([cast(K, key) for name, key in self._cache._values if name == self._name])
 
     def __len__(self) -> int:
-        return sum(1 for _ in self)
+        with self._cache._lock:
+            return sum(name == self._name for name, _ in self._cache._values)
+
+    def _snapshot(self) -> dict[K, V]:
+        # Views keep their membership while another namespace triggers eviction.
+        with self._cache._lock:
+            return {
+                cast(K, key): cast(V, value)
+                for (name, key), (value, _) in self._cache._values.items()
+                if name == self._name
+            }
+
+    def items(self) -> ItemsView[K, V]:
+        return self._snapshot().items()
+
+    def values(self) -> ValuesView[V]:
+        return self._snapshot().values()
 
     def refresh(self, key: K) -> None:
         try:

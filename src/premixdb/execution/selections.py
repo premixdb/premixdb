@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from typing import TYPE_CHECKING, Literal
 
-from .._typing import checked_record, json_integer, json_list, json_object, load_json
-from ..engine.contracts import Counts, Frame, Provenance, QuerySummary
+from .._lineage import decode_lineage
+from .._typing import Interval, json_object, load_json
+from ..engine.contracts import Counts, DocumentRecord, Frame, QuerySummary
 from ..v1 import query_pb2 as q
 from .storage import ObjectStore
 
@@ -33,6 +33,30 @@ from .catalog import wire
 SHARD_BYTES = 8 * 1024 * 1024
 
 
+def stored_selection(row: Row) -> tuple[DocumentRecord, tuple[Interval, ...] | None]:
+    """Return captured source metadata and optional retained byte ranges."""
+    original = row.document.original if isinstance(row.document, RetainedDocument) else row.document
+    if not isinstance(original, StoredDocument):
+        raise ValueError("document publication requires stored source documents")
+    ranges = row.document.source_ranges if isinstance(row.document, RetainedDocument) else None
+    return original.record, ranges
+
+
+def selection_record(row: Row) -> d.SelectedDocument:
+    import json
+
+    source, ranges = stored_selection(row)
+    record = d.SelectedDocument(
+        document_id=bytes.fromhex(row.id),
+        corpus_id=bytes.fromhex(row.corpus_id),
+        source_record=json.dumps(source, sort_keys=True, separators=(",", ":")).encode(),
+        transformed=ranges is not None,
+    )
+    if ranges is not None:
+        record.ranges.extend(d.ByteRange(start=a, end=b) for a, b in ranges)
+    return record
+
+
 def publish(storage: ObjectStore, handle: Query) -> None:
     manifest = d.QuerySelection(
         query_id=bytes.fromhex(handle.id),
@@ -47,23 +71,8 @@ def publish(storage: ObjectStore, handle: Query) -> None:
         manifest.shards.append(storage.put("query", wire(shard)))
         shard.Clear()
 
-    for row in handle.rows():
-        original = (
-            row.document.original if isinstance(row.document, RetainedDocument) else row.document
-        )
-        if not isinstance(original, StoredDocument):
-            raise ValueError("selection publication requires stored source documents")
-        record = d.SelectedDocument(
-            document_id=bytes.fromhex(row.id),
-            corpus_id=bytes.fromhex(row.corpus_id),
-            source_record=json.dumps(
-                original.record, sort_keys=True, separators=(",", ":")
-            ).encode(),
-        )
-        ranges = row.document.source_ranges if isinstance(row.document, RetainedDocument) else None
-        if ranges is not None:
-            record.transformed = True
-            record.ranges.extend(d.ByteRange(start=a, end=b) for a, b in ranges)
+    for row in handle:
+        record = selection_record(row)
         width = record.ByteSize() + 10
         if shard.rows and size + width > SHARD_BYTES:
             flush()
@@ -183,25 +192,6 @@ class _Frames:
         ):
             raise ValueError("stored selection text frame integrity check failed")
         return data
-
-
-def decode_lineage(data: bytes) -> dict[str, Provenance]:
-    result: dict[str, Provenance] = {}
-    for id, raw in json_object(load_json(data)).items():
-        origin = json_object(raw)
-        if "retained_ranges" in origin:
-            ranges = []
-            for pair in json_list(origin["retained_ranges"]):
-                values = json_list(pair)
-                if len(values) != 2:
-                    raise ValueError("invalid retained byte range")
-                ranges.append((json_integer(values[0]), json_integer(values[1])))
-            normalized: dict[str, object] = dict(origin)
-            normalized["retained_ranges"] = ranges
-            result[id] = checked_record(normalized, Provenance)
-        else:
-            result[id] = checked_record(origin, Provenance)
-    return result
 
 
 def _summary(profile: q.QueryProfile) -> QuerySummary:

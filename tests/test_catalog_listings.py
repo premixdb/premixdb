@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal, Never
 from unittest.mock import patch
 
 import pytest
 from _type_support import coordinator, invalid_call
+from google.protobuf.message import Message
 
 import premixdb as p
-import premixdb as sdk
 from premixdb._ids import _decode_id, _encode_id
 from premixdb._resources import Dataset, Query
 from premixdb._types import CorpusListing, SnapshotListing
@@ -24,7 +25,7 @@ from premixdb.v1 import snapshot_pb2 as s
 from premixdb.v1 import status_pb2 as status
 
 
-def corpus_handle(snapshot: sdk.Snapshot | sdk.Corpus) -> p.Corpus:
+def corpus_handle(snapshot: p.Snapshot | p.Corpus) -> p.Corpus:
     if isinstance(snapshot, p.Corpus):
         return snapshot
     return p.Corpus(snapshot._db, c.Corpus(id=_decode_id(snapshot.corpus_id)))
@@ -128,6 +129,107 @@ def test_empty_corpus_and_closed_session(tmp_path: Path) -> None:
         empty.list_snapshot(limit=1000)
 
 
+@pytest.mark.parametrize("read_only", [False, True])
+def test_named_corpus_reads_one_head_and_latest_refreshes(tmp_path: Path, read_only: bool) -> None:
+    with p.PremixDB(storage=tmp_path) as writer:
+        first = writer.corpus("head", [p.Source("a", "first")])
+        with p.PremixDB(storage=tmp_path, read_only=read_only) as reader:
+            handle = p.Corpus(
+                reader,
+                c.Corpus(
+                    id=_decode_id(first.corpus_id),
+                    name="head",
+                    latest_snapshot_id=_decode_id(first.id),
+                ),
+            )
+            with patch.object(
+                reader._executor, "GetCorpus", wraps=reader._executor.GetCorpus
+            ) as get:
+                reopened = reader.corpus("head")
+                assert reopened.id == first.id
+                assert get.call_count == 1
+            second = writer.corpus("head", [p.Source("a", "second")], base=first)
+            assert handle.latest().id == second.id
+            assert reopened.preview()[0]["text"] == "first"
+
+
+def test_saved_resource_reads_reject_a_closed_session(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        corpus = db._create_corpus("closed")
+    for read in (
+        lambda: db.corpus("closed"),
+        corpus.latest,
+        lambda: db._snapshot(b"s" * 32),
+        lambda: db._query(b"q" * 32),
+        lambda: db._dataset(b"d" * 32),
+        lambda: db._datasets(b"m" * 32),
+    ):
+        with pytest.raises(ValueError, match="PremixDB is closed"):
+            read()
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_unwritable_sessions_reject_recipes_before_consuming_input(
+    tmp_path: Path, read_only: bool
+) -> None:
+    class UnusedInput:
+        def __iter__(self) -> Iterator[Never]:
+            raise AssertionError("recipe consumed input")
+
+    with p.PremixDB(storage=tmp_path) as writer:
+        writer.corpus("saved", [p.Source("a", "saved text")])
+    with p.PremixDB(storage=tmp_path, read_only=read_only) as db:
+        snapshot = db.corpus("saved")
+        corpus = corpus_handle(snapshot)
+        if not read_only:
+            db.close()
+        error = PermissionError if read_only else ValueError
+        message = "read-only" if read_only else "PremixDB is closed"
+        with patch.object(
+            p.HuggingFaceSource,
+            "_to_proto",
+            side_effect=AssertionError("recipe resolved Hub metadata"),
+        ):
+            for source in (UnusedInput(), p.HuggingFaceSource("org/data")):
+                with pytest.raises(error, match=message):
+                    corpus.snapshot(source=source)
+        with pytest.raises(error, match=message):
+            snapshot.query(steps=UnusedInput())
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_named_corpus_requires_a_successful_snapshot(tmp_path: Path, exists: bool) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        if exists:
+            db._create_corpus("empty")
+        before = db.corpus.list()
+        with pytest.raises(ValueError, match="has no snapshot; capture with db.corpus"):
+            db.corpus("empty")
+        assert db.corpus.list() == before
+
+
+@pytest.mark.parametrize(
+    "kind,response",
+    [
+        ("Corpus", c.GetCorpusResponse(corpus=c.Corpus(id=b"x" * 16))),
+        ("Snapshot", s.GetSnapshotResponse(snapshot=s.Snapshot(id=b"x" * 32))),
+        ("Query", q.GetQueryResponse(query=q.Query(id=b"x" * 32))),
+        ("Dataset", d.GetDatasetResponse(dataset=d.Dataset(id=b"x" * 32))),
+        ("Mix", d.GetMixResponse(mix=d.Mix(id=b"x" * 32))),
+    ],
+)
+def test_saved_resource_reads_verify_catalog_identity(
+    tmp_path: Path,
+    kind: Literal["Corpus", "Snapshot", "Query", "Dataset", "Mix"],
+    response: Message,
+) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        identity = b"y" * (16 if kind == "Corpus" else 32)
+        with patch.object(db._executor, "Get" + kind, return_value=response):
+            with pytest.raises(ValueError, match="catalog returned a different resource"):
+                db._get(kind, identity)
+
+
 def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         snapshot = db.corpus("many", [p.Source("a", "text")])
@@ -181,7 +283,7 @@ def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> N
             complete = listing(limit=1000)
 
             def identities(
-                values: Iterable[sdk.Mix | sdk.Dataset | str | CorpusListing | SnapshotListing],
+                values: Iterable[p.Mix | p.Dataset | str | CorpusListing | SnapshotListing],
             ) -> list[str | CorpusListing | SnapshotListing]:
                 return [
                     value.id if isinstance(value, (p.Mix, p.Dataset)) else value for value in values

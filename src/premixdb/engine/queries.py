@@ -6,7 +6,7 @@ import operator
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Mapping, Sequence
 
 from .._typing import EvidenceRange, FieldValue
 from .contracts import (
@@ -358,6 +358,9 @@ class Query:
     def provenance(self) -> dict[str, Provenance]:
         return deepcopy(self._provenance)
 
+    def __iter__(self) -> Iterator[Row]:
+        return iter(self._rows)
+
     def rows(self) -> list[Row]:
         return list(self._rows)
 
@@ -373,9 +376,6 @@ class Query:
 
     def lengths(self) -> list[int]:
         return [r.document.size for r in self._rows]
-
-    def metadata(self) -> list[tuple[str, str, str, int, int]]:
-        return [(r.id, r.corpus_id, r.source_key, r.document.size, len(r.text)) for r in self._rows]
 
     def dataset(
         self,

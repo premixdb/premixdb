@@ -7,13 +7,14 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from _type_support import coordinator
 
 import premixdb
-import premixdb as sdk
 from premixdb._ids import _decode_id, _encode_id, _public_dataset_profile
 from premixdb._resources import DomainInput
+from premixdb.engine.mixtures import MixturePool
 from premixdb.v1 import dataset_pb2 as pb
 from premixdb.v1 import query_pb2 as query_pb
 
@@ -40,10 +41,10 @@ class MixTests(unittest.TestCase):
         domains: DomainInput = premixdb.object.uri,
         tokens: int = 9,
         sequence_length: int = 4,
-        bounds: sdk.Bounds | None = None,
+        bounds: premixdb.Bounds | None = None,
         seed: int = 42,
         n_candidates: int = 1,
-    ) -> sdk.Mix:
+    ) -> premixdb.Mix:
         return self.query.mix(
             tokenizer=premixdb.ByteTokenizer(),
             domains=domains,
@@ -81,6 +82,50 @@ class MixTests(unittest.TestCase):
             self.assertEqual(dataset.profile(), planned)
             self.assertIs(dataset.status, premixdb.ExecutionStatus.COMPLETED)
         self.assertEqual(self.client._dataset(mix[0].id).status, premixdb.ExecutionStatus.COMPLETED)
+
+    def test_each_candidate_prepares_its_profile_draws_once(self) -> None:
+        with patch.object(
+            MixturePool, "_draw", autospec=True, side_effect=MixturePool._draw
+        ) as draw:
+            mix = self.mix(n_candidates=3)
+            self.assertEqual(draw.call_count, 3)
+            planned = mix.profile(0)
+            self.assertEqual(draw.call_count, 3)
+            candidate = mix[0].wait()
+            self.assertEqual(draw.call_count, 4)
+            self.assertEqual(candidate.profile(), planned)
+            self.assertEqual(len(candidate), planned.sequences)
+
+    def test_invalid_mixture_options_do_not_run_pending_queries(self) -> None:
+        invalid = (
+            lambda: self.mix(tokens=0),
+            lambda: self.mix(sequence_length=0),
+            lambda: self.mix(n_candidates=0),
+            lambda: self.mix(domains={"invalid-id": "letters"}),
+            lambda: self.query.mix(size=premixdb.Tokens(1), tokens=1),
+            lambda: self.query.mix(sampler=premixdb.RegMixSampler(minimum_weight=float("nan"))),
+        )
+        with patch.object(self.query, "wait", side_effect=AssertionError("query ran")):
+            for index, build in enumerate(invalid):
+                with self.subTest(case=index), self.assertRaises(ValueError):
+                    build()
+        self.assertIs(self.query.status, premixdb.ExecutionStatus.PENDING)
+
+    def test_mixture_planning_requires_an_open_writable_session(self) -> None:
+        self.query.wait()
+        with premixdb.PremixDB(storage=self.root, read_only=True) as db:
+            query = db._query(self.query.id)
+            with (
+                patch("premixdb._resources._requests.mix", side_effect=AssertionError("planned")),
+                self.assertRaisesRegex(PermissionError, "read-only session.*plan mixtures"),
+            ):
+                query.mix()
+        self.client.close()
+        with (
+            patch("premixdb._resources._requests.mix", side_effect=AssertionError("planned")),
+            self.assertRaisesRegex(ValueError, "PremixDB is closed"),
+        ):
+            self.query.mix()
 
     def test_proposals_bounds_identity_and_retries(self) -> None:
         mix = self.mix(

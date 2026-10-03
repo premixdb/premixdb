@@ -6,6 +6,7 @@ import json
 import signal
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -124,7 +125,7 @@ def test_ipython_completes_only_public_names_and_saves_history(
 
         with patch.object(_Shell, "mainloop", new=interact):
             _interact(dict(db=db, p=p, q=query), banner="test shell", history=history)
-        with sqlite3.connect(str(history) + ".sqlite3") as connection:
+        with closing(sqlite3.connect(str(history) + ".sqlite3")) as connection:
             assert connection.execute("SELECT source FROM history").fetchall() == [("answer = 42",)]
 
 
@@ -149,14 +150,14 @@ def test_cli_reads_metadata_profiles_and_bounded_previews(
     with p.PremixDB(storage=tmp_path) as db:
         snapshot = db.corpus("cli", [p.Source("first", "hello world"), p.Source("second", "bye")])
         query = snapshot.query()
-        dataset = query.dataset(sequence_length=4).wait()
+        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).wait()
     prefix = ["--storage", str(tmp_path)]
     with patch(
         "premixdb.execution.coordinator.Coordinator._execute_query", side_effect=AssertionError
     ):
         assert main([*prefix, "corpora", "--json"]) == 0
         assert json.loads(capsys.readouterr().out)[0]["snapshot_id"] == snapshot.id
-        assert main([*prefix, "profile", "query", query.id, "--json"]) == 0
+        assert main([*prefix, "profile", "query", "--json", "--", query.id]) == 0
         assert json.loads(capsys.readouterr().out)["output_documents"] == "2"
         assert (
             main(
@@ -164,10 +165,11 @@ def test_cli_reads_metadata_profiles_and_bounded_previews(
                     *prefix,
                     "profile",
                     "snapshot",
-                    snapshot.id,
                     "--field",
                     "text.characters",
                     "--json",
+                    "--",
+                    snapshot.id,
                 ]
             )
             == 0
@@ -179,26 +181,29 @@ def test_cli_reads_metadata_profiles_and_bounded_previews(
                     *prefix,
                     "preview",
                     "query",
-                    query.id,
                     "--limit",
                     "1",
                     "--max-characters",
                     "2",
                     "--json",
+                    "--",
+                    query.id,
                 ]
             )
             == 0
         )
         rows = json.loads(capsys.readouterr().out)
         assert len(rows) == 1 and len(rows[0]["text"]) == 2 and rows[0]["truncated"]
-        assert main([*prefix, "preview", "dataset", dataset.id, "--limit", "1", "--json"]) == 0
+        assert (
+            main([*prefix, "preview", "dataset", "--limit", "1", "--json", "--", dataset.id]) == 0
+        )
         rows = json.loads(capsys.readouterr().out)
         assert len(rows) == 1 and rows[0]["ordinal"] == 0 and rows[0]["tokens"]
-        assert main([*prefix, "profile", "dataset", dataset.id]) == 0
+        assert main([*prefix, "profile", "dataset", "--", dataset.id]) == 0
         summary = capsys.readouterr().out
         assert "Sequences:" in summary
         assert len(summary.splitlines()) <= 15
-        assert main([*prefix, "executions", "--resource-id", query.id, "--json"]) == 0
+        assert main([*prefix, "executions", "--resource-id=" + query.id, "--json"]) == 0
         assert json.loads(capsys.readouterr().out)
 
 
@@ -293,3 +298,39 @@ def test_cli_errors_are_short_and_do_not_start_a_shell(
     assert "premixdb:" in capsys.readouterr().err
     assert main([]) == 0
     assert "profile" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("missing", ["index", "tokens"])
+def test_missing_sequence_files_have_a_short_cli_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], missing: str
+) -> None:
+    with p.PremixDB(storage=tmp_path) as db:
+        dataset = (
+            db.corpus("missing", [p.Source("a", "abcd" * 11)])
+            .query()
+            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            .wait()
+        )
+        reference = dataset._proto.sequences[0] if missing == "index" else dataset._proto.tokens[0]
+        path = tmp_path / "dataset/objects" / reference.object.blake3_digest.hex()
+        path.unlink()
+    with pytest.raises(SystemExit) as failed:
+        main(
+            [
+                "--storage",
+                str(tmp_path),
+                "preview",
+                "dataset",
+                dataset.id,
+                "--offset",
+                "10",
+                "--limit",
+                "1",
+            ]
+        )
+    assert failed.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.startswith("premixdb: ")
+    assert str(path) in output.err
+    assert len(output.err.splitlines()) == 1

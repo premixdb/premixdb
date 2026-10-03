@@ -6,6 +6,7 @@ import json
 import math
 import operator
 from collections.abc import Mapping
+from contextlib import ExitStack, contextmanager
 from itertools import islice
 from typing import (
     TYPE_CHECKING,
@@ -20,6 +21,7 @@ from typing import (
 )
 
 from google.protobuf.message import Message
+from google.protobuf.unknown_fields import UnknownFieldSet
 
 from .._protobuf import at, parse
 from .._typing import Edge, FieldValue, checked_record, field_value
@@ -93,13 +95,6 @@ def require_index(schema: f.Field | ix.Index) -> ix.Index:
     return schema
 
 
-def row_id(row: Mapping[str, object]) -> str:
-    id = row["id"]
-    if not isinstance(id, str):
-        raise ValueError("computed row must have a string id")
-    return id
-
-
 def numeric_vector(value: FieldValue) -> list[float]:
     if not isinstance(value, list) or any(not isinstance(x, (float, int)) for x in value):
         raise ValueError("expected a numeric vector")
@@ -165,16 +160,29 @@ def producer(spec: e.EnrichmentProducer) -> Worker:
     raise ValueError("unsupported enrichment producer")
 
 
+_VALUE_KINDS = {
+    f.VALUE_FLOAT32: "number",
+    f.VALUE_FLOAT64: "number",
+    f.VALUE_INT64: "integer",
+    f.VALUE_STRING: "text",
+    f.VALUE_BOOL: "boolean",
+}
+
+
+def _validate_vector(vector: Sequence[float], width: int) -> None:
+    if len(vector) != width:
+        raise ValueError("field vector width mismatch")
+    if not all(math.isfinite(x) for x in vector):
+        raise ValueError("field vector must contain finite numbers")
+
+
 def encode_value(spec: f.Field, id: bytes, value: FieldValue) -> e.FieldValue:
     row = e.FieldValue(document_id=id)
     if value is None:
         row.null = True
     elif spec.length:
-        if not isinstance(value, (tuple, list)) or len(value) != spec.length:
-            raise ValueError("field vector width mismatch")
         vector = numeric_vector(value)
-        if not all(math.isfinite(x) for x in vector):
-            raise ValueError("field vector must contain finite numbers")
+        _validate_vector(vector, spec.length)
         row.vector.values.extend(vector)
     elif spec.element_type in (f.VALUE_FLOAT32, f.VALUE_FLOAT64):
         if not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -194,6 +202,8 @@ def encode_value(spec: f.Field, id: bytes, value: FieldValue) -> e.FieldValue:
 
 
 def decode_value(spec: f.Field, row: e.FieldValue) -> FieldValue:
+    if UnknownFieldSet(row):
+        raise ValueError("stored value does not match field schema")
     kind = row.WhichOneof("value")
     if kind == "null":
         if not row.null:
@@ -201,20 +211,17 @@ def decode_value(spec: f.Field, row: e.FieldValue) -> FieldValue:
         return None
     if kind is None:
         raise ValueError("missing field outcome")
-    value: FieldValue = (
-        list(row.vector.values)
-        if kind == "vector"
-        else row.number
-        if kind == "number"
-        else row.integer
-        if kind == "integer"
-        else row.text
-        if kind == "text"
-        else row.boolean
-    )
-    if encode_value(spec, row.document_id, value) != row:
+    if kind != ("vector" if spec.length else _VALUE_KINDS.get(spec.element_type)):
         raise ValueError("stored value does not match field schema")
-    return value
+    if kind == "vector":
+        if UnknownFieldSet(row.vector):
+            raise ValueError("stored value does not match field schema")
+        vector = list(row.vector.values)
+        _validate_vector(vector, spec.length)
+        return cast(FieldValue, vector)
+    if kind == "number" and not math.isfinite(row.number):
+        raise ValueError("field requires finite numeric values")
+    return cast(FieldValue, getattr(row, kind))
 
 
 # Computation cohorts are semantic; storage shards may be repacked independently.
@@ -275,11 +282,12 @@ def cached_rows(
         else:
             if result.HasField("evidence") or len(result.fields) != len(schemas):
                 raise ValueError("cached derivation schema mismatch")
-            for spec, column in zip(schemas, result.fields):
+            for schema, column in zip(schemas, result.fields):
+                spec = require_field(schema)
                 if [row.document_id for row in column.rows] != list(result.document_ids):
                     raise ValueError("incomplete cached field coverage")
                 for row in column.rows:
-                    decode_value(require_field(spec), row)
+                    decode_value(spec, row)
         return result
 
     def compute(
@@ -294,37 +302,38 @@ def cached_rows(
                 values = worker.compute(docs)
         if [row["id"] for row in values] != [doc.id for doc in docs]:
             raise ValueError("producer changed document coverage")
+        document_ids = [bytes.fromhex(doc.id) for doc in docs]
         result = e.DerivationCache(
             id=key(docs),
             definition_json=definition,
-            document_ids=[bytes.fromhex(doc.id) for doc in docs],
+            document_ids=document_ids,
             schema_ids=schema_ids,
         )
         if is_index:
-            result.evidence.rows.extend(
-                e.DedupeEvidence(
-                    document_id=bytes.fromhex(row_id(row)),
-                    exact_hash=checked_record(row, DedupeRow)["exact_hash"],
-                    minhash=checked_record(row, DedupeRow)["minhash"] or (),
-                    lsh_buckets=checked_record(row, DedupeRow)["lsh_buckets"] or (),
+            for id, raw_row in zip(document_ids, values, strict=True):
+                row = checked_record(raw_row, DedupeRow)
+                result.evidence.rows.add(
+                    document_id=id,
+                    exact_hash=row["exact_hash"],
+                    minhash=row["minhash"] or (),
+                    lsh_buckets=row["lsh_buckets"] or (),
                 )
-                for row in values
-            )
             if any(
                 row.exact_hash != blake3(doc.text.encode()).digest()
                 for doc, row in zip(docs, result.evidence.rows)
             ):
                 raise ValueError("producer returned evidence for different text")
         else:
-            for spec in schemas:
+            for schema in schemas:
+                spec = require_field(schema)
                 result.fields.add(
                     rows=[
                         encode_value(
-                            require_field(spec),
-                            bytes.fromhex(row_id(row)),
+                            spec,
+                            id,
                             field_value(cast(Mapping[str, object], row)[spec.name]),
                         )
-                        for row in values
+                        for id, row in zip(document_ids, values, strict=True)
                     ]
                 )
         return result
@@ -419,121 +428,108 @@ def build(service: Coordinator, request: e.DerivationPlan) -> e.Materialization:
     handles = [service._snapshot(id) for id in request.snapshot_ids]
     population = execution.execute(handles, [], code)
     result = e.Materialization(plan=request)
-    names = set()
-    for policy in (request.producer,):
-        worker = producer(policy)
-        definition = json.dumps(
-            worker.definition, sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode()
-        schemas = worker.indexes if isinstance(worker, DupekitIndex) else worker.fields
-        if any(spec.name in names for spec in schemas):
-            raise ValueError("duplicate enrichment field/index names")
-        names.update(spec.name for spec in schemas)
-        manifests = [
-            e.EnrichmentManifest(
-                producer=policy,
-                definition_json=definition,
-                documents=population.row_count,
-                plan=request,
-            )
-            for _ in schemas
-        ]
-        logical_digests = [blake3() for _ in schemas]
-        profilers = (
-            []
-            if policy.HasField("dupekit")
-            else [FieldProfiler(require_field(spec)) for spec in schemas]
+    policy = request.producer
+    worker = producer(policy)
+    definition = json.dumps(
+        worker.definition, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    schemas = worker.indexes if isinstance(worker, DupekitIndex) else worker.fields
+    is_index = policy.HasField("dupekit")
+    if len({spec.name for spec in schemas}) != len(schemas):
+        raise ValueError("duplicate enrichment field/index names")
+    manifests = [
+        e.EnrichmentManifest(
+            producer=policy,
+            definition_json=definition,
+            documents=population.row_count,
+            plan=request,
         )
+        for _ in schemas
+    ]
+    logical_digests = [blake3() for _ in schemas]
+    profilers = [] if is_index else [FieldProfiler(require_field(spec)) for spec in schemas]
 
-        def documents() -> Iterator[Document]:
-            for row in population.rows():
-                url = (
-                    row.source_key if urlsplit(row.source_key).scheme in ("http", "https") else None
-                )
-                yield Document(row.id, row.text, url)
+    def documents() -> Iterator[Document]:
+        for row in population:
+            url = row.source_key if urlsplit(row.source_key).scheme in ("http", "https") else None
+            yield Document(row.id, row.text, url)
 
-        outcomes = iter(cached_rows(service, request, worker, documents(), schemas, definition))
-        while rows := list(islice(outcomes, SHARD_ROWS)):
-            if policy.HasField("dupekit"):
-                shard = e.DedupeEvidenceShard(
-                    rows=[r for r in rows if isinstance(r, e.DedupeEvidence)]
+    outcomes = iter(cached_rows(service, request, worker, documents(), schemas, definition))
+    while rows := list(islice(outcomes, SHARD_ROWS)):
+        if is_index:
+            shard = e.DedupeEvidenceShard(rows=[r for r in rows if isinstance(r, e.DedupeEvidence)])
+            if len(shard.rows) != len(rows):
+                raise ValueError("index producer returned field outcomes")
+            ref = service._storage.put("index", wire(shard))
+            for manifest, digest in zip(manifests, logical_digests):
+                manifest.shards.append(ref)
+                hash_rows(digest, shard.rows)
+        else:
+            for column, (spec, manifest, digest, profiler) in enumerate(
+                zip(schemas, manifests, logical_digests, profilers)
+            ):
+                field_spec = require_field(spec)
+                shard = e.FieldValueShard(
+                    rows=[row[column] for row in rows if isinstance(row, list)]
                 )
                 if len(shard.rows) != len(rows):
-                    raise ValueError("index producer returned field outcomes")
-                ref = service._storage.put("index", wire(shard))
-                for manifest, digest in zip(manifests, logical_digests):
-                    manifest.shards.append(ref)
-                    hash_rows(digest, shard.rows)
-            else:
-                for column, (spec, manifest, digest, profiler) in enumerate(
-                    zip(schemas, manifests, logical_digests, profilers)
-                ):
-                    shard = e.FieldValueShard(
-                        rows=[row[column] for row in rows if isinstance(row, list)]
+                    raise ValueError("field producer returned index outcomes")
+                shard_profiler = FieldProfiler(field_spec)
+                for row in shard.rows:
+                    value = decode_value(field_spec, row)
+                    profiler.add(value)
+                    shard_profiler.add(value)
+                data = wire(shard)
+                manifest.shards.append(
+                    service._storage.put(
+                        "field",
+                        data,
+                        profile=storage.ObjectProfile(
+                            content_bytes=len(data), fields=[shard_profiler.proto()]
+                        ),
                     )
-                    if len(shard.rows) != len(rows):
-                        raise ValueError("field producer returned index outcomes")
-                    shard_profiler = FieldProfiler(require_field(spec))
-                    for row in shard.rows:
-                        value = decode_value(require_field(spec), row)
-                        profiler.add(value)
-                        shard_profiler.add(value)
-                    data = wire(shard)
-                    manifest.shards.append(
-                        service._storage.put(
-                            "field",
-                            data,
-                            profile=storage.ObjectProfile(
-                                content_bytes=len(data), fields=[shard_profiler.proto()]
-                            ),
-                        )
-                    )
-                    hash_rows(digest, shard.rows)
-        for i, (spec, manifest, digest) in enumerate(zip(schemas, manifests, logical_digests)):
-            manifest.logical_digest = digest.digest()
-            is_index = policy.HasField("dupekit")
-            prefix = "index" if is_index else "field"
-            ref = service._storage.put(prefix, wire(manifest))
-            build_id = planned_build_id(request, spec.name)
-            if is_index:
-                item = e.IndexBuild(
-                    index=require_index(spec),
-                    snapshot=ix.IndexSnapshot(
-                        id=build_id,
-                        index_id=spec.id,
-                        snapshot_id=request.snapshot_ids[0]
-                        if len(request.snapshot_ids) == 1
-                        else b"",
-                        snapshot_ids=request.snapshot_ids,
-                        manifest=ref,
-                        git_commit=request.git_commit,
-                    ),
                 )
-            else:
-                item = e.FieldBuild(
-                    field=require_field(spec),
-                    snapshot=f.FieldSnapshot(
-                        id=build_id,
-                        field_id=spec.id,
-                        snapshot_id=request.snapshot_ids[0]
-                        if len(request.snapshot_ids) == 1
-                        else b"",
-                        snapshot_ids=request.snapshot_ids,
-                        manifest=ref,
-                        git_commit=request.git_commit,
-                        profile=profilers[i].proto(),
-                    ),
-                )
-            try:
-                previous, _ = load_build(service, prefix, build_id, request.snapshot_ids)
-            except KeyError:
-                service._storage.save(prefix, build_id, item)
-            else:
-                item = previous
-            if isinstance(item, e.IndexBuild):
-                result.indexes.append(item)
-            else:
-                result.fields.append(item)
+                hash_rows(digest, shard.rows)
+    for i, (spec, manifest, digest) in enumerate(zip(schemas, manifests, logical_digests)):
+        manifest.logical_digest = digest.digest()
+        prefix = "index" if is_index else "field"
+        ref = service._storage.put(prefix, wire(manifest))
+        build_id = planned_build_id(request, spec.name)
+        if is_index:
+            item = e.IndexBuild(
+                index=require_index(spec),
+                snapshot=ix.IndexSnapshot(
+                    id=build_id,
+                    index_id=spec.id,
+                    snapshot_id=request.snapshot_ids[0] if len(request.snapshot_ids) == 1 else b"",
+                    snapshot_ids=request.snapshot_ids,
+                    manifest=ref,
+                    git_commit=request.git_commit,
+                ),
+            )
+        else:
+            item = e.FieldBuild(
+                field=require_field(spec),
+                snapshot=f.FieldSnapshot(
+                    id=build_id,
+                    field_id=spec.id,
+                    snapshot_id=request.snapshot_ids[0] if len(request.snapshot_ids) == 1 else b"",
+                    snapshot_ids=request.snapshot_ids,
+                    manifest=ref,
+                    git_commit=request.git_commit,
+                    profile=profilers[i].proto(),
+                ),
+            )
+        try:
+            previous, _ = load_build(service, prefix, build_id, request.snapshot_ids)
+        except KeyError:
+            service._storage.save(prefix, build_id, item)
+        else:
+            item = previous
+        if isinstance(item, e.IndexBuild):
+            result.indexes.append(item)
+        else:
+            result.fields.append(item)
     service._storage.save("derivation", request.id, result)
     return result
 
@@ -651,17 +647,9 @@ def read_rows(
 
 
 def matches(spec: f.Field, selector: q.FieldComparison, value: FieldValue) -> bool:
-    projection = selector.projection
-    if projection == q.FieldComparison.IS_NULL:
-        value = value is None
-    elif value is None:
+    value = project(spec, selector, value)
+    if value is None:
         return False  # All ordinary comparisons, including !=, exclude computed nulls.
-    elif projection == q.FieldComparison.CLASS_PROBABILITY:
-        value = probabilities(spec, numeric_vector(value))[selector.class_name]
-    elif projection == q.FieldComparison.TOP_CLASS:
-        value = top_class(spec, numeric_vector(value))[0]
-    elif projection == q.FieldComparison.VECTOR_COMPONENT:
-        value = numeric_vector(value)[selector.component]
     expected = getattr(selector, selector.WhichOneof("value"))
     return bool(
         {
@@ -724,152 +712,161 @@ def validate_selector(spec: f.Field, selector: q.FieldComparison) -> None:
         raise ValueError("comparison value must be finite")
 
 
-def query_inputs(service: Coordinator, query: q.Query) -> tuple[execution.CorpusIndex, list[Step]]:
-    """Derive missing recipes, then verify complete coverage before selecting rows."""
-    from .catalog import resolve
+@contextmanager
+def query_inputs(
+    service: Coordinator, query: q.Query
+) -> Iterator[tuple[execution.CorpusIndex, list[Step]]]:
+    """Keep verified projected columns alive only while selecting rows."""
+    with ExitStack() as resources:
+        from .catalog import resolve
 
-    for plan in resolve(query):
-        service._once(plan, lambda plan=plan: build(service, plan))
-    from ..engine import plans
-    from .planner import execution_steps, external_definition
+        for plan in resolve(query):
+            service._once(plan, lambda plan=plan: build(service, plan))
+        from ..engine import plans
+        from .planner import execution_steps, external_definition
 
-    handles = [service._snapshot(id) for id in query.snapshot_ids]
-    union = execution.execute(handles, [], _runtime.resolve_code(query.git_commit))
-    ids = {bytes.fromhex(row[0]) for row in union.metadata()}
-    selections, document_hashes = {}, None
-    from ..engine import curation
-    from ..engine.value_cache import ValueCache
-    from .catalog import selectors
+        handles = [service._snapshot(id) for id in query.snapshot_ids]
+        index = execution.CorpusIndex(handles)
+        ids = {bytes.fromhex(id) for id in index.documents}
+        selections, document_hashes = {}, None
+        from ..engine import curation
+        from ..engine.value_cache import ValueCache
+        from .catalog import selectors
 
-    field_values: dict[str, Mapping[str, FieldValue]] = {}
-    for selector in selectors(query):
-        key = curation.selector_key(selector)
-        if key in field_values:
-            continue
-        if selector.field in (1, 2, 3, 4):
-            field_values[key] = ValueCache(
-                (
+        field_values: dict[str, Mapping[str, FieldValue]] = {}
+        for selector in selectors(query):
+            key = curation.selector_key(selector)
+            if key in field_values:
+                continue
+            if selector.field in (1, 2, 3, 4):
+                projected = ValueCache(
                     (
-                        row.id,
-                        row.document.size
-                        if selector.field == 1
-                        else row.document.characters
-                        if selector.field == 2
-                        else row.source_key
-                        if selector.field == 3
-                        else row.corpus_id,
+                        (
+                            document.id,
+                            curation.intrinsic_value(document, selector.field),
+                        )
+                        for document in index.documents.values()
                     )
-                    for row in union.rows()
                 )
-            )
-            continue
-        item, manifest = load_build(
-            service, "field", selector.field_snapshot_id, query.snapshot_ids
-        )
-        covered, projected = set(), ValueCache()
-        for row in read_rows(service, "field", manifest):
-            value = decode_value(item.field, row)
-            covered.add(row.document_id)
-            projected[row.document_id.hex()] = project(item.field, selector, value)
-        if covered != ids:
-            raise ValueError("field build must cover the entire query union")
-        field_values[key] = projected
-    for operation in query.operations:
-        if operation.HasField("field_where"):
-            selector = operation.field_where
+                resources.callback(projected.close)
+                field_values[key] = projected
+                continue
             item, manifest = load_build(
                 service, "field", selector.field_snapshot_id, query.snapshot_ids
             )
-            validate_selector(item.field, selector)
-            covered, members = set(), []
-            for row, decision in read_rows(service, "field", manifest, selector=selector):
+            covered, projected = set(), ValueCache()
+            resources.callback(projected.close)
+            for row in read_rows(service, "field", manifest):
                 value = decode_value(item.field, row)
                 covered.add(row.document_id)
-                if decision is True or (decision is None and matches(item.field, selector, value)):
-                    members.append(row.document_id)
+                projected[row.document_id.hex()] = project(item.field, selector, value)
             if covered != ids:
                 raise ValueError("field build must cover the entire query union")
-            key = external_definition(operation)
-            selections[key] = plans.external_filter(key, members)
-        elif operation.HasField("indexed_dedupe"):
-            item, manifest = load_build(
-                service, "index", operation.indexed_dedupe.index_snapshot_id, query.snapshot_ids
-            )
-            if item.index.name not in ("dupekit.exact_candidates", "dupekit.lsh"):
-                raise NotImplementedError(
-                    "LSH candidates require an explicit verification/clustering policy"
+            field_values[key] = projected
+        for operation in query.operations:
+            if operation.HasField("field_where"):
+                selector = operation.field_where
+                item, manifest = load_build(
+                    service, "field", selector.field_snapshot_id, query.snapshot_ids
                 )
-            rows = list(read_rows(service, "index", manifest))
-            if {row.document_id for row in rows} != ids or any(
-                len(row.exact_hash) != 32 for row in rows
-            ):
-                raise ValueError(
-                    "index must contain complete binary-hash evidence for the query union"
+                validate_selector(item.field, selector)
+                covered, members = set(), []
+                for row, decision in read_rows(service, "field", manifest, selector=selector):
+                    value = decode_value(item.field, row)
+                    covered.add(row.document_id)
+                    if decision is True or (
+                        decision is None and matches(item.field, selector, value)
+                    ):
+                        members.append(row.document_id)
+                if covered != ids:
+                    raise ValueError("field build must cover the entire query union")
+                key = external_definition(operation)
+                selections[key] = plans.external_filter(key, members)
+            elif operation.HasField("indexed_dedupe"):
+                item, manifest = load_build(
+                    service, "index", operation.indexed_dedupe.index_snapshot_id, query.snapshot_ids
                 )
-            hashes = [(row.document_id.hex(), row.exact_hash.hex()) for row in rows]
-            if document_hashes is not None and hashes != document_hashes:
-                raise ValueError("conflicting exact evidence indexes")
-            document_hashes = hashes
-    steps = execution_steps(query)
-    for i, operation in enumerate(query.operations):
-        if operation.HasField("field_where"):
-            steps[i] = selections[external_definition(operation)]
-    index = execution.CorpusIndex(handles, document_hashes)
-    index.field_values = field_values
-    for i, operation in enumerate(query.operations):
-        if operation.HasField("similarity_dedupe"):
-            policy = operation.similarity_dedupe
-            if policy.algorithm == 1:
+                if item.index.name not in ("dupekit.exact_candidates", "dupekit.lsh"):
+                    raise NotImplementedError(
+                        "LSH candidates require an explicit verification/clustering policy"
+                    )
+                rows = list(read_rows(service, "index", manifest))
+                if {row.document_id for row in rows} != ids or any(
+                    len(row.exact_hash) != 32 for row in rows
+                ):
+                    raise ValueError(
+                        "index must contain complete binary-hash evidence for the query union"
+                    )
+                hashes = [(row.document_id.hex(), row.exact_hash.hex()) for row in rows]
+                if document_hashes is not None and hashes != document_hashes:
+                    raise ValueError("conflicting exact evidence indexes")
+                document_hashes = hashes
+        steps = execution_steps(query)
+        for i, operation in enumerate(query.operations):
+            if operation.HasField("field_where"):
+                steps[i] = selections[external_definition(operation)]
+        if document_hashes is not None:
+            index = execution.CorpusIndex(handles, document_hashes)
+        index.field_values = field_values
+        for i, operation in enumerate(query.operations):
+            if operation.HasField("similarity_dedupe"):
+                policy = operation.similarity_dedupe
+                if policy.algorithm == 1:
 
-                def edges(
-                    documents: list[SelectedDocument], p: q.SimilarityDedupe = policy
-                ) -> Iterable[Edge]:
-                    return curation.jaccard_edges(documents, p.n, p.threshold)
-            else:
-                vectors = field_values[curation.selector_key(policy.embedding)]
+                    def edges(
+                        documents: list[SelectedDocument], p: q.SimilarityDedupe = policy
+                    ) -> Iterable[Edge]:
+                        return curation.jaccard_edges(documents, p.n, p.threshold)
+                else:
+                    vectors = field_values[curation.selector_key(policy.embedding)]
+
+                    def edges(
+                        documents: list[SelectedDocument],
+                        vectors: Mapping[str, FieldValue] = vectors,
+                        threshold: float = policy.threshold,
+                    ) -> Iterable[Edge]:
+                        return curation.cosine_edges(
+                            (
+                                (
+                                    id,
+                                    None
+                                    if (value := vectors[id]) is None
+                                    else numeric_vector(value),
+                                )
+                                for id in sorted({doc.id for doc in documents})
+                            ),
+                            threshold,
+                        )
+
+                payload = steps[i].payload
+                assert payload is not None and payload[0] == "similarity"
+                steps[i] = plans.policy(steps[i].definition, ("similarity", payload[1], edges))
+            elif (
+                operation.HasField("indexed_dedupe")
+                and operation.indexed_dedupe.index_name == "dupekit.lsh"
+            ):
+                policy = operation.indexed_dedupe
+                _, manifest = load_build(
+                    service, "index", policy.index_snapshot_id, query.snapshot_ids
+                )
 
                 def edges(
                     documents: list[SelectedDocument],
-                    vectors: Mapping[str, FieldValue] = vectors,
-                    threshold: float = policy.threshold,
+                    p: q.IndexedDedupe = policy,
+                    manifest: e.EnrichmentManifest = manifest,
                 ) -> Iterable[Edge]:
-                    selected = {doc.id for doc in documents}
-                    return curation.cosine_edges(
-                        {
-                            id: numeric_vector(vector) if vector is not None else None
-                            for id, vector in vectors.items()
-                        },
-                        threshold,
-                        selected=selected,
+                    from ..engine.spill import candidate_pairs
+
+                    pairs = candidate_pairs(
+                        (row.document_id.hex(), row.lsh_buckets)
+                        for row in read_rows(service, "index", manifest)
                     )
+                    return curation.jaccard_edges(documents, 5, p.threshold, pairs)
 
-            payload = steps[i].payload
-            assert payload is not None and payload[0] == "similarity"
-            steps[i] = plans.policy(steps[i].definition, ("similarity", payload[1], edges))
-        elif (
-            operation.HasField("indexed_dedupe")
-            and operation.indexed_dedupe.index_name == "dupekit.lsh"
-        ):
-            policy = operation.indexed_dedupe
-            _, manifest = load_build(service, "index", policy.index_snapshot_id, query.snapshot_ids)
-
-            def edges(
-                documents: list[SelectedDocument],
-                p: q.IndexedDedupe = policy,
-                manifest: e.EnrichmentManifest = manifest,
-            ) -> Iterable[Edge]:
-                from ..engine.spill import candidate_pairs
-
-                pairs = candidate_pairs(
-                    (row.document_id.hex(), row.lsh_buckets)
-                    for row in read_rows(service, "index", manifest)
-                )
-                return curation.jaccard_edges(documents, 5, p.threshold, pairs)
-
-            payload = steps[i].payload
-            assert payload is not None and payload[0] == "similarity"
-            steps[i] = plans.policy(steps[i].definition, ("similarity", payload[1], edges))
-    return index, steps
+                payload = steps[i].payload
+                assert payload is not None and payload[0] == "similarity"
+                steps[i] = plans.policy(steps[i].definition, ("similarity", payload[1], edges))
+        yield index, steps
 
 
 def project(spec: f.Field, selector: q.FieldComparison, value: FieldValue) -> FieldValue:
@@ -893,22 +890,14 @@ def project(spec: f.Field, selector: q.FieldComparison, value: FieldValue) -> Fi
 def projections(
     service: Coordinator, query: execution.Query, selectors: Iterable[q.FieldComparison]
 ) -> dict[str, Mapping[str, FieldValue]]:
-    from ..engine.curation import selector_key
+    from ..engine.curation import intrinsic_value, selector_key
     from .catalog import build_id, plan
 
     result = {}
-    rows = query.rows()
     for selector in selectors:
         if selector.field in (1, 2, 3, 4):
             result[selector_key(selector)] = {
-                r.id: r.document.size
-                if selector.field == 1
-                else len(r.text)
-                if selector.field == 2
-                else r.source_key
-                if selector.field == 3
-                else r.corpus_id
-                for r in rows
+                r.id: intrinsic_value(r.document, selector.field) for r in query
             }
             continue
         name = field_name(selector.field)
@@ -925,7 +914,7 @@ def projections(
             r.document_id.hex(): project(item.field, selector, decode_value(item.field, r))
             for r in read_rows(service, "field", manifest)
         }
-        if not {r.id for r in rows} <= values.keys():
+        if not {r.id for r in query} <= values.keys():
             raise ValueError("incomplete stratum field coverage")
         result[selector_key(selector)] = values
     return result

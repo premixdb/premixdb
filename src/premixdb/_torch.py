@@ -11,7 +11,7 @@ from blake3 import blake3
 from torch.utils.data import Dataset, IterableDataset, get_worker_info
 
 from ._reader import permutation
-from ._resources import _sequence_page
+from ._sequences import INDEX_PAGE_SIZE, _validate_mask, sequence_page
 from ._storage import RangeReader
 from .v1 import dataset_pb2 as d
 
@@ -50,7 +50,7 @@ class TorchDataset(Dataset[dict[str, torch.Tensor]]):
             self.reader.read_many([self.resource.sequences[p] for p in missing]),
             strict=True,
         ):
-            self._pages[page] = _sequence_page(self.resource, data, page)
+            self._pages[page] = sequence_page(self.resource, data, page)
         result = {page: self._pages[page] for page in pages}
         # Keep only four index pages between batches, regardless of batch size.
         for page in pages:
@@ -61,29 +61,22 @@ class TorchDataset(Dataset[dict[str, torch.Tensor]]):
 
     def __getitems__(self, indices: Iterable[int]) -> list[dict[str, torch.Tensor]]:
         indices = [self._index(index) for index in indices]
-        pages = self._load_pages(index // 128 for index in indices)
-        return self._items([pages[index // 128][index % 128] for index in indices])
+        pages = self._load_pages(index // INDEX_PAGE_SIZE for index in indices)
+        return self._items(
+            [pages[index // INDEX_PAGE_SIZE][index % INDEX_PAGE_SIZE] for index in indices]
+        )
 
     def _items(self, sequences: list[d.Sequence]) -> list[dict[str, torch.Tensor]]:
         if not sequences:
             return []
-        if any(s.tokens.start % 4 for s in sequences):
-            raise ValueError("token range is not uint32 aligned")
         spans = [span for s in sequences for span in (s.tokens, s.attention_mask, s.loss_mask)]
         values = self.reader.read_many(spans)
         length = self.resource.sequence_length
-        for i in range(0, len(values), 3):
-            if (
-                len(values[i]) != length * 4
-                or len(values[i + 1]) != length
-                or len(values[i + 2]) != length
-            ):
-                raise ValueError("stored sequence has an invalid length")
-            if any(v > 1 for data in values[i + 1 : i + 3] for v in data):
-                raise ValueError("invalid stored token mask")
-        tokens = bytearray(b"".join(values[0::3]))
-        attention = bytearray(b"".join(values[1::3]))
-        loss = bytearray(b"".join(values[2::3]))
+        for data in values[1::3] + values[2::3]:
+            _validate_mask(data, "token")
+        tokens = bytearray().join(values[0::3])
+        attention = bytearray().join(values[1::3])
+        loss = bytearray().join(values[2::3])
         # Explicit little-endian decoding works on hosts with either byte order.
         import sys
 
@@ -156,7 +149,7 @@ class StreamingDataset(IterableDataset[dict[str, torch.Tensor]]):
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         worker = get_worker_info()
         number, workers = (0, 1) if worker is None else (worker.id, worker.num_workers)
-        count = (len(self.data) + 127) // 128
+        count = (len(self.data) + INDEX_PAGE_SIZE - 1) // INDEX_PAGE_SIZE
         first = self.rank + self.world_size * number
         for position in range(first, count, self.world_size * workers):
             page = permutation(position, count, self._seed)
