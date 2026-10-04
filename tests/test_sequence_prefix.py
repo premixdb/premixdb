@@ -9,7 +9,7 @@ import pytest
 from premixdb import RangeReader
 from premixdb._sequences import Sequence
 from premixdb.execution.storage import ObjectStore
-from premixdb.v1 import dataset_pb2 as d
+from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1.storage_pb2 import SpanRef
 
 

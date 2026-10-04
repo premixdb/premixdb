@@ -16,7 +16,7 @@ from .. import _requests
 from .._protobuf import copy_message, descriptor_name
 from .._wire import reject_unknown
 from ..v1 import corpus_pb2 as corpora
-from ..v1 import dataset_pb2 as datasets
+from ..v1 import data_mixture_pb2 as datasets
 from ..v1 import query_pb2 as queries
 from ..v1 import snapshot_pb2 as snapshots
 from ..v1 import status_pb2 as status
@@ -187,6 +187,10 @@ class Catalog:
         self, kind: str, id: bytes, suffix: str, message_type: type[T]
     ) -> T:
         # Completion wins; otherwise an active handle wins over failed/pending state.
+        if kind == "mixture":
+            resource = self.GetMix(datasets.GetMixRequest(id=id)).mix
+            assert isinstance(resource, message_type)
+            return resource
         if suffix:
             cache = self._queries if kind == "query" else self._datasets
             active = cache.get(id)
@@ -313,10 +317,21 @@ class Catalog:
     def GetMix(self, request: datasets.GetMixRequest) -> datasets.GetMixResponse:
         _requests._id(request.id, 32)
         with self._lock:
-            return datasets.GetMixResponse(
-                mix=self._mixes.get(request.id)
-                or self._storage.load("mixture", request.id, datasets.Mix)
+            resource = (
+                copy_message(self._mixes[request.id])
+                if request.id in self._mixes
+                else self._resource("mixture", request.id, datasets.Mix, ".recipe")
             )
+            if not resource.HasField("profile"):
+                try:
+                    resource.profile.CopyFrom(
+                        self._storage.load(
+                            "mixture", request.id, datasets.MixProfile, suffix=".profile"
+                        )
+                    )
+                except KeyError:
+                    pass
+            return datasets.GetMixResponse(mix=resource)
 
     @_read
     def ListMix(self, request: datasets.ListMixRequest) -> datasets.ListMixResponse:
@@ -350,6 +365,6 @@ def _suffixes(kind: str) -> tuple[str, ...]:
         ("", ".failed", ".pending")
         if kind == "query"
         else ("", ".failed", ".recipe")
-        if kind == "dataset"
+        if kind in ("dataset", "mixture")
         else ("",)
     )

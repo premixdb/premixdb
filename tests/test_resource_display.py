@@ -14,8 +14,8 @@ from _type_support import coordinator
 from google.protobuf.message import Message
 
 import premixdb as p
-from premixdb._resources import Dataset, Mix, Query, Snapshot
-from premixdb.v1 import dataset_pb2 as d
+from premixdb._resources import DataMixture, Dataset, Query, Snapshot
+from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 from premixdb.v1 import snapshot_pb2 as s
 from premixdb.v1 import status_pb2 as status
@@ -31,7 +31,7 @@ def shell_display(
     | p.Snapshot
     | p.Query
     | p.Dataset
-    | p.Mix
+    | p.DataMixture
     | Message,
 ) -> str:
     output = io.StringIO()
@@ -42,11 +42,18 @@ def shell_display(
 
 def test_shell_plans_survive_reopening_and_do_not_materialize(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("display", [p.Source("a", "abcd"), p.Source("b", "xyz")])
+        snapshot = db.Corpus("display", [p.Source("a", "abcd"), p.Source("b", "xyz")])
         query = snapshot.query(
             steps=[p.where(p.text.characters >= 3), p.dedupe(order_by=[p.object.uri.desc()])]
         ).wait()
-        mixture = query.mix(domains=p.object.uri, tokens=4, sequence_length=4, n_candidates=2)
+        mixture = query.mix(
+            domains=p.object.uri,
+            weights=p.RegMix(),
+            replacement=True,
+            tokens=4,
+            sequence_length=4,
+            n_candidates=2,
+        )
         dataset = mixture[0]
         assert dataset.status is p.ExecutionStatus.PENDING
         reopened = [
@@ -76,12 +83,12 @@ def test_shell_plans_survive_reopening_and_do_not_materialize(tmp_path: Path) ->
             assert "Candidates: 2 of 2" in repr(mixture)
             assert "Candidates: 1 of 2" in repr(mixture[1:])
             assert "Budget: 4 content tokens" in repr(mixture)
-            assert "Sampler: RegMixSampler(" in repr(mixture)
+            assert "Weights: RegMix(" in repr(mixture)
             assert "Weights: {" in repr(dataset)
             assert "Tokenizer: GPT2Tokenizer()" in repr(dataset)
             assert "Sequence length: 4" in repr(dataset)
             assert "Packing: Concat(" in repr(dataset)
-            assert "Planned output:" in repr(dataset)
+            assert "profile not computed" in repr(dataset)
             assert snapshot.id in repr(snapshot.union(snapshot))
         assert dataset.status is p.ExecutionStatus.PENDING
         assert not coordinator(db)._storage.list("dataset", d.Dataset)
@@ -227,7 +234,7 @@ def test_dataset_zero_token_options_and_model_assets() -> None:
 
 def test_large_mixture_display_is_bounded_and_does_not_fetch_candidates() -> None:
     client = Mock()
-    mixture = Mix(
+    mixture = DataMixture(
         client,
         d.Mix(id=b"a" * 32, dataset_ids=[i.to_bytes(32) for i in range(100)], n_candidates=100),
     )
@@ -239,7 +246,7 @@ def test_large_mixture_display_is_bounded_and_does_not_fetch_candidates() -> Non
 
 def test_query_default_sampling_is_visible_without_execution(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("sampling-display", [p.Source("a", "hello")])
+        snapshot = db.Corpus("sampling-display", [p.Source("a", "hello")])
         query = snapshot.query()
         with patch.object(p.Query, "wait", side_effect=AssertionError("execution")):
             assert "Sampling: all selected documents once; replacement=False" in repr(query)
@@ -252,7 +259,7 @@ def test_query_default_sampling_is_visible_without_execution(tmp_path: Path) -> 
 
 def test_shell_metadata_summaries_do_not_execute_or_fetch_on_display(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("summaries", [p.Source("a", "abcd"), p.Source("b", "é")])
+        snapshot = db.Corpus("summaries", [p.Source("a", "abcd"), p.Source("b", "é")])
         service = coordinator(db)
         with (
             patch.object(service, "_execute_query", side_effect=AssertionError("execution")),
@@ -264,7 +271,7 @@ def test_shell_metadata_summaries_do_not_execute_or_fetch_on_display(tmp_path: P
             query = snapshot.query(
                 steps=[p.where(p.text.bytes > 2), p.where(p.text.characters > 2)]
             )
-            dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
             identities = snapshot.id, query.id, dataset.id
             assert query.status is p.ExecutionStatus.PENDING
             assert dataset.status is p.ExecutionStatus.PENDING
@@ -296,11 +303,11 @@ def test_shell_metadata_summaries_do_not_execute_or_fetch_on_display(tmp_path: P
 
 def test_shell_queries_show_exact_cached_results_after_execution(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("exact-summary", [p.Source("a", "abcd"), p.Source("b", "é")])
+        snapshot = db.Corpus("exact-summary", [p.Source("a", "abcd"), p.Source("b", "é")])
         query = snapshot.query(steps=[p.where(p.text.bytes > 2)])
         assert "Estimated output: 1 documents" in shell_display(query)
         query.wait()
-        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=3, packing=p.Concat())
+        dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=3, packing=p.Concat())[0]
         dataset.profile()
         with patch.object(
             coordinator(db), "_profile_dataset", side_effect=AssertionError("profile")
@@ -319,7 +326,7 @@ def test_shell_queries_show_exact_cached_results_after_execution(tmp_path: Path)
 
 def test_shell_estimates_label_missing_fields_and_unevaluated_policies(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("unknown-summary", [p.Source("a", "abcd")])
+        snapshot = db.Corpus("unknown-summary", [p.Source("a", "abcd")])
         service = coordinator(db)
         with patch.object(service, "_execute_query", side_effect=AssertionError("execution")):
             missing = snapshot.query(steps=[p.where(p.quality.educational_value > 1)])
@@ -335,7 +342,7 @@ def test_shell_estimates_label_missing_fields_and_unevaluated_policies(tmp_path:
 
 def test_empty_snapshot_summary_preserves_exact_zero_counts(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("empty-summary", source=[])
+        snapshot = db.Corpus("empty-summary", source=[])
         assert "Documents: 0" in shell_display(snapshot)
         assert "Text: 0 bytes; 0 characters" in shell_display(snapshot)
         query = snapshot.query()

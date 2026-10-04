@@ -11,7 +11,7 @@ from blake3 import blake3
 from premixdb import PremixDB, Source
 from premixdb._typing import FieldValue
 from premixdb.execution import Coordinator
-from premixdb.v1.dataset_pb2 import Packing, Tokenizer
+from premixdb.v1.data_mixture_pb2 import Packing, Tokenizer
 
 SHELL_SOURCES = (
     Source("speech/0000", "First Citizen:\nLet us speak together.\n"),

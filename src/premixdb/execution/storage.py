@@ -147,7 +147,7 @@ class ObjectStore:
         if prefix not in PREFIXES:
             raise ValueError("invalid storage namespace")
         from ..v1 import corpus_pb2 as c
-        from ..v1 import dataset_pb2 as d
+        from ..v1 import data_mixture_pb2 as d
         from ..v1 import query_pb2 as q
 
         if failure and (

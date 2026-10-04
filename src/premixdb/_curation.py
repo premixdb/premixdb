@@ -10,7 +10,7 @@ from ._policies import ByteTokenizer
 from ._protobuf import copy_message
 from ._requests import _id, _uint
 from .fields import ContentType, Language, Topic, content_type, language, topic
-from .v1 import dataset_pb2 as datasets
+from .v1 import data_mixture_pb2 as datasets
 from .v1 import query_pb2 as q
 from .v1.storage_pb2 import ObjectRef
 

@@ -66,14 +66,14 @@ def _builtin_demo(demo: p.Snapshot) -> bool:
 def _shell_banner(db: p.PremixDB) -> str:
     writable_local = not db._read_only
     try:
-        demo = db.corpus("demo")
+        demo = db.Corpus("demo")
     except ValueError:
         if not writable_local:
-            return "premixdb: db is open; p is premixdb. Try db.corpus.list()."
+            return "premixdb: db is open; p is premixdb. Try db.Corpus.list()."
         demo = None
     if writable_local and (demo is None or _builtin_demo(demo)):
-        db.corpus("demo", _demo_sources())
-    return "premixdb: db is open; p is premixdb. Try db.corpus('demo').preview()."
+        db.Corpus("demo", _demo_sources())
+    return "premixdb: db is open; p is premixdb. Try db.Corpus('demo').preview()."
 
 
 @contextmanager

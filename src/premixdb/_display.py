@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 from ._default_tokenizer import _GPT2_DIGEST
 from ._field_ids import FIELD_NAMES
 from ._ids import _decode_id, _encode_id
-from .v1 import dataset_pb2 as d
+from .v1 import data_mixture_pb2 as d
 from .v1 import profile_pb2 as p
 from .v1 import query_pb2 as q
 from .v1 import snapshot_pb2 as s
@@ -296,9 +296,11 @@ def _profile(value: s.Snapshot | q.Query | d.Dataset) -> list[str]:
     ]
 
 
-def _resource_repr(handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.Mix | sdk.Dataset) -> str:
+def _resource_repr(
+    handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.DataMixture | sdk.Dataset,
+) -> str:
     from . import _resources as sdk
-    from ._resources import Corpus, Mix
+    from ._resources import Corpus, DataMixture
 
     value = handle._resource
     if isinstance(handle, Corpus):
@@ -331,12 +333,19 @@ def _resource_repr(handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.Mix | sdk
             if value.HasField("sampling"):
                 lines.extend(_sampling(value.sampling))
         else:
-            assert isinstance(handle, Mix)
+            assert isinstance(handle, DataMixture)
             lines.extend(
                 [
-                    f"Candidates: {len(handle)} of {len(value.dataset_ids)}",
-                    "Dataset IDs: " + _items([_id(value.dataset_ids[i]) for i in handle._indices]),
-                    f"Budget: {value.tokens:,} content tokens",
+                    f"Candidates: {len(handle)} of {value.n_candidates or len(value.dataset_ids)}",
+                    "Dataset IDs: "
+                    + (
+                        _items([_id(value.dataset_ids[i]) for i in handle._indices])
+                        if value.dataset_ids
+                        else "unresolved"
+                    ),
+                    f"Budget: {value.tokens:,} content tokens"
+                    if value.tokens
+                    else "Budget: complete query population",
                     f"Domains: {_domains(value.domains)}",
                     f"Draw: seed={value.seed}; replacement={value.replacement}",
                 ]
@@ -344,7 +353,7 @@ def _resource_repr(handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.Mix | sdk
             if value.algorithm.WhichOneof("kind") == "regmix":
                 policy = value.algorithm.regmix
                 lines.append(
-                    f"Sampler: RegMixSampler(seed={policy.seed}, prior_power={policy.prior_power:g}, "
+                    f"Weights: RegMix(seed={policy.seed}, prior_power={policy.prior_power:g}, "
                     f"concentration_range=({policy.min_concentration:g}, {policy.max_concentration:g}), "
                     f"concentration_steps={policy.concentration_steps}, "
                     f"minimum_weight={policy.minimum_weight:g}, oversample={policy.oversample})"

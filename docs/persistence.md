@@ -7,7 +7,7 @@ datasets. It contains SQLite metadata and immutable objects with verified digest
 import premixdb as p
 
 with p.PremixDB(storage=".premixdb", read_only=True) as db:
-    snapshot = db.corpus("training")
+    snapshot = db.Corpus("training")
     print(snapshot.preview())
 ```
 

@@ -32,8 +32,8 @@ def test_token_sampling_measures_retained_and_empty_text_once_per_query(
         return encode(model, text)
 
     with p.PremixDB(storage=tmp_path) as db:
-        target = db.corpus("target", [p.Source("a", "hello\n秘密\nworld"), p.Source("empty", "")])
-        reference = db.corpus("reference", [p.Source("b", "秘密")])
+        target = db.Corpus("target", [p.Source("a", "hello\n秘密\nworld"), p.Source("empty", "")])
+        reference = db.Corpus("reference", [p.Source("b", "秘密")])
         budget = 5 if replacement else 1
         realized = 6 if replacement else 2
         with patch.object(HuggingFaceTokenizer, "encode", autospec=True, side_effect=measured):
@@ -66,7 +66,7 @@ class ExtendedCurationTests(unittest.TestCase):
         self.directory.cleanup()
 
     def snapshot(self, name: str, texts: Iterable[str]) -> p.Snapshot:
-        return self.client.corpus(name, [p.Source(str(i), text) for i, text in enumerate(texts)])
+        return self.client.Corpus(name, [p.Source(str(i), text) for i, text in enumerate(texts)])
 
     def test_decontamination_trims_utf8_ranges_and_persists_witnesses(self) -> None:
         target = self.snapshot("target", ["pré\n秘密\nfin", "safe"])
@@ -75,6 +75,7 @@ class ExtendedCurationTests(unittest.TestCase):
             decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
         )
         self.assertEqual(sorted(d["text"] for d in query.preview()), ["pré\n\nfin", "safe"])
+        query.wait()
         lineage = json.loads(
             self.client._object_reader.read(
                 p.SpanRef(
@@ -88,7 +89,7 @@ class ExtendedCurationTests(unittest.TestCase):
         self.assertEqual(match["contamination"][0]["start"], 5)
         self.assertEqual(match["contamination"][0]["end"], 11)
         self.assertEqual(
-            query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
             .profile()
             .source_content_bytes,
             13,
@@ -172,7 +173,7 @@ class ExtendedCurationTests(unittest.TestCase):
         self.assertEqual(a.profile().output_content_bytes, 8)
         repeated = snapshot.query(sampling=p.sample(seed=8, documents=7, replacement=True))
         self.assertEqual(repeated.profile().output_documents, 7)
-        profile = repeated.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).profile()
+        profile = repeated.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0].profile()
         self.assertEqual(profile.document_occurrences, 7)
         self.assertEqual(profile.source_documents, repeated.profile().sampling.unique_documents)
         self.assertEqual(sum(profile.source_tokens.values()), profile.content_tokens)
@@ -195,11 +196,11 @@ class ExtendedCurationTests(unittest.TestCase):
         asset = Path(__file__).parent / "fixtures" / "wordpiece.json"
         tokenizer = p.hugging_face_tokenizer(asset, digest=blake3(asset.read_bytes()).hexdigest())
         query = self.snapshot("population", ["hello world"]).query()
-        dataset = query.dataset(
+        dataset = query.mix(
             tokenizer=tokenizer,
             sequence_length=2,
             packing=p.concat(drop_remainder=False, pad_token=0),
-        )
+        )[0]
         self.assertEqual(dataset.profile().planned_content_tokens, 2)
         self.assertEqual(len(dataset[0].tokens), 2)
         self.assertEqual(self.client._dataset(dataset.id)[0].tokens, dataset[0].tokens)
@@ -220,17 +221,17 @@ class ExtendedCurationTests(unittest.TestCase):
         snapshot = self.snapshot("population", ["hello world"])
         query = snapshot.query(sampling=p.sample(seed=3, tokens=1, tokenizer=tokenizer))
         self.assertFalse(query._proto.sampling.tokenizer_json)
-        dataset = query.dataset(tokenizer=tokenizer, sequence_length=2)
+        dataset = query.mix(tokenizer=tokenizer, sequence_length=2)[0]
         self.assertLess(dataset._proto.ByteSize(), 32 * 1024)
         self.assertFalse(dataset._proto.tokenizer.hugging_face.json)
-        mix = query.mix(tokens=4, tokenizer=tokenizer, sequence_length=2, n_candidates=1)
+        mix = query.mix(tokens=4, tokenizer=tokenizer, sequence_length=2, replacement=True)
         self.assertEqual(mix[0].wait().profile().content_tokens, 4)
         self.client.close()
         self.client = p.PremixDB(storage=self.root, process_workers=2)
         built = (
             self.client._snapshot(snapshot.id)
             .query(sampling=p.sample(seed=4, tokens=1, tokenizer=tokenizer))
-            .dataset(tokenizer=tokenizer, sequence_length=1)
+            .mix(tokenizer=tokenizer, sequence_length=1)[0]
         )
         self.assertEqual(built.profile().content_tokens, 2)
 

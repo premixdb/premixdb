@@ -14,10 +14,10 @@ LIMIT = 100
 def main() -> None:
     check_inputs(INPUT, limit=LIMIT)
     with p.PremixDB(storage=STORAGE) as db:
-        first = db.corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
-        again = db.corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
+        first = db.Corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
+        again = db.Corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
         assert first.id == again.id
-        assert db.corpus("tutorial/tiny-shakespeare").id == first.id
+        assert db.Corpus("tutorial/tiny-shakespeare").id == first.id
         print("Snapshot unchanged:", first.id == again.id)
         print("Save this snapshot ID with your experiment:", first.id)
         print("Dialogue blocks:", first.profile().documents)

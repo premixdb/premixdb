@@ -19,7 +19,7 @@ from premixdb._types import CorpusListing, SnapshotListing
 from premixdb.execution.catalog_reader import Catalog
 from premixdb.execution.storage import ObjectStore
 from premixdb.v1 import corpus_pb2 as c
-from premixdb.v1 import dataset_pb2 as d
+from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 from premixdb.v1 import snapshot_pb2 as s
 from premixdb.v1 import status_pb2 as status
@@ -34,23 +34,30 @@ def corpus_handle(snapshot: p.Snapshot | p.Corpus) -> p.Corpus:
 def test_lists_cover_old_snapshots_and_unions_and_survive_reopening(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         before = datetime.now(timezone.utc)
-        first = db.corpus("c4", [p.Source("a", "first text")])
+        first = db.Corpus("c4", [p.Source("a", "first text")])
         old_query = first.query().wait()
-        old_dataset = old_query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).wait()
-        second = db.corpus("c4", [p.Source("a", "new text")], base=first)
-        other = db.corpus("other", [p.Source("b", "other text")])
+        old_mixture = old_query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        old_dataset = old_mixture[0].wait()
+        second = db.Corpus("c4", [p.Source("a", "new text")], base=first)
+        other = db.Corpus("other", [p.Source("b", "other text")])
         union_query = first.union(second, other).query().wait()
         other_query = other.query().wait()
         mixture = union_query.mix(
-            tokenizer=p.ByteTokenizer(), tokens=4, sequence_length=4, n_candidates=2
+            tokenizer=p.ByteTokenizer(),
+            weights=p.RegMix(),
+            tokens=4,
+            sequence_length=4,
+            n_candidates=2,
         )
         other_mixture = other_query.mix(tokenizer=p.ByteTokenizer(), tokens=4, sequence_length=4)
+        assert mixture.datasets
+        assert other_mixture.datasets
         after = datetime.now(timezone.utc)
 
-        corpora = {row["name"]: row["id"] for row in db.corpus.list(limit=1000)}
+        corpora = {row["name"]: row["id"] for row in db.Corpus.list(limit=1000)}
         assert corpora == {"c4": first.corpus_id, "other": other.corpus_id}
-        assert db.corpus("c4").id == second.id
-        snapshots = corpus_handle(db.corpus("c4")).list_snapshot(limit=1000)
+        assert db.Corpus("c4").id == second.id
+        snapshots = corpus_handle(db.Corpus("c4")).list_snapshot(limit=1000)
         assert [row["id"] for row in snapshots] == [first.id, second.id]
         for row in snapshots:
             assert str(row["timestamp"]).endswith("Z")
@@ -61,15 +68,16 @@ def test_lists_cover_old_snapshots_and_unions_and_survive_reopening(tmp_path: Pa
             )
         assert corpus_handle(first).list_snapshot(limit=1000) == snapshots
         assert db._create_corpus("c4").list_snapshot(limit=1000) == snapshots
-        assert corpus_handle(db.corpus("c4")).list_query(limit=1000) == sorted(
+        assert corpus_handle(db.Corpus("c4")).list_query(limit=1000) == sorted(
             [old_query.id, union_query.id]
         )
         assert corpus_handle(other).list_query(limit=1000) == sorted(
             [other_query.id, union_query.id]
         )
-        assert [value.id for value in corpus_handle(second).list_mixture(limit=1000)] == [
-            mixture.id
-        ]
+        assert {value.id for value in corpus_handle(second).list_mixture(limit=1000)} == {
+            mixture.id,
+            old_mixture.id,
+        }
         assert {value.id for value in corpus_handle(other).list_mixture(limit=1000)} == {
             mixture.id,
             other_mixture.id,
@@ -86,7 +94,7 @@ def test_lists_cover_old_snapshots_and_unions_and_survive_reopening(tmp_path: Pa
         )
 
         # An unchanged recapture is the same snapshot with the same first timestamp.
-        again = db.corpus("c4", [p.Source("a", "new text")], base=second)
+        again = db.Corpus("c4", [p.Source("a", "new text")], base=second)
         assert again.id == second.id
         assert corpus_handle(again).list_snapshot(limit=1000) == snapshots
         expected_dataset_ids = {value.id for value in datasets}
@@ -101,14 +109,15 @@ def test_lists_cover_old_snapshots_and_unions_and_survive_reopening(tmp_path: Pa
             patch.object(Dataset, "wait", side_effect=AssertionError("listing packed a dataset")),
             patch.object(db, "_dataset", side_effect=AssertionError("listing fetched a candidate")),
         ):
-            source = db.corpus("c4")
+            source = db.Corpus("c4")
             assert corpus_handle(source).list_snapshot(limit=1000) == snapshots
             assert corpus_handle(source).list_query(limit=1000) == sorted(
                 [old_query.id, union_query.id]
             )
-            assert [value.id for value in corpus_handle(source).list_mixture(limit=1000)] == [
-                mixture.id
-            ]
+            assert {value.id for value in corpus_handle(source).list_mixture(limit=1000)} == {
+                mixture.id,
+                old_mixture.id,
+            }
             assert {
                 value.id for value in corpus_handle(source).list_dataset(limit=1000)
             } == expected_dataset_ids
@@ -116,15 +125,15 @@ def test_lists_cover_old_snapshots_and_unions_and_survive_reopening(tmp_path: Pa
 
 def test_empty_corpus_and_closed_session(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        assert db.corpus.list(limit=1000) == []
+        assert db.Corpus.list(limit=1000) == []
         empty = db._create_corpus("empty")
-        assert db.corpus.list(limit=1000) == [{"id": empty.id, "name": "empty"}]
+        assert db.Corpus.list(limit=1000) == [{"id": empty.id, "name": "empty"}]
         assert empty.list_snapshot(limit=1000) == []
         assert empty.list_query(limit=1000) == []
         assert empty.list_mixture(limit=1000) == []
         assert empty.list_dataset(limit=1000) == []
     with pytest.raises(ValueError, match="closed"):
-        db.corpus.list(limit=1000)
+        db.Corpus.list(limit=1000)
     with pytest.raises(ValueError, match="closed"):
         empty.list_snapshot(limit=1000)
 
@@ -132,7 +141,7 @@ def test_empty_corpus_and_closed_session(tmp_path: Path) -> None:
 @pytest.mark.parametrize("read_only", [False, True])
 def test_named_corpus_reads_one_head_and_latest_refreshes(tmp_path: Path, read_only: bool) -> None:
     with p.PremixDB(storage=tmp_path) as writer:
-        first = writer.corpus("head", [p.Source("a", "first")])
+        first = writer.Corpus("head", [p.Source("a", "first")])
         with p.PremixDB(storage=tmp_path, read_only=read_only) as reader:
             handle = p.Corpus(
                 reader,
@@ -145,10 +154,10 @@ def test_named_corpus_reads_one_head_and_latest_refreshes(tmp_path: Path, read_o
             with patch.object(
                 reader._executor, "GetCorpus", wraps=reader._executor.GetCorpus
             ) as get:
-                reopened = reader.corpus("head")
+                reopened = reader.Corpus("head")
                 assert reopened.id == first.id
                 assert get.call_count == 1
-            second = writer.corpus("head", [p.Source("a", "second")], base=first)
+            second = writer.Corpus("head", [p.Source("a", "second")], base=first)
             assert handle.latest().id == second.id
             assert reopened.preview()[0]["text"] == "first"
 
@@ -157,7 +166,7 @@ def test_saved_resource_reads_reject_a_closed_session(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         corpus = db._create_corpus("closed")
     for read in (
-        lambda: db.corpus("closed"),
+        lambda: db.Corpus("closed"),
         corpus.latest,
         lambda: db._snapshot(b"s" * 32),
         lambda: db._query(b"q" * 32),
@@ -177,9 +186,9 @@ def test_unwritable_sessions_reject_recipes_before_consuming_input(
             raise AssertionError("recipe consumed input")
 
     with p.PremixDB(storage=tmp_path) as writer:
-        writer.corpus("saved", [p.Source("a", "saved text")])
+        writer.Corpus("saved", [p.Source("a", "saved text")])
     with p.PremixDB(storage=tmp_path, read_only=read_only) as db:
-        snapshot = db.corpus("saved")
+        snapshot = db.Corpus("saved")
         corpus = corpus_handle(snapshot)
         if not read_only:
             db.close()
@@ -202,10 +211,10 @@ def test_named_corpus_requires_a_successful_snapshot(tmp_path: Path, exists: boo
     with p.PremixDB(storage=tmp_path) as db:
         if exists:
             db._create_corpus("empty")
-        before = db.corpus.list()
-        with pytest.raises(ValueError, match="has no snapshot; capture with db.corpus"):
-            db.corpus("empty")
-        assert db.corpus.list() == before
+        before = db.Corpus.list()
+        with pytest.raises(ValueError, match="has no snapshot; capture with db.Corpus"):
+            db.Corpus("empty")
+        assert db.Corpus.list() == before
 
 
 @pytest.mark.parametrize(
@@ -232,7 +241,7 @@ def test_saved_resource_reads_verify_catalog_identity(
 
 def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("many", [p.Source("a", "text")])
+        snapshot = db.Corpus("many", [p.Source("a", "text")])
         store = coordinator(db)._storage
         for i in range(130):
             corpus = c.Corpus(id=(i + 1).to_bytes(16), name=f"empty-{i}")
@@ -259,7 +268,7 @@ def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> N
             id=b"f" * 32, snapshot_ids=[_decode_id(snapshot.id)], status=status.STATUS_ERROR
         )
         store.save("query", failed.id, failed, suffix=".failed")
-        assert len(db.corpus.list(limit=1000)) == 131
+        assert len(db.Corpus.list(limit=1000)) == 131
         assert len(corpus_handle(snapshot).list_snapshot(limit=1000)) == 131
         assert len(corpus_handle(snapshot).list_query(limit=1000)) == 131
         assert len(corpus_handle(snapshot).list_mixture(limit=1000)) == 130
@@ -274,7 +283,7 @@ def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> N
         )
         assert len(set(corpus_handle(snapshot).list_query(limit=1000))) == 131
         for listing in (
-            db.corpus.list,
+            db.Corpus.list,
             corpus_handle(snapshot).list_snapshot,
             corpus_handle(snapshot).list_query,
             corpus_handle(snapshot).list_mixture,
@@ -283,10 +292,11 @@ def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> N
             complete = listing(limit=1000)
 
             def identities(
-                values: Iterable[p.Mix | p.Dataset | str | CorpusListing | SnapshotListing],
+                values: Iterable[p.DataMixture | p.Dataset | str | CorpusListing | SnapshotListing],
             ) -> list[str | CorpusListing | SnapshotListing]:
                 return [
-                    value.id if isinstance(value, (p.Mix, p.Dataset)) else value for value in values
+                    value.id if isinstance(value, (p.DataMixture, p.Dataset)) else value
+                    for value in values
                 ]
 
             assert len(listing()) == 5
@@ -298,7 +308,7 @@ def test_paginated_lists_include_pending_and_failed_results(tmp_path: Path) -> N
 
 def test_dataset_listing_follows_all_pages_for_one_query(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("c4", [p.Source("a", "text")])
+        snapshot = db.Corpus("c4", [p.Source("a", "text")])
         query = snapshot.query().wait()
         for i in range(130):
             dataset = d.Dataset(
@@ -323,23 +333,24 @@ def test_execution_history_rejects_repeated_continuation_tokens(tmp_path: Path) 
 
 def test_read_only_catalog_listings_use_metadata_only(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("c4", [p.Source("a", "abcd")])
+        snapshot = db.Corpus("c4", [p.Source("a", "abcd")])
         query = snapshot.query().wait()
         mixture = query.mix(tokenizer=p.ByteTokenizer(), tokens=4, sequence_length=4)
+        assert mixture.datasets
         snapshots = corpus_handle(snapshot).list_snapshot(limit=1000)
     with p.PremixDB(storage=tmp_path, read_only=True) as db:
         assert isinstance(db._executor, Catalog)
         with patch.object(
             db._executor._storage, "_get", side_effect=AssertionError("read bulk data")
         ):
-            assert db.corpus.list(limit=1000) == [{"id": snapshot.corpus_id, "name": "c4"}]
-            source = db.corpus("c4")
+            assert db.Corpus.list(limit=1000) == [{"id": snapshot.corpus_id, "name": "c4"}]
+            source = db.Corpus("c4")
             assert corpus_handle(source).list_snapshot(limit=1000) == snapshots
             assert corpus_handle(source).list_query(limit=1000) == [query.id]
-            assert [value.id for value in corpus_handle(source).list_mixture(limit=1000)] == [
+            assert {value.id for value in corpus_handle(source).list_mixture(limit=1000)} == {
                 mixture.id
-            ]
-            assert len(corpus_handle(source).list_dataset(limit=1000)) == 3
+            }
+            assert len(corpus_handle(source).list_dataset(limit=1000)) == 1
 
 
 def test_mixture_query_filter_and_page_tokens_are_scoped(tmp_path: Path) -> None:
@@ -365,7 +376,7 @@ def test_mixture_query_filter_and_page_tokens_are_scoped(tmp_path: Path) -> None
 def test_listing_arguments_and_document_defaults(tmp_path: Path) -> None:
     db = p.PremixDB(storage=tmp_path)
     try:
-        snapshot = db.corpus("documents", [p.Source(str(i), "text") for i in range(8)])
+        snapshot = db.Corpus("documents", [p.Source(str(i), "text") for i in range(8)])
         corpus = db._create_corpus("documents")
         query = snapshot.query().wait()
         complete = corpus.list_document(limit=100)
@@ -376,7 +387,7 @@ def test_listing_arguments_and_document_defaults(tmp_path: Path) -> None:
             row["id"] for row in complete[5:7]
         ]
         for listing in (
-            db.corpus.list,
+            db.Corpus.list,
             corpus_handle(corpus).list_snapshot,
             corpus_handle(corpus).list_query,
             corpus_handle(corpus).list_mixture,
@@ -394,7 +405,7 @@ def test_catalog_windows_load_only_requested_payloads(tmp_path: Path) -> None:
     from premixdb.execution import metadata
 
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("indexed", [p.Source("a", "text")])
+        snapshot = db.Corpus("indexed", [p.Source("a", "text")])
         corpus = db._create_corpus("indexed")
         store = coordinator(db)._storage
         for i in range(260):
@@ -411,7 +422,7 @@ def test_catalog_windows_load_only_requested_payloads(tmp_path: Path) -> None:
             assert len(corpus.list_dataset(limit=3, offset=200)) == 3
             assert decode.call_count == 3
             decode.reset_mock()
-            assert len(db.corpus.list(limit=1)) == 1
+            assert len(db.Corpus.list(limit=1)) == 1
             assert decode.call_count == 1
         with patch.object(store.metadata, "members", wraps=store.metadata.members) as members:
             first = db._executor.ListQuery(q.ListQueryRequest())
@@ -459,10 +470,10 @@ def test_old_catalog_lists_read_only_and_backfills_on_writable_open(tmp_path: Pa
     from contextlib import closing
 
     with p.PremixDB(storage=tmp_path) as db:
-        first = db.corpus("legacy-index", [p.Source("a", "first")])
+        first = db.Corpus("legacy-index", [p.Source("a", "first")])
         query = first.query().wait()
-        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=2).wait()
-        second = db.corpus("legacy-index", [p.Source("a", "second")], base=first)
+        dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=2)[0].wait()
+        second = db.Corpus("legacy-index", [p.Source("a", "second")], base=first)
         corpus = db._create_corpus("legacy-index")
         snapshots = corpus.list_snapshot()
         queries = corpus.list_query()
@@ -478,7 +489,7 @@ def test_old_catalog_lists_read_only_and_backfills_on_writable_open(tmp_path: Pa
             assert corpus.list_query() == queries
             assert [value.id for value in corpus.list_mixture()] == mixtures
             assert [value.id for value in corpus.list_dataset()] == datasets == [dataset.id]
-            assert db.corpus("legacy-index").id == second.id
+            assert db.Corpus("legacy-index").id == second.id
             assert db._executor.ListExecutions(status.ListExecutionRequest()).events
 
 

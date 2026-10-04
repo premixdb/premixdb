@@ -46,7 +46,7 @@ keep whole documents and can overshoot. `replacement=True` permits repeats.
 ```python
 mixtures = query.mix(
     tokens=100_000,
-    sampler=p.RegMixSampler(seed=42),
+    weights=p.RegMix(seed=42),
     bounds=p.Bounds(lower={training.corpus_id: 0.1}),
     sequence_length=2048,
 )
@@ -67,7 +67,7 @@ from blake3 import blake3
 
 asset = Path("tokenizer.json")
 tokenizer = p.hugging_face_tokenizer(asset, digest=blake3(asset.read_bytes()).hexdigest())
-dataset = query.dataset(tokenizer=tokenizer, sequence_length=2048)
+dataset = query.mix(tokenizer=tokenizer, sequence_length=2048)[0]
 ```
 
 Use the model's tokenizer asset. `p.ByteTokenizer()` is useful for inspecting

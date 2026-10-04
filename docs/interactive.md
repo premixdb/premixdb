@@ -8,17 +8,31 @@ uvx --python 3.12 premixdb --storage .premixdb shell
 directory. Leaving the shell closes the database.
 
 ```python
-snapshot = db.corpus("demo")
+snapshot = db.Corpus("demo")
 snapshot.preview()
 snapshot.preview(offset=3)
 query = snapshot.query(steps=[p.where(p.text.characters > 200)])
 query.profile()
 query.preview()
-dataset = query.dataset(sequence_length=64)
+mixture = query.mix(sequence_length=64)
+mixture.profile()
+mixture.preview()
+dataset = mixture[0]
 dataset.preview()
 ```
 
-Queries are lazy. `profile()`, `preview()`, and `wait()` run the work they need.
+Queries and mixtures are lazy. Each resource's `profile()` describes that
+resource: capture statistics for snapshots, selection statistics for queries,
+composition statistics for mixtures, and packing statistics for datasets.
+Exact profiles may scan the population, while snapshot profiles reuse capture
+metadata.
+
+`preview()` defaults to three results and stops consuming input once its window
+is satisfied. It does not compute full profiles or publish completed query or
+dataset output. Filters and decontamination can stop early; ranking, deduplication,
+sampling, and generated mixture weights can require complete evidence first.
+Fewer than three matches may require exhausting the input. Reopened completed
+resources use saved preview indexes and bounded text reads.
 Long operations print status; pass `progress=False` to `PremixDB` to turn it off.
 For capture statistics alone, use `snapshot.profile()`.
 

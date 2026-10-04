@@ -7,7 +7,7 @@ Raw request builders and generated premixdb.v1 messages describe saved recipes.
 from ._curation import decontaminate, sample, similarity_dedupe
 from ._enums import DedupeAlgorithm, ExecutionStatus, IntrinsicField, RemovalUnit
 from ._inputs import HuggingFaceSource, Source
-from ._mixing import Bounds, RegMixSampler, Tokens
+from ._mixing import Bounds, RegMix, Tokens
 from ._policies import DecontaminateDefault, SamplerDefault
 from ._profiles import DistributionSummary, HistogramBucket, QuantileRange
 from ._requests import (
@@ -15,7 +15,6 @@ from ._requests import (
     byte_tokenizer,
     concat,
     corpus,
-    dataset,
     dedupe,
     document_id,
     gpt2_tokenizer,
@@ -34,10 +33,9 @@ from ._requests import concat as Concat
 from ._requests import gpt2_tokenizer as GPT2Tokenizer
 from ._resources import (
     Corpus,
+    DataMixture,
     Dataset,
-    Datasets,
     ExecutionError,
-    Mix,
     PremixDB,
     Query,
     Snapshot,
@@ -68,7 +66,14 @@ from .fields import (
     quality,
     topic,
 )
-from .v1.dataset_pb2 import DatasetProfile, Domains, Sampling, Tokenizer
+from .v1.data_mixture_pb2 import (
+    DatasetProfile,
+    Domains,
+    MixPreview,
+    MixProfile,
+    Sampling,
+    Tokenizer,
+)
 from .v1.field_pb2 import Field, FieldSnapshot
 from .v1.index_pb2 import Index, IndexSnapshot
 from .v1.profile_pb2 import (
@@ -137,10 +142,11 @@ __all__ = [
     "SpanProfile",
     "SpanRef",
     "Bounds",
-    "RegMixSampler",
+    "RegMix",
     "Tokens",
-    "Datasets",
-    "Mix",
+    "DataMixture",
+    "MixProfile",
+    "MixPreview",
     "mix",
     "Changes",
     "Checkpoint",
@@ -179,7 +185,6 @@ __all__ = [
     "byte_tokenizer",
     "concat",
     "corpus",
-    "dataset",
     "dedupe",
     "hugging_face_tokenizer",
     "query",

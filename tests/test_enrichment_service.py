@@ -75,7 +75,7 @@ class EnrichmentServiceTests(unittest.TestCase):
             premixdb.Source("https://example.org/c", "different document"),
             premixdb.Source("https://example.org/empty", ""),
         ]
-        self.snapshot = self.client.corpus("enrichment-test", self.sources)
+        self.snapshot = self.client.Corpus("enrichment-test", self.sources)
         real = worker.producer
         self.producer = patch.object(
             worker,
@@ -117,7 +117,7 @@ class EnrichmentServiceTests(unittest.TestCase):
             4,
         )
         self.assertGreater(
-            len(filtered.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)), 0
+            len(filtered.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)[0]), 0
         )
 
     def test_query_defers_derivation_and_reuses_one_producer_across_thresholds(self) -> None:
@@ -155,22 +155,22 @@ class EnrichmentServiceTests(unittest.TestCase):
             premixdb.PremixDB(storage=self.temp.name) as other,
             patch.object(worker, "producer", side_effect=AssertionError("recomputed model")),
         ):
-            restored = other.corpus("enrichment-test")
+            restored = other.Corpus("enrichment-test")
             self.assertEqual(restored.query(steps=[where(language.en > 0.8)]).id, query.id)
             self.assertEqual(
                 restored.query(steps=[where(language.en > 0.7)]).profile().output_documents, 1
             )
             self.assertGreater(
                 len(
-                    restored.query(steps=[where(language.en > 0.8)]).dataset(
+                    restored.query(steps=[where(language.en > 0.8)]).mix(
                         tokenizer=premixdb.ByteTokenizer(), sequence_length=8
-                    )
+                    )[0]
                 ),
                 0,
             )
 
     def test_union_derives_complete_population(self) -> None:
-        other = self.client.corpus(
+        other = self.client.Corpus(
             "other", [premixdb.Source("https://other.org/b", "another document")]
         )
         query = self.snapshot.union(other).query(steps=[where(language.en > 0.8)])
@@ -257,7 +257,7 @@ class EnrichmentServiceTests(unittest.TestCase):
             patch.object(worker, "SHARD_ROWS", 1),
         ):
             second = (
-                client.corpus("enrichment-test", self.sources)
+                client.Corpus("enrichment-test", self.sources)
                 .query(steps=[where(language.en > 0.8)])
                 .wait()
             )

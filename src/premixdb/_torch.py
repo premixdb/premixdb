@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, IterableDataset, get_worker_info
 from ._reader import permutation
 from ._sequences import INDEX_PAGE_SIZE, _validate_mask, sequence_page
 from ._storage import RangeReader
-from .v1 import dataset_pb2 as d
+from .v1 import data_mixture_pb2 as d
 
 
 class _TorchState(TypedDict):

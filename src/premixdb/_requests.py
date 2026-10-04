@@ -16,14 +16,14 @@ from ._ids import _decode_id
 from ._protobuf import copy_message
 from .fields import ContentType, DedupeIndex, Language, Topic
 from .v1 import corpus_pb2 as corpora
-from .v1 import dataset_pb2 as datasets
+from .v1 import data_mixture_pb2 as datasets
 from .v1 import query_pb2 as queries
 from .v1 import snapshot_pb2 as snapshots
 from .v1 import storage_pb2 as source_types
 from .v1.storage_pb2 import ObjectRef
 
 if TYPE_CHECKING:
-    from ._mixing import Bounds, RegMixSampler, Tokens
+    from ._mixing import Bounds, RegMix, Tokens
     from ._policies import ByteTokenizer, Concat
     from ._profiles import ProfileSelector
     from ._resources import DomainInput
@@ -396,25 +396,26 @@ def mix(
     query: queries.Query | bytes | str,
     *,
     domains: DomainInput | None = None,
-    sampler: RegMixSampler | None = None,
+    weights: Mapping[str, float] | RegMix | None = None,
     size: Tokens | None = None,
     tokens: int | None = None,
     tokenizer: datasets.Tokenizer | ByteTokenizer | None = None,
     sequence_length: int = 2048,
     packing: datasets.Packing | Concat | None = None,
     bounds: Bounds | None = None,
-    n_candidates: int = 3,
-    replacement: bool = True,
+    n_candidates: int = 1,
+    replacement: bool = False,
     seed: int = 0,
     git_commit: bytes | str | None = None,
     request_id: str = "",
 ) -> datasets.CreateMixRequest:
-    """Three seeded RegMix candidates over corpus domains by default.
+    """Describe lazy training compositions; defaults preserve every query occurrence.
 
-    An omitted token budget resolves to one population's worth of content tokens
-    during execution. Pass n_candidates and a budget to explore larger searches.
+    weights accepts fixed proportions or a RegMix proposal policy. A token budget
+    without weights samples at natural token proportions. No weights or budget
+    preserves the query's existing order, without resampling.
     """
-    from ._mixing import Bounds, RegMixSampler, Tokens
+    from ._mixing import Bounds, RegMix, Tokens, _weights_message
 
     if size is not None:
         if not isinstance(size, Tokens):
@@ -422,9 +423,16 @@ def mix(
         if tokens is not None or tokenizer is not None:
             raise ValueError("use size or tokens/tokenizer, not both")
         tokens, tokenizer = size.count, size.tokenizer
-    sampler = RegMixSampler() if sampler is None else sampler
-    if not isinstance(sampler, RegMixSampler):
-        raise TypeError("sampler must be RegMixSampler")
+    fixed = {}
+    algorithm = None
+    if isinstance(weights, RegMix):
+        algorithm = weights._to_proto()
+    elif isinstance(weights, Mapping):
+        fixed = _weights_message(weights)
+    elif weights is not None:
+        raise TypeError("weights must be a mapping or RegMix")
+    if n_candidates != 1 and algorithm is None:
+        raise ValueError("multiple candidates require weights=RegMix(...)")
     if bounds is not None and not isinstance(bounds, Bounds):
         raise TypeError("bounds must be Bounds")
     if type(replacement) is not bool:
@@ -471,6 +479,8 @@ def mix(
             normalized = {_id(key, 16).hex(): value for key, value in bound_values.items()}
             bound_values.clear()
             bound_values.update(normalized)
+    if partition.field == queries.FIELD_SOURCE_CORPUS_ID:
+        fixed = {_id(key, 16).hex(): value for key, value in fixed.items()}
     return datasets.CreateMixRequest(
         request_id=request_id,
         query_id=template.query_id,
@@ -478,7 +488,8 @@ def mix(
         sequence_length=template.sequence_length,
         packing=template.packing,
         domains=partition,
-        algorithm=sampler._to_proto(),
+        algorithm=algorithm,
+        weights=fixed,
         bounds=bounds_proto,
         tokens=0 if tokens is None else _uint(tokens, 64, "tokens", positive=True),
         n_candidates=_uint(n_candidates, 32, "n_candidates", positive=True),

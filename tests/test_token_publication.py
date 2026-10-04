@@ -11,7 +11,7 @@ from premixdb.engine.queries import CorpusIndex
 from premixdb.engine.snapshots import Snapshot
 from premixdb.execution.storage import ObjectStore
 from premixdb.execution.tokens import publish
-from premixdb.v1 import dataset_pb2 as d
+from premixdb.v1 import data_mixture_pb2 as d
 
 
 def test_many_short_documents_keep_full_and_preview_provenance(tmp_path: Path) -> None:

@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 from ._ids import _encode_id
 from ._types import CorpusListing, DocumentListing, SnapshotListing
 from .v1 import corpus_pb2 as c
-from .v1 import dataset_pb2 as d
+from .v1 import data_mixture_pb2 as d
 
 if TYPE_CHECKING:
     from ._inputs import SourceInput
-    from ._resources import Dataset, Mix, PremixDB, Query, Snapshot
+    from ._resources import DataMixture, Dataset, PremixDB, Query, Snapshot
 
 
 class PageRequest(Protocol):
@@ -157,16 +157,16 @@ class _CorpusListings:
         )
         return [_encode_id(id) for id, _, _ in members]
 
-    def list_mixture(self, *, limit: int = 5, offset: int = 0) -> list[Mix]:
+    def list_mixture(self, *, limit: int = 5, offset: int = 0) -> list[DataMixture]:
         """List mixture handles by public ID without packing candidates."""
-        from ._resources import Mix
+        from ._resources import DataMixture
 
         start, end = _window(self._db, limit=limit, offset=offset)
         queries = self._query_ids() if start != end else ()
         if not queries:
             return []
         return [
-            Mix(self._db, value)
+            DataMixture(self._db, value)
             for value in self._db._executor.browse(
                 "mixture", d.Mix, parents=queries, limit=end - start, offset=start
             )

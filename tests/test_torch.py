@@ -21,9 +21,9 @@ class TorchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with premixdb.PremixDB(storage=directory) as client:
                 dataset = (
-                    client.corpus("train", [premixdb.Source("a", "hello world")])
+                    client.Corpus("train", [premixdb.Source("a", "hello world")])
                     .query()
-                    .dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)
+                    .mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)[0]
                 )
                 data = dataset.torch()
             batch = next(iter(DataLoader(data, batch_size=2)))
@@ -47,7 +47,7 @@ class TorchTests(unittest.TestCase):
     def test_attention_and_loss_masks_are_independent(self) -> None:
         from premixdb._torch import TorchDataset
         from premixdb.execution.storage import ObjectStore
-        from premixdb.v1 import dataset_pb2 as d
+        from premixdb.v1 import data_mixture_pb2 as d
 
         with tempfile.TemporaryDirectory() as directory:
             with ObjectStore(directory) as store:
@@ -85,10 +85,10 @@ class TorchTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             with premixdb.PremixDB(storage=directory) as client:
-                query = client.corpus("torch", [premixdb.Source("a", "abcdefgh")]).query()
+                query = client.Corpus("torch", [premixdb.Source("a", "abcdefgh")]).query()
                 mix = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
                 datasets = [d.torch() for d in mix]
-                self.assertEqual(len(datasets), 3)
+                self.assertEqual(len(datasets), 1)
                 data = datasets[0]
                 item = data[-1]
                 self.assertEqual(item["input_ids"].tolist(), [256, 257, 257, 257])

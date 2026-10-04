@@ -20,7 +20,7 @@ from premixdb.execution.metadata import MetadataStore
 from premixdb.execution.planner import copy_fields
 from premixdb.execution.storage import ObjectStore
 from premixdb.v1 import corpus_pb2 as c
-from premixdb.v1 import dataset_pb2 as d
+from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 from premixdb.v1 import snapshot_pb2 as s
 from premixdb.v1 import status_pb2 as status
@@ -174,7 +174,7 @@ class MetadataTests(unittest.TestCase):
             with premixdb.PremixDB(
                 storage=storage_path, metadata_path=metadata_path, cache_bytes=0
             ) as client:
-                query = client.corpus("stats", [premixdb.Source("a", "abcdef")]).query()
+                query = client.Corpus("stats", [premixdb.Source("a", "abcdef")]).query()
                 mix = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
                 candidate = mix[0]
                 expected = candidate.profile()

@@ -20,9 +20,9 @@ def ready(
 ) -> Iterator[tuple[Coordinator, p.Dataset]]:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("inspection", [p.Source("a", "hello world playing! café 中文\n" * 40)])
+            db.Corpus("inspection", [p.Source("a", "hello world playing! café 中文\n" * 40)])
             .query()
-            .dataset(
+            .mix(
                 tokenizer=p.ByteTokenizer() if request.param == "bytes" else wordpiece_tokenizer(),
                 packing=p.Concat(
                     separator=256 if request.param == "bytes" else 2,
@@ -30,7 +30,7 @@ def ready(
                     pad_token=257 if request.param == "bytes" else 3,
                 ),
                 sequence_length=16,
-            )
+            )[0]
             .wait()
         )
         yield coordinator(db), dataset
@@ -73,7 +73,7 @@ def test_invalid_preview_offsets_fail_before_catalog_reads(tmp_path: Path, offse
     from _type_support import invalid_call
 
     with p.PremixDB(storage=tmp_path) as db:
-        dataset = db.corpus("invalid", [p.Source("a", "text")]).query().dataset()
+        dataset = db.Corpus("invalid", [p.Source("a", "text")]).query().mix()[0]
         with patch.object(dataset, "wait", side_effect=AssertionError("read")):
             with pytest.raises(ValueError):
                 invalid_call(dataset.preview, offset=offset)

@@ -212,7 +212,7 @@ def test_quality_lesson_reuses_real_cache_with_controlled_model(
 def test_snapshot_and_query_inline_previews_preserve_fields_and_truncation(tmp_path: Path) -> None:
     # Lesson 01 exercises snapshot previews, whose message type differs from query previews.
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("preview", [p.Source("speech", "héllo world")])
+        snapshot = db.Corpus("preview", [p.Source("speech", "héllo world")])
         for resource in (snapshot, snapshot.query()):
             row = resource.preview(limit=1, max_characters=3)[0]
             assert row["text"] == "hél"

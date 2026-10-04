@@ -11,7 +11,7 @@ without importing the Python engine. Most users can stay in the Python API.
 | [query.proto](premixdb/v1/query.proto) | Ordered selection recipes, dependencies and previews |
 | [intrinsic.proto](premixdb/v1/intrinsic.proto) | Built-in field IDs |
 | [field.proto](premixdb/v1/field.proto), [index.proto](premixdb/v1/index.proto) | Definitions and immutable builds |
-| [dataset.proto](premixdb/v1/dataset.proto) | Tokenizers, packing, sampling, mixtures and stored sequences |
+| [data_mixture.proto](premixdb/v1/data_mixture.proto) | Tokenizers, packing, sampling, mixtures and stored sequences |
 | [profile.proto](premixdb/v1/profile.proto) | Histograms, numeric summaries and estimates |
 | [storage.proto](premixdb/v1/storage.proto) | Source inputs, objects and byte ranges |
 | [status.proto](premixdb/v1/status.proto) | Resource state and execution history |
@@ -32,8 +32,10 @@ fail. Query identities also include the execution fingerprint described in
 recipes, artifact receipts, query selections and token encodings. These are
 internal persistence messages, with no public build operation.
 
-Mixtures register ordered candidate dataset IDs and planned profiles. A candidate
-packs when consumed. Dataset sampling budgets count content tokens; separators,
+Mixtures register a lazy recipe in `.recipe` metadata, then publish ordered
+candidate dataset IDs when resolved. Mixture profiles describe domain inventory
+and composition; candidate packing profiles remain lazy. A candidate packs when
+consumed. Dataset sampling budgets count content tokens; separators,
 padding and dropped tails have separate accounting. RegMix proposes weights only.
 
 ## Reads and statistics

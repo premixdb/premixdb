@@ -19,7 +19,7 @@ def main() -> None:
     if not math.isfinite(MINIMUM):
         raise ValueError("MINIMUM must be finite")
     with p.PremixDB(storage=STORAGE) as db:
-        snapshot = db.corpus("tutorial/c4-quality", p.Source.read_jsonl(INPUT, limit=LIMIT))
+        snapshot = db.Corpus("tutorial/c4-quality", p.Source.read_jsonl(INPUT, limit=LIMIT))
         selected = snapshot.query(steps=[p.where(p.quality.educational_value >= MINIMUM)])
         print(
             "Captured → selected documents:",

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Generator
 
-from .._hub import quiet_auth_advisory
 from ..v1.storage_pb2 import Source
 from .assets import read
 
@@ -19,24 +18,23 @@ def capture(
     elif source.HasField("hugging_face"):
         from datasets import load_dataset
 
-        with quiet_auth_advisory():
-            policy = source.hugging_face
-            dataset = load_dataset(
-                policy.repository,
-                policy.configuration or None,
-                split=policy.split,
-                revision=policy.revision,
-                streaming=True,
-            )
-            seen = set()
-            for ordinal, row in enumerate(dataset):
-                text = row.get(policy.text_column or "text")
-                if not isinstance(text, str):
-                    raise ValueError("dataset text column must contain strings")
-                key = str(row[policy.key_column]) if policy.key_column else str(ordinal)
-                if key in seen:
-                    raise ValueError("duplicate dataset row key")
-                seen.add(key)
-                yield f"hf://{policy.repository}/{policy.configuration}/{policy.split}/{key}", text
+        policy = source.hugging_face
+        dataset = load_dataset(
+            policy.repository,
+            policy.configuration or None,
+            split=policy.split,
+            revision=policy.revision,
+            streaming=True,
+        )
+        seen = set()
+        for ordinal, row in enumerate(dataset):
+            text = row.get(policy.text_column or "text")
+            if not isinstance(text, str):
+                raise ValueError("dataset text column must contain strings")
+            key = str(row[policy.key_column]) if policy.key_column else str(ordinal)
+            if key in seen:
+                raise ValueError("duplicate dataset row key")
+            seen.add(key)
+            yield f"hf://{policy.repository}/{policy.configuration}/{policy.split}/{key}", text
     else:
         raise ValueError("unsupported source")

@@ -49,7 +49,7 @@ from ..engine.token_codec import byte_interval, decode_tokens, encode_tokens, to
 from ..enrichment.types import ComputedRow
 from ..enrichment.types import Document as FeatureDocument
 from ..internal import derivation_pb2 as e
-from ..v1 import dataset_pb2 as d
+from ..v1 import data_mixture_pb2 as d
 from ..v1 import query_pb2 as q
 from .enrichment import DedupeRow, Worker
 from .partition_types import (

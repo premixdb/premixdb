@@ -23,7 +23,7 @@ from premixdb.v1 import query_pb2 as q
 @pytest.fixture
 def ready(tmp_path: Path) -> Iterator[tuple[Coordinator, p.Query]]:
     with p.PremixDB(storage=tmp_path) as db:
-        query = db.corpus("intrinsic", [p.Source("https://example/a", "é🌍x")]).query().wait()
+        query = db.Corpus("intrinsic", [p.Source("https://example/a", "é🌍x")]).query().wait()
         yield coordinator(db), query
 
 
@@ -53,7 +53,7 @@ def test_intrinsic_projections_do_not_read_stored_text(ready: tuple[Coordinator,
 
 def test_intrinsic_sampling_plans_and_selects_without_reading_text(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("sampling", [p.Source("https://example/a", "é🌍x")])
+        snapshot = db.Corpus("sampling", [p.Source("https://example/a", "é🌍x")])
         query = snapshot.query(
             sampling=p.sample(
                 seed=3, documents=1, domains=(p.text.characters, p.object.uri, p.source.corpus_id)

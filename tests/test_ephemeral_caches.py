@@ -143,14 +143,14 @@ def test_profile_only_pools_close_before_returning_or_raising(
     asset = Path(__file__).parent / "fixtures" / "wordpiece.json"
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("profile", [p.Source("a", "hello world")])
+            db.Corpus("profile", [p.Source("a", "hello world")])
             .query()
-            .dataset(
+            .mix(
                 tokenizer=p.hugging_face_tokenizer(
                     asset, digest=blake3(asset.read_bytes()).digest()
                 ),
                 sequence_length=2,
-            )
+            )[0]
         )
         if fail:
             with patch.object(PackingPlan, "profile", side_effect=RuntimeError("profile failed")):
@@ -168,14 +168,14 @@ def test_failed_publication_releases_the_native_dataset_pool(
     asset = Path(__file__).parent / "fixtures" / "wordpiece.json"
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("publication", [p.Source("a", "hello world")])
+            db.Corpus("publication", [p.Source("a", "hello world")])
             .query()
-            .dataset(
+            .mix(
                 tokenizer=p.hugging_face_tokenizer(
                     asset, digest=blake3(asset.read_bytes()).digest()
                 ),
                 sequence_length=2,
-            )
+            )[0]
         )
         dataset.profile()
         assert_closed(opened)
@@ -196,7 +196,7 @@ def test_session_close_releases_cached_and_evicted_mixture_pools(
     asset = Path(__file__).parent / "fixtures" / "wordpiece.json"
     with p.PremixDB(storage=tmp_path, cache_bytes=cache_bytes) as db:
         mix = (
-            db.corpus("mixture", [p.Source("a", "hello world")])
+            db.Corpus("mixture", [p.Source("a", "hello world")])
             .query()
             .mix(
                 tokenizer=p.hugging_face_tokenizer(
@@ -337,7 +337,7 @@ def test_query_columns_close_while_indexes_and_failures_remain_alive(
         return intrinsic(document, field)
 
     with p.PremixDB(storage=tmp_path) as db:
-        query = db.corpus("columns", [p.Source("a", "one"), p.Source("b", "two")]).query(
+        query = db.Corpus("columns", [p.Source("a", "one"), p.Source("b", "two")]).query(
             sampling=p.sample(seed=3, documents=1, domains=(p.text.characters, p.object.uri))
         )
         with (
@@ -370,7 +370,7 @@ def test_failed_projection_closes_the_partially_loaded_column(
     tmp_path: Path, opened: list[tuple[Path, sqlite3.Connection]]
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("projection", [p.Source("a", "one"), p.Source("b", "two")])
+        snapshot = db.Corpus("projection", [p.Source("a", "one"), p.Source("b", "two")])
         with patch.object(enrichment, "producer", ControlledFields):
             snapshot.query()._with_fields([p.quality.educational_value]).wait()
         assert_closed(opened)

@@ -13,12 +13,12 @@ from blake3 import blake3
 from google.protobuf.message import Message
 
 from .. import _requests
-from .._mixing import RegMixSampler, _weights_message, allocations
+from .._mixing import RegMix, _weights_message, allocations
 from .._protobuf import descriptor_name
 from .._typing import JSON
 from .._typing import scalar as json_scalar
 from ..engine.identity import identity_domain
-from ..v1 import dataset_pb2 as datasets
+from ..v1 import data_mixture_pb2 as datasets
 from ..v1 import query_pb2 as queries
 from .planner import reject_unknown
 
@@ -113,8 +113,8 @@ def validate_sampling(spec: datasets.Sampling) -> None:
 def validate_mix(spec: datasets.CreateMixRequest) -> None:
     reject_unknown(spec)
     validate_strata(spec.domains)
-    if not spec.tokens or not spec.HasField("seed") or not spec.HasField("replacement"):
-        raise ValueError("mix requires tokens, seed, and replacement")
+    if not spec.HasField("seed") or not spec.HasField("replacement"):
+        raise ValueError("mix requires seed and replacement")
     if not 1 <= spec.n_candidates <= MAX_CANDIDATES:
         raise ValueError(f"n_candidates must be between 1 and {MAX_CANDIDATES}")
     bounds = spec.bounds
@@ -124,10 +124,16 @@ def validate_mix(spec: datasets.CreateMixRequest) -> None:
     for name in ("max_epochs", "reference_tokens"):
         if bounds.HasField(name) and getattr(bounds, name) == 0:
             raise ValueError(f"{name} must be positive")
-    if spec.algorithm.WhichOneof("kind") != "regmix":
-        raise ValueError("mix requires a RegMix algorithm")
+    if spec.weights and spec.algorithm.WhichOneof("kind"):
+        raise ValueError("use fixed weights or a RegMix policy, not both")
+    if spec.weights:
+        _weights_message(spec.weights)
+    if spec.algorithm.WhichOneof("kind") is None:
+        if spec.n_candidates != 1:
+            raise ValueError("multiple candidates require weights=RegMix(...)")
+        return
     policy = spec.algorithm.regmix
-    RegMixSampler(
+    RegMix(
         seed=policy.seed,
         prior_power=policy.prior_power,
         concentration_range=(policy.min_concentration, policy.max_concentration),
@@ -197,10 +203,16 @@ def generate(
         _weights_message(values)
         if set(values) != set(keys):
             raise ValueError("weights must name exactly the available strata")
-        if any(not lower[k] <= values[k] <= upper[k] for k in keys):
-            raise ValueError("candidate violates mixture bounds")
         for budget in {spec.tokens, spec.bounds.reference_tokens or spec.tokens}:
             capacity_check(allocations(values, budget), inventory, spec.replacement, cap)
+        if any(values[k] < lower[k] - 1e-12 or values[k] > upper[k] + 1e-12 for k in keys):
+            raise ValueError("candidate violates mixture bounds")
+
+    if spec.algorithm.WhichOneof("kind") is None:
+        total = sum(inventory.values())
+        values = dict(spec.weights) or {key: count / total for key, count in inventory.items()}
+        validate(values)
+        return [values]
 
     active = [key for key in keys if inventory[key]]
     if len(active) == 1:

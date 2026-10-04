@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 
 from ._protobuf import parse
 from ._typing import FieldValue
-from .v1 import dataset_pb2 as datasets
+from .v1 import data_mixture_pb2 as datasets
 
 
 def allocations(weights: Mapping[str, int | float], budget: int) -> dict[str, int]:
@@ -101,7 +101,7 @@ class Bounds:
 
 
 @dataclass(frozen=True)
-class RegMixSampler:
+class RegMix:
     """Versioned RegMix-style proposals only; no predictor or training loop.
 
     Smooth the token prior, explore log-spaced Dirichlet concentrations, zero
@@ -134,7 +134,7 @@ class RegMixSampler:
             raise ValueError("minimum_weight must be finite and in [0, 1)")
         return datasets.MixAlgorithm(
             regmix=datasets.RegMix(
-                seed=_uint(self.seed, 64, "sampler seed"),
+                seed=_uint(self.seed, 64, "weight proposal seed"),
                 prior_power=self.prior_power,
                 min_concentration=low,
                 max_concentration=high,

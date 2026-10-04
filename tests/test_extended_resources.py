@@ -26,7 +26,7 @@ from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.execution import enrichment
 from premixdb.internal import derivation_pb2 as e
-from premixdb.v1 import dataset_pb2 as dataset_pb
+from premixdb.v1 import data_mixture_pb2 as dataset_pb
 from premixdb.v1 import snapshot_pb2 as s
 from premixdb.v1 import storage_pb2 as storage
 
@@ -121,8 +121,9 @@ class ExtendedResourceTests(unittest.TestCase):
             "premixdb.execution.enrichment.producer", side_effect=InspectionFields
         ) as producer:
             mix = query.mix(tokenizer=p.ByteTokenizer(), domains=p.topic, tokens=4)
-            self.assertEqual(producer.call_count, 1)
+            self.assertEqual(producer.call_count, 0)
             self.assertEqual(mix[0].profile().planned_content_tokens, 4)
+            self.assertEqual(producer.call_count, 1)
         with patch(
             "premixdb.execution.enrichment.producer", side_effect=AssertionError("inference")
         ):
@@ -140,7 +141,7 @@ class ExtendedResourceTests(unittest.TestCase):
         self.directory.cleanup()
 
     def population(self) -> p.Snapshot:
-        return self.client.corpus(
+        return self.client.Corpus(
             "population",
             [
                 p.Source("https://test/a", "same text"),
@@ -197,7 +198,7 @@ class ExtendedResourceTests(unittest.TestCase):
         self.assertEqual(exact.profile().output_documents, 2)
 
     def test_cosine_streams_only_selected_embeddings(self) -> None:
-        snapshot = self.client.corpus(
+        snapshot = self.client.Corpus(
             "streamed-embeddings",
             [p.Source("https://test/a", "same text"), p.Source("https://test/b", "same text")]
             + [p.Source(f"https://test/other/{i}", "different outside") for i in range(32)],
@@ -287,19 +288,19 @@ class ExtendedResourceTests(unittest.TestCase):
             self.assertEqual(
                 sorted(permutation(i, count, 7) for i in range(count)), list(range(count))
             )
-        dataset = self.population().query().dataset(tokenizer=p.ByteTokenizer(), sequence_length=1)
-        reader = dataset.reader(seed=7)
+        dataset = self.population().query().mix(tokenizer=p.ByteTokenizer(), sequence_length=1)[0]
+        reader = dataset._reader(seed=7)
         first = next(reader).ordinal
         state = reader.checkpoint()
         remainder = [s.ordinal for s in reader]
-        self.assertEqual([s.ordinal for s in dataset.reader(seed=7, checkpoint=state)], remainder)
+        self.assertEqual([s.ordinal for s in dataset._reader(seed=7, checkpoint=state)], remainder)
         self.assertEqual(sorted([first, *remainder]), list(range(len(dataset))))
         with self.assertRaises(ValueError):
-            dataset.reader(seed=8, checkpoint=state)
+            dataset._reader(seed=8, checkpoint=state)
         parts = [
             [
                 s.ordinal
-                for s in dataset.reader(seed=7, topology=p.Topology(rank=rank, world_size=3))
+                for s in dataset._reader(seed=7, topology=p.Topology(rank=rank, world_size=3))
             ]
             for rank in range(3)
         ]
@@ -333,13 +334,13 @@ class ExtendedResourceTests(unittest.TestCase):
         ref = coordinator(self.client)._storage.put("snapshot", "pré".encode())
         # Authorize the service's storage directory for executor-side file objects.
         coordinator(self.client)._source_root = self.root
-        snapshot = self.client.corpus(
+        snapshot = self.client.Corpus(
             "manifest", p.SourceSpec(manifest=p.SourceManifest(objects={"object": ref}))
         )
         self.assertEqual(snapshot.profile().characters, 3)
         ref.blake3_digest = b"x" * 32
         with self.assertRaises(Exception):
-            self.client.corpus(
+            self.client.Corpus(
                 "bad", p.SourceSpec(manifest=p.SourceManifest(objects={"object": ref}))
             )
 
@@ -348,7 +349,7 @@ class ExtendedResourceTests(unittest.TestCase):
             "datasets.load_dataset",
             return_value=[{"key": "a", "text": "one"}, {"key": "b", "text": "two"}],
         ) as load:
-            snapshot = self.client.corpus(
+            snapshot = self.client.Corpus(
                 "hub",
                 p.HuggingFaceDataset(
                     repository="test/repo", revision="a" * 40, split="train", key_column="key"
@@ -361,7 +362,7 @@ class ExtendedResourceTests(unittest.TestCase):
             return_value=[{"key": "a", "text": "one"}, {"key": "a", "text": "two"}],
         ):
             with self.assertRaises(Exception):
-                self.client.corpus(
+                self.client.Corpus(
                     "hub-invalid",
                     p.HuggingFaceDataset(
                         repository="test/repo", revision="a" * 40, split="train", key_column="key"
@@ -369,11 +370,11 @@ class ExtendedResourceTests(unittest.TestCase):
                 )
 
     def test_alignment_preserves_original_utf8_coordinates(self) -> None:
-        snapshot = self.client.corpus("text", [p.Source("a", "pré\n秘密\nfin")])
-        reference = self.client.corpus("ref", [p.Source("b", "秘密")])
+        snapshot = self.client.Corpus("text", [p.Source("a", "pré\n秘密\nfin")])
+        reference = self.client.Corpus("ref", [p.Source("b", "秘密")])
         dataset = snapshot.query(
             decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
-        ).dataset(tokenizer=p.ByteTokenizer(), sequence_length=20)
+        ).mix(tokenizer=p.ByteTokenizer(), sequence_length=20)[0]
         regions = dataset[0].spans
         ranges = [
             (i, i + 1)
@@ -386,7 +387,7 @@ class ExtendedResourceTests(unittest.TestCase):
     def test_catalog_preview_and_history(self) -> None:
         snapshot = self.population()
         query = snapshot.query(steps=[p.where(p.text.bytes == 5)])
-        self.assertEqual(len(self.client.corpus.list()), 1)
+        self.assertEqual(len(self.client.Corpus.list()), 1)
         self.assertEqual(snapshot.profile().documents, 3)
         self.assertEqual(query.profile().output_documents, 1)
         self.assertEqual(len(query.preview()), 1)
@@ -483,28 +484,28 @@ class ExtendedResourceTests(unittest.TestCase):
     def test_fluent_recipes_reuse_completed_results_after_restart(self) -> None:
         path = self.root / "source.txt"
         path.write_text("first")
-        snapshot = self.client.corpus("retry", path)
+        snapshot = self.client.Corpus("retry", path)
         query = snapshot.query()
-        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=2).wait()
+        dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=2)[0].wait()
         mix = query.mix(tokenizer=p.ByteTokenizer(), tokens=3)
         path.write_text("updated")
         self.client.close()
         self.client = p.PremixDB(storage=self.root)
-        replay = self.client.corpus("retry")
+        replay = self.client.Corpus("retry")
         self.assertEqual(replay.id, snapshot.id)
         self.assertEqual(replay.profile().content_bytes, 5)
         query_replay = replay.query()
         self.assertEqual(query_replay.id, query.id)
         self.assertEqual(
-            query_replay.dataset(tokenizer=p.ByteTokenizer(), sequence_length=2).id, dataset.id
+            query_replay.mix(tokenizer=p.ByteTokenizer(), sequence_length=2)[0].id, dataset.id
         )
         self.assertEqual(query_replay.mix(tokenizer=p.ByteTokenizer(), tokens=3).id, mix.id)
 
     def test_sequence_preview_matches_packed_tokens_and_profile(self) -> None:
-        left = self.client.corpus("left", [p.Source("left", "abcdef")])
-        right = self.client.corpus("right", [p.Source("right", "12345")])
+        left = self.client.Corpus("left", [p.Source("left", "abcdef")])
+        right = self.client.Corpus("right", [p.Source("right", "12345")])
         dataset = (
-            left.union(right).query().dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).wait()
+            left.union(right).query().mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0].wait()
         )
         page = dataset.preview(limit=100)
         self.assertEqual(len(page), len(dataset))
@@ -520,7 +521,7 @@ class ExtendedResourceTests(unittest.TestCase):
         pipeline.packing_shard_sequences = 1
         snapshot = self.population()
         query = snapshot.query(steps=[p.dedupe()])
-        parallel = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        parallel = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
 
         def sequences(
             dataset: p.Dataset,
@@ -533,7 +534,7 @@ class ExtendedResourceTests(unittest.TestCase):
         self.client.close()
         self.client = p.PremixDB(storage=self.root / "sequential")
         sequential_query = self.population().query(steps=[p.dedupe()])
-        sequential = sequential_query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        sequential = sequential_query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
         self.assertEqual(parallel.id, sequential.id)
         self.assertEqual(expected, sequences(sequential))
         self.assertEqual(expected_summary, sequential.profile())
@@ -544,7 +545,7 @@ class ExtendedResourceTests(unittest.TestCase):
     def test_process_reference_and_index_producers(self) -> None:
         self.client.close()
         self.client = p.PremixDB(storage=self.root, process_workers=2)
-        reference = self.client.corpus("evaluation", [p.Source("ref", "same text")])
+        reference = self.client.Corpus("evaluation", [p.Source("ref", "same text")])
         query = (
             self.population()
             .query(

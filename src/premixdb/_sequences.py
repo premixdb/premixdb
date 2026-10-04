@@ -12,7 +12,7 @@ from ._ids import _encode_id
 from ._protobuf import copy_message, parse
 from ._storage import RangeReader
 from ._types import ExecutionError
-from .v1 import dataset_pb2 as datasets
+from .v1 import data_mixture_pb2 as datasets
 from .v1.storage_pb2 import SpanRef
 
 # The stored index format groups consecutive sequences into fixed-size pages.

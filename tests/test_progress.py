@@ -15,7 +15,7 @@ from _type_support import coordinator, invalid_call
 
 import premixdb as p
 from premixdb._progress import operation
-from premixdb.v1 import dataset_pb2 as dataset_pb
+from premixdb.v1 import data_mixture_pb2 as dataset_pb
 from premixdb.v1 import query_pb2 as query_pb
 
 
@@ -117,7 +117,7 @@ def test_query_profile_reports_while_submission_blocks(
     tmp_path: Path, output: StatusOutput, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("progress", [p.Source("a", "é🌍")])
+        snapshot = db.Corpus("progress", [p.Source("a", "é🌍")])
         query = snapshot.query()
         output.reset()
         execute = coordinator(db).run_query
@@ -150,10 +150,10 @@ def test_capture_and_dataset_profiles_report_blocking_work(
             assert output.first.wait(timeout=3)
             yield p.Source("a", "hello")
 
-        snapshot = db.corpus("progress", sources())
+        snapshot = db.Corpus("progress", sources())
         assert "Capturing snapshot: running" in output.getvalue()
         assert snapshot.profile().documents == 1
-        dataset = snapshot.query().dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        dataset = snapshot.query().mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
         output.first.clear()
         compute = coordinator(db)._planned_dataset_profile
 
@@ -168,7 +168,7 @@ def test_capture_and_dataset_profiles_report_blocking_work(
 
 def test_progress_can_be_disabled_for_the_session(tmp_path: Path, output: StatusOutput) -> None:
     with p.PremixDB(storage=tmp_path, progress=False) as db:
-        snapshot = db.corpus("quiet", [p.Source("a", "hello")])
+        snapshot = db.Corpus("quiet", [p.Source("a", "hello")])
         query = snapshot.query()
         execute = coordinator(db).run_query
 

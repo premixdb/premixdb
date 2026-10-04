@@ -14,7 +14,7 @@ from premixdb.engine.snapshots import COMMIT_HEADER
 
 def capture(root: Path) -> bytes:
     with p.PremixDB(storage=root) as db:
-        snapshot = db.corpus("load", [p.Source("unicode", "pré 🌍\n"), p.Source("empty", "")])
+        snapshot = db.Corpus("load", [p.Source("unicode", "pré 🌍\n"), p.Source("empty", "")])
         return _decode_id(snapshot.id)
 
 

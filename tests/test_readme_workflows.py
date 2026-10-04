@@ -110,7 +110,7 @@ class ReadmeWorkflows(unittest.TestCase):
             patch("huggingface_hub.HfApi", return_value=api),
             patch("datasets.load_dataset", side_effect=lambda *args, **kwargs: rows()) as load,
         ):
-            snapshot = self.db.corpus("c4", source=p.HuggingFaceSource("allenai", "c4"), limit=2)
+            snapshot = self.db.Corpus("c4", source=p.HuggingFaceSource("allenai", "c4"), limit=2)
         self.assertEqual(consumed, [0, 1])
         self.assertEqual(snapshot.profile().documents, 2)
         self.assertEqual(load.call_args.args, ("allenai/c4", "en"))
@@ -118,7 +118,7 @@ class ReadmeWorkflows(unittest.TestCase):
             load.call_args.kwargs, dict(split="train", revision="a" * 40, streaming=True)
         )
         api.dataset_info.assert_called_once_with("allenai/c4", revision="main")
-        self.assertEqual(self.db.corpus("c4").id, snapshot.id)
+        self.assertEqual(self.db.Corpus("c4").id, snapshot.id)
         source = (
             p.HuggingFaceSource(
                 "org/data",
@@ -138,22 +138,22 @@ class ReadmeWorkflows(unittest.TestCase):
 
     def test_named_snapshots_survive_restart_and_do_not_follow_later_captures(self) -> None:
         with self.assertRaisesRegex(ValueError, "capture with"):
-            self.db.corpus("absent")
-        first = self.db.corpus("history", [p.Source("a", "first")])
-        opened = self.db.corpus("history")
-        second = self.db.corpus("history", [p.Source("a", "second")], base=first)
+            self.db.Corpus("absent")
+        first = self.db.Corpus("history", [p.Source("a", "first")])
+        opened = self.db.Corpus("history")
+        second = self.db.Corpus("history", [p.Source("a", "second")], base=first)
         self.assertIsInstance(opened, p.Snapshot)
         self.assertEqual(opened.preview()[0]["text"], "first")
         self.assertNotEqual(first.id, second.id)
         with self.assertRaises(ValueError):
-            self.db.corpus("history", [p.Source("a", "bad"), p.Source("a", "duplicate")])
+            self.db.Corpus("history", [p.Source("a", "bad"), p.Source("a", "duplicate")])
         self.db.close()
         with p.PremixDB(storage=self.root, cache_bytes=0) as reopened:
-            self.assertEqual(reopened.corpus("history").id, second.id)
+            self.assertEqual(reopened.Corpus("history").id, second.id)
             self.assertEqual(reopened._snapshot(first.id).preview()[0]["text"], "first")
 
     def test_wrong_base_is_rejected_before_consuming_or_resolving_sources(self) -> None:
-        base = self.db.corpus("base", [])
+        base = self.db.Corpus("base", [])
         target = self.db._create_corpus("target")
         consumed = []
 
@@ -192,14 +192,14 @@ class ReadmeWorkflows(unittest.TestCase):
                 real_producer(policy) if policy.HasField("datatrove") else TutorialModels(policy)
             ),
         ):
-            snapshot = self.db.corpus("c4", sources)
+            snapshot = self.db.Corpus("c4", sources)
             steps = [p.where(p.language.en > 0.8), p.where(p.datatrove.n_words >= 10)]
-            query = self.db.corpus("c4").query(steps=steps)
+            query = self.db.Corpus("c4").query(steps=steps)
             self.assertEqual(query.id, snapshot.query(steps=steps).id)
             self.assertEqual(query.profile().output_documents, 2)
             mixtures = query.mix(
                 domains=p.Topic,
-                sampler=p.RegMixSampler(),
+                weights=p.RegMix(),
                 n_candidates=3,
                 tokenizer=p.ByteTokenizer(),
                 tokens=32,
@@ -210,7 +210,7 @@ class ReadmeWorkflows(unittest.TestCase):
                 set(mixtures.weights[0]),
                 {p.Topic.SCIENCE_AND_TECH.value, p.Topic.EDUCATION_AND_JOBS.value},
             )
-            self.assertEqual(len(mixtures.profile()), 3)
+            self.assertEqual(len(mixtures.profile().candidates), 3)
             self.assertIs(mixtures[0].status, p.ExecutionStatus.PENDING)
             batch = next(iter(DataLoader(mixtures[0].torch(), batch_size=2)))
             self.assertEqual(batch["input_ids"].shape[1], 64)
@@ -229,8 +229,8 @@ class ReadmeWorkflows(unittest.TestCase):
             language_mix = snapshot.query().mix(
                 domains=p.Language, tokenizer=p.ByteTokenizer(), tokens=8, sequence_length=4
             )
-            self.assertEqual(language_mix.weights, [{"en": 1.0}] * 3)
-            sequence = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=64)[0]
+            self.assertEqual(language_mix.weights, [{"en": 1.0}])
+            sequence = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=64)[0][0]
             ids = sequence.document_ids()
             joined = snapshot.query(steps=[p.where(p.document_id.is_in(ids))]).preview()
             self.assertEqual({row["id"] for row in joined}, set(ids))
@@ -241,10 +241,11 @@ class ReadmeWorkflows(unittest.TestCase):
             p.PremixDB(storage=self.root) as reopened,
             patch.object(enrichment, "producer", side_effect=AssertionError("recomputed models")),
         ):
-            query = reopened.corpus("c4").query(steps=steps)
+            query = reopened.Corpus("c4").query(steps=steps)
             self.assertEqual(
                 query.mix(
                     domains=p.Topic,
+                    weights=p.RegMix(),
                     n_candidates=3,
                     tokenizer=p.ByteTokenizer(),
                     tokens=32,
@@ -264,7 +265,7 @@ class ReadmeWorkflows(unittest.TestCase):
                 consumed.append(i)
                 yield p.Source(str(i), f"é🌍 document {i}")
 
-        snapshot = self.db.corpus("pages", sources(), limit=2)
+        snapshot = self.db.Corpus("pages", sources(), limit=2)
         self.assertEqual(consumed, [0, 1])
         query = snapshot.query()
         page = query.preview(limit=2, max_characters=2)
@@ -288,7 +289,7 @@ class ReadmeWorkflows(unittest.TestCase):
         self.assertEqual(query.preview(offset=100), [])
         self.assertEqual(query.preview(limit=0), [])
         self.assertEqual(query.preview(max_characters=0)[0]["text"], "")
-        self.assertEqual(self.db.corpus("zero", sources(), limit=0).profile().documents, 0)
+        self.assertEqual(self.db.Corpus("zero", sources(), limit=0).profile().documents, 0)
         self.assertEqual(consumed, [0, 1])
         for options in (
             {"limit": -1},
@@ -311,16 +312,16 @@ class ReadmeWorkflows(unittest.TestCase):
             self.db._submit(bad)
 
     def test_read_only_preview_and_selection_match_saved_results(self) -> None:
-        snapshot = self.db.corpus("saved", [p.Source("a", "hello world")])
+        snapshot = self.db.Corpus("saved", [p.Source("a", "hello world")])
         query = snapshot.query()
-        ids = query.dataset(sequence_length=32)[0].document_ids()
+        ids = query.mix(sequence_length=32)[0][0].document_ids()
         selected = snapshot.query(steps=[p.where(p.document_id.is_in(ids))]).wait()
         with p.PremixDB(storage=self.root, read_only=True) as reader:
-            self.assertEqual(reader.corpus("saved").id, snapshot.id)
+            self.assertEqual(reader.Corpus("saved").id, snapshot.id)
             self.assertEqual(reader._query(query.id).preview(), query.preview())
             self.assertEqual(reader._query(selected.id).preview(), selected.preview())
             with self.assertRaises(PermissionError):
-                reader.corpus("write", [p.Source("x", "no")])
+                reader.Corpus("write", [p.Source("x", "no")])
 
 
 if __name__ == "__main__":
@@ -336,7 +337,7 @@ def test_actual_readme_python_blocks_execute_in_order(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PREMIXDB_STORAGE", str(tmp_path / ".premixdb"))
     with p.PremixDB() as shell_db:
-        shell_db.corpus("demo", SHELL_SOURCES)
+        shell_db.Corpus("demo", SHELL_SOURCES)
     api = Mock()
     revisions = {
         "datablations/c4-filter-small": "f975fa88ccfea268f412be33ed62cd3644d9d140",
@@ -396,7 +397,7 @@ def test_actual_readme_python_blocks_execute_in_order(
     assert [len(rows) for rows in consumed] == [8, 8]
     assert api.dataset_info.call_count == load.call_count == 2
     mixtures = namespace["mixtures"]
-    assert isinstance(mixtures, p.Mix) and len(mixtures) == 3
+    assert isinstance(mixtures, p.DataMixture) and len(mixtures) == 1
     batch = namespace["batch"]
     assert isinstance(batch, dict)
     from torch import Tensor

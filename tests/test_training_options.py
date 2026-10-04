@@ -16,8 +16,8 @@ from premixdb._typing import JSON, Scalar
 @pytest.fixture
 def candidate(tmp_path: Path) -> Iterator[p.Dataset]:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("options", [p.Source("a", "hello world")])
-        yield snapshot.query().dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        snapshot = db.Corpus("options", [p.Source("a", "hello world")])
+        yield snapshot.query().mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,7 @@ def test_invalid_torch_options_do_not_materialize_candidate(
 def test_invalid_reader_topology_does_not_materialize_candidate(candidate: p.Dataset) -> None:
     with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
         with pytest.raises(ValueError, match="topology"):
-            candidate.reader(topology=p.Topology(rank=2, world_size=1))
+            candidate._reader(topology=p.Topology(rank=2, world_size=1))
 
 
 def test_invalid_streaming_seed_does_not_discover_distributed_rank() -> None:
@@ -100,7 +100,7 @@ def test_incompatible_checkpoint_does_not_materialize_candidate(
         del checkpoint["next_ordinal"]
     with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
         with pytest.raises(ValueError, match="checkpoint"):
-            invalid_call(candidate.reader, checkpoint=checkpoint)
+            invalid_call(candidate._reader, checkpoint=checkpoint)
 
 
 @pytest.mark.parametrize("seed", [False, 0.0])
@@ -116,7 +116,7 @@ def test_checkpoint_seed_requires_an_integer_before_materialization(
     )
     with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
         with pytest.raises(ValueError, match="checkpoint"):
-            invalid_call(candidate.reader, seed=0, checkpoint=checkpoint)
+            invalid_call(candidate._reader, seed=0, checkpoint=checkpoint)
 
 
 @pytest.mark.parametrize("checkpoint", [[], False, "checkpoint"])
@@ -125,7 +125,7 @@ def test_checkpoint_requires_a_dictionary_before_materialization(
 ) -> None:
     with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
         with pytest.raises(ValueError, match="checkpoint"):
-            invalid_call(candidate.reader, checkpoint=checkpoint)
+            invalid_call(candidate._reader, checkpoint=checkpoint)
 
 
 @pytest.mark.parametrize("ordinal", [0, 2])
@@ -141,7 +141,7 @@ def test_checkpoint_from_another_partition_does_not_materialize_candidate(
     )
     with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
         with pytest.raises(ValueError, match="checkpoint"):
-            candidate.reader(topology=topology, checkpoint=checkpoint)
+            candidate._reader(topology=topology, checkpoint=checkpoint)
 
 
 @pytest.mark.parametrize("seed", [None, 0])
@@ -157,7 +157,7 @@ def test_exhausted_checkpoint_does_not_materialize_candidate(
     if seed is not None:
         checkpoint["shuffle_seed"] = seed
     with patch.object(p.Dataset, "wait", side_effect=AssertionError("started packing")):
-        reader = candidate.reader(checkpoint=checkpoint, seed=seed)
+        reader = candidate._reader(checkpoint=checkpoint, seed=seed)
         assert list(reader) == []
         assert reader.checkpoint() == checkpoint
     assert candidate.status == p.ExecutionStatus.PENDING

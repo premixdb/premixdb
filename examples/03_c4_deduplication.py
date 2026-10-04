@@ -19,7 +19,7 @@ def main() -> None:
     # Add a copy so this small sample has a duplicate to find.
     sources.append(p.Source("tutorial-copy", sources[0].text))
     with p.PremixDB(storage=STORAGE) as db:
-        snapshot = db.corpus("tutorial/c4-with-copy", sources)
+        snapshot = db.Corpus("tutorial/c4-with-copy", sources)
         query = snapshot.query(steps=[p.dedupe(order_by=[p.object.uri.asc()])])
         before, after = snapshot.profile().documents, query.profile().output_documents
         assert after < before

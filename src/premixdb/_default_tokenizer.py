@@ -5,7 +5,7 @@ from pathlib import Path
 
 from blake3 import blake3
 
-from .v1.dataset_pb2 import HuggingFaceTokenizer, Tokenizer
+from .v1.data_mixture_pb2 import HuggingFaceTokenizer, Tokenizer
 from .v1.storage_pb2 import ObjectRef
 
 _GPT2_DIGEST = bytes.fromhex("1f9b61de3382db2e111c702730ef4ad5b12788d3c040db87936da6c7f988f861")

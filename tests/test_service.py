@@ -16,12 +16,13 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
+from premixdb import _requests
 from premixdb._ids import _decode_id, _encode_id
 from premixdb._protobuf import descriptor
 from premixdb.engine import execution
 from premixdb.execution import Coordinator, compile_query
 from premixdb.v1 import corpus_pb2 as corpora
-from premixdb.v1 import dataset_pb2 as datasets
+from premixdb.v1 import data_mixture_pb2 as datasets
 from premixdb.v1 import query_pb2 as queries
 from premixdb.v1 import snapshot_pb2 as snapshots
 from premixdb.v1 import status_pb2 as common
@@ -62,10 +63,10 @@ class ServiceTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"PREMIXDB_STORAGE": str(self.root / "default")}):
             with premixdb.PremixDB() as client:
-                snapshot = client.corpus("shakespeare", [premixdb.Source("a", "To be")])
+                snapshot = client.Corpus("shakespeare", [premixdb.Source("a", "To be")])
                 query = snapshot.query(steps=[premixdb.where(premixdb.text.characters > 0)])
                 mixture = query.mix()
-                self.assertEqual(len(mixture), 3)
+                self.assertEqual(len(mixture), 1)
                 candidate = mixture[0]
                 self.assertIs(candidate.status, premixdb.ExecutionStatus.PENDING)
                 self.assertFalse(hasattr(coordinator(client), "_dataset_handles"))
@@ -118,11 +119,11 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("engine", descriptor(query._proto).fields_by_name)
         query._proto.Clear()
         self.assertTrue(query.id)
-        dataset = query.dataset(
+        dataset = query.mix(
             tokenizer=premixdb.ByteTokenizer(),
             sequence_length=4,
             packing=premixdb.Concat(separator=256, drop_remainder=False, pad_token=257),
-        )
+        )[0]
         self.assertIsInstance(dataset._request, datasets.CreateDatasetRequest)
         self.assertEqual(
             [t for sequence in dataset for t in sequence.tokens],
@@ -165,8 +166,8 @@ class ServiceTests(unittest.TestCase):
             def __str__(self) -> str:
                 raise AssertionError("source paths must use __fspath__")
 
-        expected = self.client.corpus("paths", path)
-        actual = self.client.corpus("paths", FilePath(), base=expected)
+        expected = self.client.Corpus("paths", path)
+        actual = self.client.Corpus("paths", FilePath(), base=expected)
         self.assertEqual(actual.id, expected.id)
         self.assertEqual(actual.preview()[0]["text"], "captured text")
 
@@ -311,7 +312,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_failed_dataset_publication_can_retry_and_cache_success(self) -> None:
         service = coordinator(self.client)
-        request = premixdb.dataset(
+        request = _requests.dataset(
             self.snapshot().query().id, tokenizer=premixdb.ByteTokenizer(), sequence_length=4
         )
         id = service._dataset_id(service._resolve_dataset(request))
@@ -345,9 +346,9 @@ class ServiceTests(unittest.TestCase):
         )
         dataset = (
             snapshot.query()
-            .dataset(
-                tokenizer=premixdb.ByteTokenizer(), sequence_length=1, packing=premixdb.Concat()
-            )
+            .mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=1, packing=premixdb.Concat())[
+                0
+            ]
             .wait()
         )
         self.assertEqual(len(dataset._proto.sequences), 3)
@@ -361,7 +362,7 @@ class ServiceTests(unittest.TestCase):
             source=[premixdb.Source("other", "text")]
         )
         query = first.union(second).query()
-        dataset = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)
+        dataset = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)[0]
         rpc = coordinator(self.client)
         request = corpora.ListCorpusRequest()
         page = rpc.ListCorpus(request)
@@ -381,7 +382,7 @@ class ServiceTests(unittest.TestCase):
     def test_unknown_fields_are_rejected_inside_nested_requests(self) -> None:
         snapshot = self.snapshot()
         query = snapshot.query()
-        request = premixdb.dataset(query.id, tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
+        request = _requests.dataset(query.id, tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
         # Unknown nested configuration must not be silently ignored.
         unknown = datasets.Concat.FromString(
             request.packing.concat.SerializeToString() + b"\x98\x06\x01"
@@ -393,7 +394,7 @@ class ServiceTests(unittest.TestCase):
     def test_read_only_session_uses_saved_resources_without_importing_engine(self) -> None:
         snapshot = self.snapshot()
         query = self.recipe(snapshot)
-        dataset = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=2).wait()
+        dataset = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=2)[0].wait()
         with premixdb.PremixDB(storage=self.root / "local", read_only=True) as reader:
             self.assertEqual(reader._query(query.id).profile(), query.profile())
             self.assertEqual(
@@ -454,14 +455,14 @@ assert "grpc" not in sys.modules
         from _reference import Topology as NativeTopology
 
         dataset = (
-            self.snapshot().query().dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)
+            self.snapshot().query().mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)[0]
         )
         native = coordinator(self.client)._query(dataset._proto.query_id).dataset(1, 256, 257)
         all_ordinals = []
         for rank in range(2):
             for worker in range(3):
                 topology = premixdb.Topology(rank, 2, worker, 3)
-                reader = dataset.reader(topology=topology)
+                reader = dataset._reader(topology=topology)
                 reference = native.reader(NativeTopology(rank, 2, worker, 3))
                 first = next(reader, None)
                 native_first = next(reference, None)
@@ -470,18 +471,18 @@ assert "grpc" not in sys.modules
                 )
                 checkpoint = json.loads(json.dumps(reader.checkpoint()))
                 self.assertEqual(checkpoint, dict(reference.checkpoint(), dataset=dataset.id))
-                rest = list(dataset.reader(topology=topology, checkpoint=checkpoint))
+                rest = list(dataset._reader(topology=topology, checkpoint=checkpoint))
                 self.assertEqual([s.tokens for s in rest], [s.tokens for s in reference])
                 all_ordinals.extend(([first.ordinal] if first else []) + [s.ordinal for s in rest])
         self.assertEqual(sorted(all_ordinals), list(range(len(dataset))))
-        reader = dataset.reader()
+        reader = dataset._reader()
         list(reader)
-        self.assertEqual(list(dataset.reader(checkpoint=reader.checkpoint())), [])
+        self.assertEqual(list(dataset._reader(checkpoint=reader.checkpoint())), [])
         self.assertEqual(dataset[-1].tokens, native[-1].tokens)
         with self.assertRaises(ValueError):
-            dataset.reader(topology=premixdb.Topology(world_size=0))
+            dataset._reader(topology=premixdb.Topology(world_size=0))
         with self.assertRaises(ValueError):
-            dataset.reader(checkpoint=reader.checkpoint() | {"dataset": "00" * 32})
+            dataset._reader(checkpoint=reader.checkpoint() | {"dataset": "00" * 32})
 
     def test_pending_dependencies_wait_and_execution_errors_are_explicit(self) -> None:
         snapshot = self.snapshot()

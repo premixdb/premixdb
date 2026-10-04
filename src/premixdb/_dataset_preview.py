@@ -9,7 +9,8 @@ from . import _requests
 from ._ids import _encode_id
 from ._sequences import decode_preview, preview_decoder
 from ._types import PreviewSequence
-from .v1 import dataset_pb2 as d
+from .v1 import data_mixture_pb2 as d
+from .v1 import status_pb2 as d_status
 
 if TYPE_CHECKING:
     from ._resources import Dataset
@@ -23,7 +24,24 @@ def preview(
     )
     if not limit:
         return []
-    ready = dataset.wait()._resource
+    dataset._db._require_open()
+    ready = dataset._db._get("Dataset", dataset._resource.id)
+    if ready.status == d_status.STATUS_ERROR:
+        from ._types import ExecutionError
+
+        raise ExecutionError(ready.error)
+    if ready.status != d_status.STATUS_COMPLETED:
+        if dataset._db._read_only:
+            from ._types import ExecutionError
+
+            raise ExecutionError("dataset is not complete; preview it in a writable session first")
+        from .execution import Coordinator
+
+        assert isinstance(dataset._db._executor, Coordinator)
+        return dataset._db._executor._preview_dataset(
+            ready, limit=limit, offset=offset, max_characters=width
+        )
+    dataset._resource = ready
     end = min(offset + limit, ready.profile.sequences)
     result = []
     page = {}

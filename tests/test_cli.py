@@ -21,7 +21,7 @@ from premixdb._cli import main
 def shell_store(tmp_path: Path) -> Path:
     storage = tmp_path / "store"
     with p.PremixDB(storage=storage, progress=False) as db:
-        db.corpus("demo", SHELL_SOURCES).wait()
+        db.Corpus("demo", SHELL_SOURCES).wait()
     return storage
 
 
@@ -99,7 +99,7 @@ def test_ipython_completes_only_public_names_and_saves_history(
     from premixdb._shell import _interact, _Shell
 
     with p.PremixDB(storage=shell_store) as db:
-        query = db.corpus("completion", [p.Source("a", "hello")]).query()
+        query = db.Corpus("completion", [p.Source("a", "hello")]).query()
         history = tmp_path / "history"
 
         def interact(shell: _Shell) -> None:
@@ -115,8 +115,8 @@ def test_ipython_completes_only_public_names_and_saves_history(
                     )
                 }
 
-            assert matches("db.") == {"version", "close", "corpus"}
-            assert matches("q.") == {"id", "status", "dataset", "preview", "profile", "mix", "wait"}
+            assert matches("db.") == {"version", "close", "Corpus"}
+            assert matches("q.") == {"id", "status", "preview", "profile", "mix", "wait"}
             assert matches("db._") == matches("q._") == set()
             assert matches("%") == matches("%%") == matches("%ti") == set()
             assert "print" in matches("pri")
@@ -133,7 +133,7 @@ def test_ipython_completes_only_public_names_and_saves_history(
 def test_shell_starts_in_a_fresh_process(shell_store: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "premixdb", "--storage", str(shell_store), "shell"],
-        input="assert db.corpus('demo').profile().documents == 2; print('DEMO_OK')\nexit\n",
+        input="assert db.Corpus('demo').profile().documents == 2; print('DEMO_OK')\nexit\n",
         text=True,
         capture_output=True,
         timeout=30,
@@ -148,9 +148,9 @@ def test_cli_reads_metadata_profiles_and_bounded_previews(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("cli", [p.Source("first", "hello world"), p.Source("second", "bye")])
+        snapshot = db.Corpus("cli", [p.Source("first", "hello world"), p.Source("second", "bye")])
         query = snapshot.query()
-        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).wait()
+        dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0].wait()
     prefix = ["--storage", str(tmp_path)]
     with patch(
         "premixdb.execution.coordinator.Coordinator._execute_query", side_effect=AssertionError
@@ -214,12 +214,12 @@ def test_shells_supply_the_existing_python_api_and_close_storage(tmp_path: Path)
         assert namespace["p"] is p
         db = namespace["db"]
         assert isinstance(db, p.PremixDB)
-        demo = db.corpus("demo")
+        demo = db.Corpus("demo")
         assert len(demo.preview()) == 2
         assert any("Citizen:" in row["text"] for row in demo.preview(limit=100))
         retained = demo.query(steps=[p.where(p.text.characters > 0), p.dedupe()]).profile()
         assert retained.output_documents == 2
-        assert db.corpus("shell", [p.Source("a", "hello")]).preview()[0]["text"] == "hello"
+        assert db.Corpus("shell", [p.Source("a", "hello")]).preview()[0]["text"] == "hello"
         seen.append(db)
 
     with (
@@ -230,12 +230,12 @@ def test_shells_supply_the_existing_python_api_and_close_storage(tmp_path: Path)
     demo_sources.assert_called_once_with()
     assert len(seen) == 1 and all(db._closed for db in seen)
     with p.PremixDB(storage=tmp_path) as db:
-        assert db.corpus("demo").profile().documents == len(SHELL_SOURCES)
+        assert db.Corpus("demo").profile().documents == len(SHELL_SOURCES)
 
 
 def test_shell_upgrades_previous_builtin_demo(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        previous = db.corpus(
+        previous = db.Corpus(
             "demo",
             [
                 p.Source("science", "Science explains how stars form and planets move."),
@@ -248,7 +248,7 @@ def test_shell_upgrades_previous_builtin_demo(tmp_path: Path) -> None:
     def interact(namespace: dict[str, object], *, banner: str, history: Path | None) -> None:
         db = namespace["db"]
         assert isinstance(db, p.PremixDB)
-        demo = db.corpus("demo")
+        demo = db.Corpus("demo")
         assert demo.id != previous.id
         assert demo.profile().documents == len(SHELL_SOURCES)
         assert any("Citizen:" in row["text"] for row in demo.preview(limit=100))
@@ -268,18 +268,18 @@ def test_shell_preserves_existing_demo_and_read_only_storage(
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         if existing:
-            saved = db.corpus("demo", [p.Source("custom", "My own demo.")])
+            saved = db.Corpus("demo", [p.Source("custom", "My own demo.")])
 
     def interact(namespace: dict[str, object], *, banner: str, history: Path | None) -> None:
         db = namespace["db"]
         assert isinstance(db, p.PremixDB)
         if existing:
-            assert db.corpus("demo").id == saved.id
-            assert db.corpus("demo").preview()[0]["text"] == "My own demo."
-            assert "db.corpus('demo').preview()" in banner
+            assert db.Corpus("demo").id == saved.id
+            assert db.Corpus("demo").preview()[0]["text"] == "My own demo."
+            assert "db.Corpus('demo').preview()" in banner
         else:
-            assert db.corpus.list() == []
-            assert "db.corpus.list()" in banner
+            assert db.Corpus.list() == []
+            assert "db.Corpus.list()" in banner
 
     arguments = ["--storage", str(tmp_path)]
     if read_only:
@@ -306,9 +306,9 @@ def test_missing_sequence_files_have_a_short_cli_error(
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("missing", [p.Source("a", "abcd" * 11)])
+            db.Corpus("missing", [p.Source("a", "abcd" * 11)])
             .query()
-            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
             .wait()
         )
         reference = dataset._proto.sequences[0] if missing == "index" else dataset._proto.tokens[0]

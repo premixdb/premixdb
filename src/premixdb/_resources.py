@@ -8,7 +8,17 @@ from functools import cached_property
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Iterable, Iterator, Literal, Mapping, Self, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Iterable,
+    Iterator,
+    Literal,
+    Mapping,
+    MutableMapping,
+    Self,
+    cast,
+    overload,
+)
 from urllib.parse import urlsplit
 
 from google.protobuf.message import Message
@@ -20,10 +30,10 @@ from ._field_expr import FieldProjection
 from ._ids import _decode_id, _encode_id, _public_dataset_profile
 from ._inputs import SourceInput, source_proto
 from ._lineage import decode_lineage
-from ._mixing import Bounds, RegMixSampler, Tokens
+from ._mixing import Bounds, RegMix, Tokens
 from ._policies import ByteTokenizer as BytePolicy
 from ._policies import Concat as ConcatPolicy
-from ._profiles import ProfileSelector, _MixProfiles
+from ._profiles import ProfileSelector
 from ._progress import report_progress
 from ._protobuf import copy_message
 from ._reader import Reader as Reader
@@ -43,7 +53,7 @@ from ._unions import _SnapshotOperations
 from .engine.contracts import Provenance
 from .fields import ContentType, ContentTypeFields, Language, LanguageFields, Topic, TopicFields
 from .v1 import corpus_pb2 as corpora
-from .v1 import dataset_pb2 as datasets
+from .v1 import data_mixture_pb2 as mix_pb
 from .v1 import profile_pb2 as profiles
 from .v1 import query_pb2 as queries
 from .v1 import snapshot_pb2 as snapshots
@@ -55,7 +65,7 @@ if TYPE_CHECKING:
 
 type _ResourceKind = Literal["Corpus", "Snapshot", "Query", "Dataset", "Mix"]
 type _ResourceValue = (
-    corpora.Corpus | snapshots.Snapshot | queries.Query | datasets.Dataset | datasets.Mix
+    corpora.Corpus | snapshots.Snapshot | queries.Query | mix_pb.Dataset | mix_pb.Mix
 )
 
 DomainInput = (
@@ -67,7 +77,7 @@ DomainInput = (
     | TopicFields
     | ContentTypeFields
     | Iterable[FieldProjection]
-    | datasets.Domains
+    | mix_pb.Domains
     | Mapping[str, str]
 )
 
@@ -199,23 +209,23 @@ class PremixDB:
     @overload
     def _submit(self, request: queries.CreateQueryRequest) -> queries.CreateQueryResponse: ...
     @overload
-    def _submit(self, request: datasets.CreateDatasetRequest) -> datasets.CreateDatasetResponse: ...
+    def _submit(self, request: mix_pb.CreateDatasetRequest) -> mix_pb.CreateDatasetResponse: ...
     @overload
-    def _submit(self, request: datasets.CreateMixRequest) -> datasets.CreateMixResponse: ...
+    def _submit(self, request: mix_pb.CreateMixRequest) -> mix_pb.CreateMixResponse: ...
     @report_progress("Submitting operation")
     def _submit(
         self,
         request: corpora.CreateCorpusRequest
         | snapshots.CreateSnapshotRequest
         | queries.CreateQueryRequest
-        | datasets.CreateDatasetRequest
-        | datasets.CreateMixRequest,
+        | mix_pb.CreateDatasetRequest
+        | mix_pb.CreateMixRequest,
     ) -> (
         corpora.CreateCorpusResponse
         | snapshots.CreateSnapshotResponse
         | queries.CreateQueryResponse
-        | datasets.CreateDatasetResponse
-        | datasets.CreateMixResponse
+        | mix_pb.CreateDatasetResponse
+        | mix_pb.CreateMixResponse
     ):
         self._require_writable()
         from .execution.coordinator import Coordinator
@@ -227,9 +237,9 @@ class PremixDB:
             return self._executor.CreateSnapshot(request)
         if isinstance(request, queries.CreateQueryRequest):
             return self._executor.CreateQuery(request)
-        if isinstance(request, datasets.CreateDatasetRequest):
+        if isinstance(request, mix_pb.CreateDatasetRequest):
             return self._executor.CreateDataset(request)
-        if isinstance(request, datasets.CreateMixRequest):
+        if isinstance(request, mix_pb.CreateMixRequest):
             return self._executor.CreateMix(request)
         raise TypeError("expected a corpus, snapshot, query, dataset or mix create request")
 
@@ -240,9 +250,9 @@ class PremixDB:
     @overload
     def _get(self, kind: Literal["Query"], id: bytes) -> queries.Query: ...
     @overload
-    def _get(self, kind: Literal["Dataset"], id: bytes) -> datasets.Dataset: ...
+    def _get(self, kind: Literal["Dataset"], id: bytes) -> mix_pb.Dataset: ...
     @overload
-    def _get(self, kind: Literal["Mix"], id: bytes) -> datasets.Mix: ...
+    def _get(self, kind: Literal["Mix"], id: bytes) -> mix_pb.Mix: ...
     @overload
     def _get(
         self,
@@ -262,9 +272,9 @@ class PremixDB:
         elif kind == "Query":
             resource = self._executor.GetQuery(queries.GetQueryRequest(id=id)).query
         elif kind == "Dataset":
-            resource = self._executor.GetDataset(datasets.GetDatasetRequest(id=id)).dataset
+            resource = self._executor.GetDataset(mix_pb.GetDatasetRequest(id=id)).dataset
         elif kind == "Mix":
-            resource = self._executor.GetMix(datasets.GetMixRequest(id=id)).mix
+            resource = self._executor.GetMix(mix_pb.GetMixRequest(id=id)).mix
         else:
             raise ValueError("unknown resource kind")
         if resource.id != id:
@@ -272,8 +282,8 @@ class PremixDB:
         return resource
 
     @cached_property
-    def corpus(self) -> CorpusCollection:
-        """Capture or reopen a corpus with corpus(...), or browse with corpus.list()."""
+    def Corpus(self) -> CorpusCollection:
+        """Capture or reopen with Corpus(...), or browse with Corpus.list()."""
         return CorpusCollection(self)
 
     def _corpus(
@@ -301,13 +311,13 @@ class PremixDB:
                 resource = None
             if resource is None or not resource.latest_snapshot_id:
                 raise ValueError(
-                    f"corpus {name!r} has no snapshot; capture with db.corpus(name, source=...)"
+                    f"corpus {name!r} has no snapshot; capture with db.Corpus(name, source=...)"
                 ) from None
             return self._snapshot(resource.latest_snapshot_id)
         handle = self._create_corpus(name)
         return handle.snapshot(source=source, limit=limit, base=base)
 
-    def _create_corpus(self, name: str, *, request_id: str = "") -> Corpus:
+    def _create_corpus(self, name: str, *, request_id: str = "") -> _CorpusResource:
         """Create/reopen the mutable named handle for explicit snapshot management."""
         request = _requests.corpus(name, request_id=request_id)
         id = self._submit(request).id
@@ -368,9 +378,9 @@ class PremixDB:
         """Open a saved training dataset by its base64url, hexadecimal, or byte ID."""
         return Dataset(self, self._get("Dataset", _requests._id(id, 32)))
 
-    def _mix(self, id: bytes | str) -> Mix:
+    def _mix(self, id: bytes | str) -> DataMixture:
         """Open a saved mixture collection without packing its candidates."""
-        return Mix(self, self._get("Mix", _requests._id(id, 32)))
+        return DataMixture(self, self._get("Mix", _requests._id(id, 32)))
 
 
 class _Resource[ResourceT: _ResourceValue, RequestT: Message]:
@@ -383,7 +393,7 @@ class _Resource[ResourceT: _ResourceValue, RequestT: Message]:
     def __repr__(self) -> str:
         from ._display import _resource_repr
 
-        if not isinstance(self, (Corpus, Snapshot, Query, Mix, Dataset)):
+        if not isinstance(self, (Corpus, Snapshot, Query, DataMixture, Dataset)):
             raise TypeError("unsupported resource handle")
         return _resource_repr(self)
 
@@ -454,8 +464,11 @@ class Corpus(_Resource[corpora.Corpus, corpora.CreateCorpusRequest], _CorpusList
             raise ValueError("resources belong to different PremixDB sessions; reopen by ID")
 
 
+_CorpusResource = Corpus
+
+
 class _Execution[
-    ResourceT: snapshots.Snapshot | queries.Query | datasets.Dataset,
+    ResourceT: snapshots.Snapshot | queries.Query | mix_pb.Dataset,
     RequestT: Message,
 ](_Resource[ResourceT, RequestT]):
     @property
@@ -548,11 +561,11 @@ class _Execution[
         if not limit:
             return []
         request = queries.PreviewRequest(limit=limit, offset=offset, max_characters=max_characters)
-        ready = self.wait()._resource
-        if isinstance(ready, snapshots.Snapshot):
-            request.snapshot_id = ready.id
+        self._db._require_open()
+        if isinstance(self._resource, snapshots.Snapshot):
+            request.snapshot_id = self._resource.id
         else:
-            request.query_id = ready.id
+            request.query_id = self._resource.id
         response = self._db._executor.Preview(
             request,
         )
@@ -662,48 +675,28 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         """Refresh cardinality bounds and field distributions without waiting."""
         return copy_message(self._db._get("Query", self._resource.id).estimate)
 
-    def dataset(
-        self,
-        *,
-        tokenizer: datasets.Tokenizer | BytePolicy | None = None,
-        sequence_length: int = 2048,
-        packing: datasets.Packing | ConcatPolicy | None = None,
-    ) -> Dataset:
-        """Plan a lazy dataset; profiling, reading and torch() consume its recipe."""
-        self._db._require_writable("plan datasets")
-        request = _requests.dataset(
-            self._resource.id,
-            tokenizer=tokenizer,
-            sequence_length=sequence_length,
-            packing=packing,
-        )
-        from .execution import Coordinator
-
-        assert isinstance(self._db._executor, Coordinator)
-        return Dataset(self._db, self._db._executor._plan_dataset(request), request)
-
     @report_progress("Creating mixture from query {id}")
     def mix(
         self,
         *,
         domains: DomainInput | None = None,
-        sampler: RegMixSampler | None = None,
+        weights: Mapping[str, float] | RegMix | None = None,
         size: Tokens | None = None,
         tokens: int | None = None,
-        tokenizer: datasets.Tokenizer | BytePolicy | None = None,
+        tokenizer: mix_pb.Tokenizer | BytePolicy | None = None,
         sequence_length: int = 2048,
-        packing: datasets.Packing | ConcatPolicy | None = None,
+        packing: mix_pb.Packing | ConcatPolicy | None = None,
         bounds: Bounds | None = None,
-        n_candidates: int = 3,
-        replacement: bool = True,
+        n_candidates: int = 1,
+        replacement: bool = False,
         seed: int = 0,
-    ) -> Mix:
-        """Register three lazy datasets by default, with reproducible sampling."""
+    ) -> DataMixture:
+        """Register a lazy mixture recipe; defaults pack the query unchanged."""
         self._db._require_writable("plan mixtures")
         request = _requests.mix(
             self._resource.id,
             domains=domains,
-            sampler=sampler,
+            weights=weights,
             size=size,
             tokens=tokens,
             tokenizer=tokenizer,
@@ -714,63 +707,85 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
             replacement=replacement,
             seed=seed,
         )
-        self.wait()
         id = self._db._submit(request).id
         response = self._db._executor.GetMix(
-            datasets.GetMixRequest(id=id),
+            mix_pb.GetMixRequest(id=id),
         )
-        return Mix(self._db, response.mix, request)
+        return DataMixture(self._db, response.mix, request)
 
 
-class Mix(_Resource[datasets.Mix, datasets.CreateMixRequest]):
-    """An ordered collection of registered dataset recipes, with lazy token packing."""
+class DataMixture(_Resource[mix_pb.Mix, mix_pb.CreateMixRequest]):
+    """A lazy mixture recipe resolving to an ordered collection of training datasets."""
 
     def __init__(
         self,
         client: PremixDB,
-        resource: datasets.Mix,
-        request: datasets.CreateMixRequest | None = None,
+        resource: mix_pb.Mix,
+        request: mix_pb.CreateMixRequest | None = None,
         *,
         indices: Iterable[int] | None = None,
         cache: dict[int, Dataset] | None = None,
     ) -> None:
         super().__init__(client, resource, request)
         self._indices = (
-            tuple(range(len(resource.dataset_ids))) if indices is None else tuple(indices)
+            tuple(range(resource.n_candidates or len(resource.dataset_ids)))
+            if indices is None
+            else tuple(indices)
         )
         self._cache = {} if cache is None else cache
 
+    def _resolve(self) -> None:
+        self._db._require_open()
+        if len(self._resource.dataset_ids) == self._resource.n_candidates:
+            return
+        if self._db._read_only:
+            raise ExecutionError("mixture is unresolved; resolve it in a writable session first")
+        from .execution import Coordinator
+
+        assert isinstance(self._db._executor, Coordinator)
+        self._resource = self._db._executor._resolve_mix(self._resource.id)
+
+    @property
+    def datasets(self) -> tuple[Dataset, ...]:
+        """The selected concrete recipes, resolved without packing output."""
+        return tuple(self)
+
     @property
     def weights(self) -> list[dict[str, float]]:
-        """Return a detached domain-weight mapping for each selected candidate."""
-        values = []
-        for dataset in self:
-            sampling = dataset._resource.sampling
-            weights = dict(sampling.weights)
-            if sampling.domains.field == queries.FIELD_SOURCE_CORPUS_ID:
-                weights = {_encode_id(_decode_id(key)): weight for key, weight in weights.items()}
-            values.append(weights)
-        return values
+        """Detached resolved weight vectors for the selected candidates."""
+        return [dict(candidate.weights) for candidate in self.profile().candidates]
 
     @property
-    def _configs(self) -> list[datasets.CreateDatasetRequest]:
-        """Return detached dataset recipes for the selected candidates."""
+    def _configs(self) -> list[mix_pb.CreateDatasetRequest]:
         return [dataset._recipe for dataset in self]
 
-    @overload
-    def profile(self, index: None = None) -> list[datasets.DatasetProfile]: ...
-    @overload
-    def profile(self, index: int) -> datasets.DatasetProfile: ...
     @report_progress("Profiling mixture {id}")
-    def profile(
-        self, index: int | None = None
-    ) -> list[datasets.DatasetProfile] | datasets.DatasetProfile:
-        """Return candidate profiles without packing, displayed in at most 15 lines."""
-        return (
-            _MixProfiles(dataset.profile() for dataset in self)
-            if index is None
-            else self[index].profile()
-        )
+    def profile(self) -> mix_pb.MixProfile:
+        """Inventory and composition of this mixture; never profile packed datasets."""
+        self._resolve()
+        if not self._resource.HasField("profile"):
+            if self._db._read_only:
+                raise ExecutionError("mixture profile is unavailable; use a writable session first")
+            from .execution import Coordinator
+
+            assert isinstance(self._db._executor, Coordinator)
+            self._resource = self._db._executor._profile_mix(self._resource.id)
+        result = copy_message(self._resource.profile)
+        candidates = [copy_message(result.candidates[i]) for i in self._indices]
+        del result.candidates[:]
+        result.candidates.extend(candidates)
+        return _public_mix_profile(result)
+
+    @report_progress("Previewing mixture {id}")
+    def preview(self, *, limit: int = 3, offset: int = 0) -> mix_pb.MixPreview:
+        """Show candidate compositions and allocations, without packing sequences."""
+        limit = _requests._uint(limit, 32, "limit")
+        offset = _requests._uint(offset, 64, "offset")
+        if limit > 1000:
+            raise ValueError("preview supports at most 1000 compositions")
+        if not limit or offset >= len(self):
+            return mix_pb.MixPreview()
+        return mix_pb.MixPreview(candidates=self[offset : offset + limit].profile().candidates)
 
     def __len__(self) -> int:
         return len(self._indices)
@@ -783,10 +798,10 @@ class Mix(_Resource[datasets.Mix, datasets.CreateMixRequest]):
     @overload
     def __getitem__(self, index: int) -> Dataset: ...
     @overload
-    def __getitem__(self, index: slice) -> Mix: ...
-    def __getitem__(self, index: int | slice) -> Dataset | Mix:
+    def __getitem__(self, index: slice) -> DataMixture: ...
+    def __getitem__(self, index: int | slice) -> Dataset | DataMixture:
         if isinstance(index, slice):
-            return Mix(
+            return DataMixture(
                 self._db,
                 self._resource,
                 self._creation_request,
@@ -794,8 +809,11 @@ class Mix(_Resource[datasets.Mix, datasets.CreateMixRequest]):
                 cache=self._cache,
             )
         original = self._index(index)
+        self._resolve()
         if original not in self._cache:
-            self._cache[original] = self._db._dataset(self._resource.dataset_ids[original])
+            dataset = self._db._dataset(self._resource.dataset_ids[original])
+            dataset._creation_request = dataset._recipe
+            self._cache[original] = dataset
         return self._cache[original]
 
     def __iter__(self) -> Iterator[Dataset]:
@@ -803,15 +821,12 @@ class Mix(_Resource[datasets.Mix, datasets.CreateMixRequest]):
             yield self[index]
 
 
-Datasets = Mix  # Public compatibility spelling; internal code uses Mix.
-
-
-class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
+class Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
     @report_progress("Previewing dataset {id}")
     def preview(
         self, *, limit: int = 3, offset: int = 0, max_characters: int = 1024
     ) -> list[PreviewSequence]:
-        """Materialize if needed and show up to three packed sequences by default.
+        """Pack only enough output for the requested examples when not materialized.
 
         Each example includes decoded text, the first 256 token IDs and masks,
         source document IDs, and a truncation flag. Offset is a sequence ordinal.
@@ -826,14 +841,14 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
         return self._resource.tokenizer.definition_digest.hex()
 
     @property
-    def _recipe(self) -> datasets.CreateDatasetRequest:
+    def _recipe(self) -> mix_pb.CreateDatasetRequest:
         """Return a detached request that reproduces this dataset."""
         from ._wire import copy_fields
 
-        return copy_fields(self._resource, datasets.CreateDatasetRequest())
+        return copy_fields(self._resource, mix_pb.CreateDatasetRequest())
 
     @report_progress("Profiling dataset {id}")
-    def profile(self) -> datasets.DatasetProfile:
+    def profile(self) -> mix_pb.DatasetProfile:
         """Compute the planned profile if needed, without packing candidate tokens."""
         if not self._resource.HasField("profile"):
             self._db._require_open()
@@ -926,7 +941,7 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
         return self.wait()._resource.profile.sequences
 
     def __iter__(self) -> Reader[Sequence]:
-        return self.reader()
+        return self._reader()
 
     def _page(self, ordinal: int, size: int | None = None) -> list[Sequence]:
         self.wait()
@@ -941,7 +956,7 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
             raise IndexError("sequence index out of range")
         return self._page(index, 1)[0]
 
-    def reader(
+    def _reader(
         self,
         *,
         topology: Topology | None = None,
@@ -954,3 +969,20 @@ class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):
         with the same seed and topology to resume from the next sequence.
         """
         return Reader(self, Topology() if topology is None else topology, checkpoint, seed)
+
+
+def _public_mix_profile(profile: mix_pb.MixProfile) -> mix_pb.MixProfile:
+    if profile.domains.field == queries.FIELD_SOURCE_CORPUS_ID:
+        _public_domain_keys(profile.domain_tokens)
+        _public_domain_keys(profile.bounds.lower)
+        _public_domain_keys(profile.bounds.upper)
+        for candidate in profile.candidates:
+            _public_domain_keys(candidate.weights)
+            _public_domain_keys(candidate.tokens)
+    return profile
+
+
+def _public_domain_keys[T: int | float](values: MutableMapping[str, T]) -> None:
+    encoded = {_encode_id(_decode_id(key)): value for key, value in values.items()}
+    values.clear()
+    values.update(encoded)

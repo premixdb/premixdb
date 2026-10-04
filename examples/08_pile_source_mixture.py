@@ -26,7 +26,9 @@ def main() -> None:
         }
         population = web.union(science, literature).query(steps=[p.where(p.text.characters > 0)])
         mixture = population.mix(
+            weights=p.RegMix(),
             tokens=1024,
+            replacement=True,
             # Give every source at least 10% for this example.
             bounds=p.Bounds(lower={domain: 0.1 for domain in names}),
             sequence_length=64,
@@ -36,7 +38,7 @@ def main() -> None:
             "Proposed token fractions:",
             dict(sorted((names[k], v) for k, v in mixture.weights[0].items())),
         )
-        profile = mixture.profile(0)
+        profile = mixture[0].profile()
         print("Planned content tokens:", profile.planned_content_tokens)
         print(
             "Tokens per source:",

@@ -21,7 +21,7 @@ from premixdb._reader import permutation
 from premixdb._sequences import read_page
 from premixdb._typing import Scalar
 from premixdb.execution.storage import ObjectStore
-from premixdb.v1 import dataset_pb2 as d
+from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import status_pb2 as status
 from premixdb.v1.storage_pb2 import ObjectRef, SpanRef
 
@@ -71,18 +71,18 @@ def test_shuffled_reader_reuses_whole_pages_and_resumes_exactly(
     with p.PremixDB(storage=tmp_path, read_only=True) as db:
         dataset = p.Dataset(db, resource)
         with patch.object(db._object_reader, "read", wraps=db._object_reader.read) as reads:
-            reader = dataset.reader(seed=7, topology=topology)
+            reader = dataset._reader(seed=7, topology=topology)
             prefix = [next(reader).ordinal for _ in range(7)]
             checkpoint = json.loads(json.dumps(reader.checkpoint()))
             remaining = [sequence.ordinal for sequence in reader]
             assert prefix + remaining == expected
             assert reads.call_count == page_reads(expected)
             reads.reset_mock()
-            resumed = dataset.reader(seed=7, topology=topology, checkpoint=checkpoint)
+            resumed = dataset._reader(seed=7, topology=topology, checkpoint=checkpoint)
             assert [sequence.ordinal for sequence in resumed] == remaining
             assert reads.call_count == page_reads(remaining)
             assert (
-                list(dataset.reader(seed=7, topology=topology, checkpoint=reader.checkpoint()))
+                list(dataset._reader(seed=7, topology=topology, checkpoint=reader.checkpoint()))
                 == []
             )
 
@@ -291,9 +291,9 @@ def test_torch_page_boundaries_and_empty_datasets(tmp_path: Path, count: int) ->
     with p.PremixDB(storage=tmp_path) as db:
         sources = [p.Source("a", "a" * (count * 4 - 1))] if count else []
         dataset = (
-            db.corpus("boundaries", sources)
+            db.Corpus("boundaries", sources)
             .query()
-            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
         )
         assert dataset.status == p.ExecutionStatus.PENDING
         data = dataset.torch()
@@ -328,7 +328,7 @@ def test_public_torch_reopens_read_only_and_matches_all_sequence_fields(
 
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus(
+            db.Corpus(
                 "reopen",
                 [
                     p.Source(
@@ -338,7 +338,7 @@ def test_public_torch_reopens_read_only_and_matches_all_sequence_fields(
                 ],
             )
             .query()
-            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
+            .mix(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)[0]
         )
         expected = [
             dict(
@@ -442,9 +442,9 @@ def test_all_readers_reject_invalid_token_lengths_alignment_and_masks(
 def test_sequence_values_are_detached_from_cached_storage(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         sequence = (
-            db.corpus("detached", [p.Source("a", "a")])
+            db.Corpus("detached", [p.Source("a", "a")])
             .query()
-            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0][0]
         )
         tokens, mask, attention, regions = (
             sequence.tokens,
@@ -468,9 +468,9 @@ def test_session_close_releases_owned_read_threads_and_detached_data_still_reads
 ) -> None:
     with p.PremixDB(storage=tmp_path) as writer:
         identity = (
-            writer.corpus("lifetime", [p.Source("a", "abcd")])
+            writer.Corpus("lifetime", [p.Source("a", "abcd")])
             .query()
-            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
             .wait()
             .id
         )
@@ -505,9 +505,9 @@ def test_session_preserves_caller_supplied_reader(
         with patch.object(reader, "close", wraps=reader.close) as close:
             with p.PremixDB(storage=tmp_path, object_reader=reader) as db:
                 data = (
-                    db.corpus("shared-reader", [p.Source("a", "abcd")])
+                    db.Corpus("shared-reader", [p.Source("a", "abcd")])
                     .query()
-                    .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+                    .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
                     .torch()
                 )
                 assert data.reader is reader
@@ -523,9 +523,9 @@ def test_session_preserves_caller_supplied_reader(
 def test_session_releases_reader_even_when_executor_close_fails(tmp_path: Path) -> None:
     db = p.PremixDB(storage=tmp_path)
     data = (
-        db.corpus("close-error", [p.Source("a", "abcd")])
+        db.Corpus("close-error", [p.Source("a", "abcd")])
         .query()
-        .dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
+        .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
         .torch()
     )
     try:

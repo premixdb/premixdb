@@ -15,13 +15,13 @@ LIMIT = 100
 def main() -> None:
     check_inputs(INPUT, limit=LIMIT)
     with p.PremixDB(storage=STORAGE) as db:
-        snapshot = db.corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
-        dataset = snapshot.query().dataset(
+        snapshot = db.Corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
+        dataset = snapshot.query().mix(
             tokenizer=p.ByteTokenizer(),
             sequence_length=64,
             # Bytes use 0..255. Use 256 for boundaries and 257 for padding.
             packing=p.Concat(separator=256, drop_remainder=False, pad_token=257),
-        )
+        )[0]
         profile = dataset.profile()
         print(
             "Content / separators / padding:",

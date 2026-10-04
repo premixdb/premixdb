@@ -43,8 +43,8 @@ class JsonlSourceTests(unittest.TestCase):
             if isinstance(db, PremixDB):
                 self.addCleanup(db.close)
             if isinstance(db, PremixDB):
-                first = db.corpus("jsonl", Source.read_jsonl(plain))
-                same = db.corpus("jsonl", Source.read_jsonl(compressed), base=first)
+                first = db.Corpus("jsonl", Source.read_jsonl(plain))
+                same = db.Corpus("jsonl", Source.read_jsonl(compressed), base=first)
                 documents = first.profile().documents
             else:
                 assert isinstance(db, LocalDB)

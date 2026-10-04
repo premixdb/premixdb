@@ -15,7 +15,7 @@ from blake3 import blake3
 from google.protobuf.message import Message
 
 from ..v1 import corpus_pb2 as c
-from ..v1 import dataset_pb2 as d
+from ..v1 import data_mixture_pb2 as d
 from ..v1 import query_pb2 as q
 from ..v1 import snapshot_pb2 as s
 from ..v1.status_pb2 import ExecutionEvent

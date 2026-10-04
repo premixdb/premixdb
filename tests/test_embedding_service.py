@@ -26,7 +26,7 @@ class EmbeddingServiceTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.client = premixdb.PremixDB(storage=self.temp.name)
         self.addCleanup(self.client.close)
-        self.snapshot = self.client.corpus(
+        self.snapshot = self.client.Corpus(
             "embedding-test", [premixdb.Source("a", "physics"), premixdb.Source("b", "food")]
         )
         self.models, self.calls = [], []
@@ -146,7 +146,7 @@ class EmbeddingServiceTests(unittest.TestCase):
                 self.assertEqual(max_length, 8192)
                 result = coordinator(self.client)._query(_decode_id(first.id))
                 self.assertEqual(result.row(0).source_key, "a")
-                self.assertGreater(len(first.dataset(sequence_length=8)), 0)
+                self.assertGreater(len(first.mix(sequence_length=8)[0]), 0)
 
     def test_restart_reuses_embedding_vectors_across_thresholds(self) -> None:
         ids = {}
@@ -159,7 +159,7 @@ class EmbeddingServiceTests(unittest.TestCase):
             premixdb.PremixDB(storage=self.temp.name) as other,
             patch.object(worker, "producer", side_effect=AssertionError("recomputed embeddings")),
         ):
-            restored = other.corpus("embedding-test")
+            restored = other.Corpus("embedding-test")
             for model in EmbeddingModel:
                 with self.subTest(model=model):
                     replay = restored.query(steps=[where(embedding[model].component(0) > 0.0)])

@@ -61,9 +61,9 @@ def test_pathlike_storage_uses_the_filesystem_protocol(tmp_path: Path, read_only
             raise AssertionError("storage paths must use __fspath__")
 
     with p.PremixDB(storage=root) as db:
-        expected = db.corpus("paths", [p.Source("a", "captured text")])
+        expected = db.Corpus("paths", [p.Source("a", "captured text")])
     with p.PremixDB(storage=StoragePath(), read_only=read_only) as db:
-        snapshot = db.corpus("paths")
+        snapshot = db.Corpus("paths")
         assert snapshot.id == expected.id
         assert snapshot.preview()[0]["text"] == "captured text"
 
@@ -134,7 +134,7 @@ def test_invalid_wait_duration_does_not_execute_a_pending_recipe(
     tmp_path: Path, value: object
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        query = db.corpus("pending", [p.Source("a", "one")]).query()
+        query = db.Corpus("pending", [p.Source("a", "one")]).query()
         assert query.status is p.ExecutionStatus.PENDING
         with patch.object(db, "_submit", side_effect=AssertionError("executed recipe")):
             with pytest.raises(ValueError, match="timeout must be positive and finite"):
@@ -171,6 +171,6 @@ def test_storage_creates_blob_namespaces_only_when_published(tmp_path: Path) -> 
     root = tmp_path / "session"
     with p.PremixDB(storage=root) as db:
         assert not (root / "snapshot").exists()
-        db.corpus("lazy", [p.Source("a", "published")])
+        db.Corpus("lazy", [p.Source("a", "published")])
         assert (root / "snapshot/objects").is_dir()
         assert (root / "snapshot/snapshots").is_dir()

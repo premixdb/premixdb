@@ -22,14 +22,14 @@ You can also use the tiny_shakespeare demo corpus of his plays:
 ```python
 from torch.utils.data import DataLoader
 
-dataset = db.corpus('demo').query().mix()[0].torch()
-batch = next(iter(DataLoader(dataset, batch_size=1)))
+dataset = db.Corpus('demo').query().mix()[0].torch()
+next(iter(DataLoader(dataset, batch_size=1)))
 ```
 
 ```
-{'input_ids': tensor([[   35,    52,  7336,  ...,   628, 50256,  5097]]),
+{'input_ids': tensor([[45472, 10426,  1677,  ...,   475,   326,   314]]),
  'attention_mask': tensor([[1, 1, 1,  ..., 1, 1, 1]]),
- 'labels': tensor([[   35,    52,  7336,  ...,   628, 50256,  5097]])}
+ 'labels': tensor([[45472, 10426,  1677,  ...,   475,   326,   314]])}
 ```
 
 ## Full example
@@ -39,12 +39,12 @@ Capture a corpus snapshot. Filter the snapshot with a query. Mix query results i
 ```python
 from torch.utils.data import DataLoader
 
-c4 = db.corpus(
+c4 = db.Corpus(
     "c4",
     p.HuggingFaceSource("datablations/c4-filter-small"),
     limit=8,
 )
-oscar = db.corpus(
+oscar = db.Corpus(
     "oscar",
     p.HuggingFaceSource("datablations/oscar-filter-small"),
     limit=8,
@@ -58,7 +58,7 @@ query = c4.union(oscar).query(
     ]
 )
 
-mixtures = query.mix(tokens=256, sequence_length=64)
+mixtures = query.mix(tokens=256, replacement=True, sequence_length=64)
 
 dataset = mixtures[0]
 print(dataset.preview())

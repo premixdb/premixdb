@@ -6,7 +6,7 @@ import base64
 import binascii
 import re
 
-from .v1.dataset_pb2 import DatasetProfile
+from .v1.data_mixture_pb2 import DatasetProfile
 
 
 def _encode_id(value: bytes) -> str:

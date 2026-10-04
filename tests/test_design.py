@@ -15,7 +15,7 @@ import _reference as direct
 from _type_support import coordinator
 
 import premixdb
-from premixdb import _runtime
+from premixdb import _requests, _runtime
 from premixdb._ids import _decode_id
 from premixdb.engine import datasets as engine_datasets
 from premixdb.engine import execution
@@ -65,7 +65,7 @@ class CoreDesignTests(unittest.TestCase):
                 premixdb.dedupe(order_by=[direct.object.uri.asc()]),
             ]
             with premixdb.PremixDB(storage=Path(directory) / "sdk") as client:
-                snapshot = client.corpus("shared", sources)
+                snapshot = client.Corpus("shared", sources)
                 self.assertEqual(_decode_id(snapshot.id).hex(), local_snapshot.id)
                 local_query = local_snapshot.query(steps=steps)
                 query = snapshot.query(steps=steps)
@@ -82,14 +82,14 @@ class CoreDesignTests(unittest.TestCase):
                 local_dataset = local_query.dataset(
                     tokenizer=direct.ByteTokenizer(), sequence_length=7, packing=packing
                 )
-                dataset = query.dataset(
+                dataset = query.mix(
                     tokenizer=direct.ByteTokenizer(), sequence_length=7, packing=packing
-                )
+                )[0]
                 self.assertEqual(_decode_id(dataset.id).hex(), local_dataset.id)
                 self.assertEqual([s.tokens for s in dataset], [s.tokens for s in local_dataset])
                 self.assertEqual([s.mask for s in dataset], [s.mask for s in local_dataset])
                 self.assertEqual(
-                    dataset.reader(topology=direct.Topology()).checkpoint(),
+                    dataset._reader(topology=direct.Topology()).checkpoint(),
                     dict(local_dataset.reader().checkpoint(), dataset=dataset.id),
                 )
 
@@ -105,7 +105,7 @@ class CoreDesignTests(unittest.TestCase):
             with premixdb.PremixDB(storage=root / "sdk") as db:
                 for path in (inputs, inputs / "z.txt"):
                     local_snapshot = native.snapshot(source=path)
-                    snapshot = db.corpus("files", path)
+                    snapshot = db.Corpus("files", path)
                     self.assertEqual(_decode_id(snapshot.id).hex(), local_snapshot.id)
                     self.assertEqual(
                         {row["source_key"]: row["text"] for row in snapshot.preview()},
@@ -117,7 +117,7 @@ class CoreDesignTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             premixdb.PremixDB(storage=directory) as client,
         ):
-            query = client.corpus(
+            query = client.Corpus(
                 "stream", [premixdb.Source("a", "é\r\n" * 8), premixdb.Source("empty", "")]
             ).query()
             native = coordinator(client)._query(_decode_id(query.id))
@@ -148,9 +148,9 @@ class CoreDesignTests(unittest.TestCase):
                     patch.object(engine_datasets, "TOKEN_SHARD_BYTES", 96),
                     patch.object(engine_datasets.Dataset, "from_query", classmethod(stream)),
                 ):
-                    actual = query.dataset(
+                    actual = query.mix(
                         tokenizer=premixdb.ByteTokenizer(), sequence_length=7, packing=packing
-                    ).wait()
+                    )[0].wait()
                 self.assertGreater(len(actual._proto.tokens), 1)
                 self.assertEqual(
                     [s.tokens for s in actual], [s.tokens for s in expected.reader((0, 1, 0, 1))]
@@ -168,7 +168,7 @@ class CoreDesignTests(unittest.TestCase):
     def test_zero_cache_budget_preserves_lazy_recipes_readers_and_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with premixdb.PremixDB(storage=directory, cache_bytes=0) as client:
-                snapshot = client.corpus(
+                snapshot = client.Corpus(
                     "uncached", [premixdb.Source("a", "abcd"), premixdb.Source("b", "XYZ")]
                 )
                 query = snapshot.query()
@@ -176,6 +176,7 @@ class CoreDesignTests(unittest.TestCase):
                     tokenizer=premixdb.ByteTokenizer(),
                     domains=premixdb.object.uri,
                     tokens=9,
+                    replacement=True,
                     sequence_length=4,
                 )
                 self.assertIs(mix[0].status, premixdb.ExecutionStatus.PENDING)
@@ -243,7 +244,7 @@ class DerivationReuseTests(unittest.TestCase):
                     tempfile.TemporaryDirectory() as directory,
                     premixdb.PremixDB(storage=directory) as client,
                 ):
-                    snapshot = client.corpus(
+                    snapshot = client.Corpus(
                         "duplicate-schema", [] if empty else [premixdb.Source("a", "text")]
                     )
                     service = coordinator(client)
@@ -279,8 +280,8 @@ class DerivationReuseTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             premixdb.PremixDB(storage=directory) as client,
         ):
-            a = client.corpus("a", [premixdb.Source("first", "one"), premixdb.Source("empty", "")])
-            b = client.corpus("b", [premixdb.Source("second", "two")])
+            a = client.Corpus("a", [premixdb.Source("first", "one"), premixdb.Source("empty", "")])
+            b = client.Corpus("b", [premixdb.Source("second", "two")])
             worker = IndependentWorker()
             with patch.object(enrichment, "producer", return_value=worker):
                 a.query(steps=[premixdb.where(premixdb.language.en > 0.5)]).wait()
@@ -304,20 +305,20 @@ class DerivationReuseTests(unittest.TestCase):
     def test_document_cache_survives_restart_and_checks_producer_definition(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with premixdb.PremixDB(storage=directory) as client:
-                a = client.corpus("a", [premixdb.Source("first", "one")])
+                a = client.Corpus("a", [premixdb.Source("first", "one")])
                 worker = IndependentWorker()
                 with patch.object(enrichment, "producer", return_value=worker):
                     a.query(steps=[premixdb.where(premixdb.language.en > 0.5)]).wait()
                 aid = a.id
             with premixdb.PremixDB(storage=directory) as client:
                 a = client._snapshot(aid)
-                b = client.corpus("b", [premixdb.Source("second", "two")])
+                b = client.Corpus("b", [premixdb.Source("second", "two")])
                 worker = IndependentWorker()
                 with patch.object(enrichment, "producer", return_value=worker):
                     a.union(b).query(steps=[premixdb.where(premixdb.language.en > 0.5)]).wait()
                 self.assertEqual(len(worker.computed), 1)
                 worker.definition = {"provider": "test-document-map", "version": 2}
-                c = client.corpus("c", [premixdb.Source("third", "three")])
+                c = client.Corpus("c", [premixdb.Source("third", "three")])
                 with patch.object(enrichment, "producer", return_value=worker):
                     a.union(b, c).query(steps=[premixdb.where(premixdb.language.en > 0.5)]).wait()
                 self.assertEqual(len(worker.computed), 4)
@@ -361,7 +362,7 @@ class DerivationReuseTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             premixdb.PremixDB(storage=directory) as client,
         ):
-            a = client.corpus("a", [premixdb.Source("first", "one")])
+            a = client.Corpus("a", [premixdb.Source("first", "one")])
             worker = IndependentWorker()
             with patch.object(enrichment, "producer", return_value=worker):
                 a.query(steps=[premixdb.where(premixdb.language.en > 0.5)]).wait()
@@ -375,7 +376,7 @@ class DerivationReuseTests(unittest.TestCase):
                     "UPDATE metadata SET payload=? WHERE namespace=? AND suffix=?",
                     (b"corrupt", "derivation", ".cache"),
                 )
-            b = client.corpus("b", [premixdb.Source("second", "two")])
+            b = client.Corpus("b", [premixdb.Source("second", "two")])
             with patch.object(enrichment, "producer", return_value=worker):
                 query = a.union(b).query(steps=[premixdb.where(premixdb.language.en > 0.5)])
                 with self.assertRaises(premixdb.ExecutionError):
@@ -387,15 +388,15 @@ class DerivationReuseTests(unittest.TestCase):
 class MaterializationLifecycleTests(unittest.TestCase):
     def test_dataset_failure_reports_error_without_completion_and_can_retry(self) -> None:
         from premixdb.execution import tokens
-        from premixdb.v1 import dataset_pb2 as pb
+        from premixdb.v1 import data_mixture_pb2 as pb
 
         with (
             tempfile.TemporaryDirectory() as directory,
             premixdb.PremixDB(storage=directory, cache_bytes=0) as client,
         ):
-            query = client.corpus("failure", [premixdb.Source("a", "abcd")]).query()
+            query = client.Corpus("failure", [premixdb.Source("a", "abcd")]).query()
             service = coordinator(client)
-            request = premixdb.dataset(
+            request = _requests.dataset(
                 query.id, tokenizer=premixdb.ByteTokenizer(), sequence_length=2
             )
             id = service._dataset_id(service._resolve_dataset(request))
@@ -425,7 +426,7 @@ class MaterializationLifecycleTests(unittest.TestCase):
         from types import SimpleNamespace
 
         from premixdb import _resources
-        from premixdb.v1 import dataset_pb2 as pb
+        from premixdb.v1 import data_mixture_pb2 as pb
         from premixdb.v1 import query_pb2 as query_pb
         from premixdb.v1 import status_pb2 as status
 
@@ -468,7 +469,7 @@ class MaterializationLifecycleTests(unittest.TestCase):
     def test_failed_query_survives_zero_cache_and_restart_until_explicit_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with premixdb.PremixDB(storage=directory, cache_bytes=0) as client:
-                snapshot = client.corpus("failed-query", [premixdb.Source("a", "one")])
+                snapshot = client.Corpus("failed-query", [premixdb.Source("a", "one")])
                 worker = IndependentWorker()
 
                 def fail_compute(docs: Sequence[FeatureDocument]) -> list[ComputedRow]:

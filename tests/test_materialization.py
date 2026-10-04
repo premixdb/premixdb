@@ -18,7 +18,7 @@ from premixdb._protobuf import copy_message
 from premixdb.execution.catalog_reader import Catalog
 from premixdb.execution.coordinator import wait
 from premixdb.execution.materialization import Materializer
-from premixdb.v1 import dataset_pb2 as d
+from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 from premixdb.v1 import status_pb2 as status
 
@@ -30,7 +30,7 @@ def test_resource_wait_wakes_on_local_completion_without_polling(
     release = Event()
     with p.PremixDB(storage=tmp_path, poll_interval=60, progress=False) as db:
         service = coordinator(db)
-        query = db.corpus("wake", [p.Source("a", "hello")]).query()
+        query = db.Corpus("wake", [p.Source("a", "hello")]).query()
         recipe = query._proto
 
         def execute() -> q.Query:
@@ -76,7 +76,7 @@ def test_resource_wait_deadline_does_not_cancel_the_local_job(tmp_path: Path) ->
     release = Event()
     with p.PremixDB(storage=tmp_path, poll_interval=60, progress=False) as db:
         service = coordinator(db)
-        query = db.corpus("deadline", [p.Source("a", "hello")]).query()
+        query = db.Corpus("deadline", [p.Source("a", "hello")]).query()
         recipe = query._proto
 
         def execute() -> q.Query:
@@ -153,12 +153,12 @@ def test_reads_prioritize_completion_and_active_retries(
     tmp_path: Path, kind: Literal["query", "dataset"], cache_bytes: int
 ) -> None:
     with p.PremixDB(storage=tmp_path, cache_bytes=cache_bytes) as db:
-        query = db.corpus("states", [p.Source("a", "abcd")]).query()
+        query = db.Corpus("states", [p.Source("a", "abcd")]).query()
         service = coordinator(db)
         catalog = Catalog(service._storage)
         identity = _decode_id(query.id)
         if kind == "dataset":
-            dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=2)
+            dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=2)[0]
             identity = _decode_id(dataset.id)
 
         def read(executor: Catalog = service) -> q.Query | d.Dataset:

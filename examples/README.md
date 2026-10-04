@@ -21,7 +21,7 @@ thresholds. Mixture examples use `WEB`, `PAPERS`, and `LITERATURE`. No CLI argum
 | [07 · Quality](07_c4_quality_scores.py) | Cache scores and change a cutoff |
 | [08 · Source mixtures](08_pile_source_mixture.py) | Allocate a token budget |
 | [09 · Candidates](09_regmix_candidates.py) | Compare seeded recipes |
-| [10 · Resume](10_tiny_shakespeare_resume.py) | Restore a reader checkpoint |
+| [10 · Resume](10_tiny_shakespeare_resume.py) | Restore a consumed sequence position |
 
 The Shakespeare examples use the nine-block excerpt bundled in the installed
 `premixdb` package and work offline.

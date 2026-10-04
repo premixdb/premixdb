@@ -17,7 +17,7 @@ def main() -> None:
     if MIN_CHARACTERS <= 0:
         raise ValueError("MIN_CHARACTERS must be positive")
     with p.PremixDB(storage=STORAGE) as db:
-        snapshot = db.corpus("tutorial/c4", p.Source.read_jsonl(INPUT, limit=LIMIT))
+        snapshot = db.Corpus("tutorial/c4", p.Source.read_jsonl(INPUT, limit=LIMIT))
         query = snapshot.query(steps=[p.where(p.text.characters >= MIN_CHARACTERS)])
         print("Captured documents:", snapshot.profile().documents)
         print("Selected documents:", query.profile().output_documents)

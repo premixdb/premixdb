@@ -13,7 +13,7 @@ from copy import deepcopy
 from itertools import accumulate, chain, islice, repeat
 from pathlib import Path
 from sys import byteorder
-from typing import TYPE_CHECKING, Iterable, Iterator, Literal, SupportsIndex, overload
+from typing import TYPE_CHECKING, Generator, Iterable, Iterator, Literal, SupportsIndex, overload
 
 from .._reader import Reader, Topology
 from .._types import Checkpoint
@@ -387,65 +387,28 @@ class Dataset:
         if self._consumed:
             raise RuntimeError("packing stream has already been consumed")
         self._consumed = True
-        packing = self.plan.packing
-        pending: list[int] = []
-        spans: list[Span] = []
-        alignment: list[TokenRange] = []
-        sequence_ordinal = 0
 
-        def append(
-            tokens: list[int] | ByteTokens | TokenList,
-            kind: Literal["content", "separator", "padding"],
-            occurrence: int | None = None,
-        ) -> Iterator[Sequence]:
-            nonlocal sequence_ordinal
-            offset = 0
-            while offset < len(tokens):
-                take = min(packing.length - len(pending), len(tokens) - offset)
-                begin = len(pending)
-                pending.extend(tokens[offset : offset + take])
-                span: Span = Span(start=begin, end=len(pending), kind=kind)
-                if occurrence is not None:
-                    span["occurrence"] = occurrence
-                if kind == "content":
-                    span["offset"] = offset
-                if kind == "content" and isinstance(tokens, (ByteTokens, TokenList)):
-                    assert occurrence is not None
-                    alignment.extend(
-                        dict(token=begin + i, occurrence=occurrence, start=a, end=b)
-                        for i, ranges in enumerate(tokens.ranges[offset : offset + take])
-                        for a, b in ranges
+        def validated() -> Iterator[tuple[Row, list[int] | ByteTokens | TokenList]]:
+            for ordinal, (row, tokens) in enumerate(self._encoded):
+                if ordinal >= len(self._lengths) or len(tokens) != self._lengths[ordinal]:
+                    raise ValueError("encoded occurrence does not match its packing plan")
+                self._occurrences.append(
+                    dict(
+                        ordinal=ordinal,
+                        document=row.id,
+                        source=self._query._provenance[row.id],
+                        tokens=len(tokens),
                     )
-                spans.append(span)
-                offset += take
-                if len(pending) == packing.length:
-                    yield Sequence(
-                        sequence_ordinal, pending, spans.copy(), compact_ranges(alignment)
-                    )
-                    sequence_ordinal += 1
-                    pending.clear()
-                    spans.clear()
-                    alignment.clear()
-
-        for ordinal, (row, tokens) in enumerate(self._encoded):
-            if ordinal >= len(self._lengths) or len(tokens) != self._lengths[ordinal]:
-                raise ValueError("encoded occurrence does not match its packing plan")
-            self._occurrences.append(
-                dict(
-                    ordinal=ordinal,
-                    document=row.id,
-                    source=self._query._provenance[row.id],
-                    tokens=len(tokens),
                 )
-            )
-            yield from append(tokens, "content", ordinal)
-            if packing.separator is not None:
-                yield from append([packing.separator], "separator", ordinal)
-        if len(self._occurrences) != len(self._lengths):
-            raise ValueError("incomplete encoded occurrence coverage")
-        if pending and packing.padding is not None:
-            yield from append([packing.padding] * (packing.length - len(pending)), "padding")
-        if sequence_ordinal != len(self):
+                yield row, tokens
+            if len(self._occurrences) != len(self._lengths):
+                raise ValueError("incomplete encoded occurrence coverage")
+
+        count = 0
+        for sequence in pack_sequences(validated(), self.plan.packing):
+            count += 1
+            yield sequence
+        if count != len(self):
             raise RuntimeError("packed sequence count does not match its plan")
         self._encoded = iter(())
 
@@ -528,3 +491,52 @@ class Dataset:
                     os.fsync(output.fileno())
             yield first, token_path, mask_path, digests, chunk
             first += len(chunk)
+
+
+def pack_sequences(
+    encoded: Iterable[tuple[Row, list[int] | ByteTokens | TokenList]], packing: PackingPlan
+) -> Generator[Sequence, None, None]:
+    """Pack incrementally; closing the iterator stops consuming source occurrences."""
+    pending: list[int] = []
+    spans: list[Span] = []
+    alignment: list[TokenRange] = []
+    sequence_ordinal = 0
+
+    def append(
+        tokens: list[int] | ByteTokens | TokenList,
+        kind: Literal["content", "separator", "padding"],
+        occurrence: int | None = None,
+    ) -> Iterator[Sequence]:
+        nonlocal sequence_ordinal
+        offset = 0
+        while offset < len(tokens):
+            take = min(packing.length - len(pending), len(tokens) - offset)
+            begin = len(pending)
+            pending.extend(tokens[offset : offset + take])
+            span: Span = Span(start=begin, end=len(pending), kind=kind)
+            if occurrence is not None:
+                span["occurrence"] = occurrence
+            if kind == "content":
+                span["offset"] = offset
+            if kind == "content" and isinstance(tokens, (ByteTokens, TokenList)):
+                assert occurrence is not None
+                alignment.extend(
+                    dict(token=begin + i, occurrence=occurrence, start=a, end=b)
+                    for i, ranges in enumerate(tokens.ranges[offset : offset + take])
+                    for a, b in ranges
+                )
+            spans.append(span)
+            offset += take
+            if len(pending) == packing.length:
+                yield Sequence(sequence_ordinal, pending, spans.copy(), compact_ranges(alignment))
+                sequence_ordinal += 1
+                pending.clear()
+                spans.clear()
+                alignment.clear()
+
+    for ordinal, (_, tokens) in enumerate(encoded):
+        yield from append(tokens, "content", ordinal)
+        if packing.separator is not None:
+            yield from append([packing.separator], "separator", ordinal)
+    if pending and packing.padding is not None:
+        yield from append([packing.padding] * (packing.length - len(pending)), "padding")

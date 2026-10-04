@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
     from torch import Tensor
 
-from .._hub import quiet_auth_advisory
 from .types import ModelPin, check_documents, field, matrix, package_versions, positive
 
 QUALITY_DIMENSIONS = (
@@ -28,7 +27,6 @@ EMBEDDING_MODELS = {
 }
 
 
-@quiet_auth_advisory()
 def _sequence_model(
     pin: ModelPin, device: str, *, web: bool = False
 ) -> tuple[ModelTokenizer, SequenceModel]:
@@ -337,7 +335,6 @@ class Embeddings:
             positive(width, "embedding dimension")
 
     @cached_property
-    @quiet_auth_advisory()
     def _model(self) -> SentenceTransformer:
         from sentence_transformers import SentenceTransformer
 

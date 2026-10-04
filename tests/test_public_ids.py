@@ -36,11 +36,11 @@ def test_invalid_ids_are_rejected(value: str) -> None:
 def test_public_ids_match_listings_provenance_profiles_and_old_checkpoints(tmp_path: Path) -> None:
     db = p.PremixDB(storage=tmp_path)
     try:
-        snapshot = db.corpus("ids", [p.Source(str(i), "hello world") for i in range(8)])
+        snapshot = db.Corpus("ids", [p.Source(str(i), "hello world") for i in range(8)])
         assert len(snapshot.id) == 43 and len(snapshot.corpus_id) == 22
         assert db._snapshot(snapshot.id).id == snapshot.id
         assert db._snapshot(_decode_id(snapshot.id).hex()).id == snapshot.id
-        assert db.corpus.list()[0]["id"] == snapshot.corpus_id
+        assert db.Corpus.list()[0]["id"] == snapshot.corpus_id
         rows = snapshot.preview(limit=5, max_characters=0)
         assert len(rows) == 5
         query = snapshot.query(
@@ -62,20 +62,20 @@ def test_public_ids_match_listings_provenance_profiles_and_old_checkpoints(tmp_p
             sequence_length=4,
             bounds=p.Bounds(lower={snapshot.corpus_id: 1}),
         )
-        assert mix.weights == [{snapshot.corpus_id: 1.0}] * 3
+        assert mix.weights == [{snapshot.corpus_id: 1.0}]
         assert f"Lower bounds: {{'{snapshot.corpus_id}': 1.0}}" in repr(mix)
         dataset = mix[0].wait()
         assert set(dataset.profile().source_tokens) == {snapshot.corpus_id}
         assert set(dataset.profile().stratum_tokens) == {snapshot.corpus_id}
         assert set(dataset[0].document_ids()) <= set(query._provenance())
-        reader = dataset.reader()
+        reader = dataset._reader()
         next(reader)
         checkpoint = reader.checkpoint()
         assert checkpoint["dataset"] == dataset.id
         older = checkpoint.copy()
         older["dataset"] = _decode_id(dataset.id).hex()
-        assert [item.ordinal for item in dataset.reader(checkpoint=older)] == [
-            item.ordinal for item in dataset.reader(checkpoint=checkpoint)
+        assert [item.ordinal for item in dataset._reader(checkpoint=older)] == [
+            item.ordinal for item in dataset._reader(checkpoint=checkpoint)
         ]
         assert db._executions(snapshot.id) == db._executions(_decode_id(snapshot.id).hex())
         assert db._executions(snapshot.id)[0].resource_id == snapshot.id
@@ -85,7 +85,7 @@ def test_public_ids_match_listings_provenance_profiles_and_old_checkpoints(tmp_p
 
 def test_line_dedupe_witnesses_use_public_document_ids(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus(
+        snapshot = db.Corpus(
             "dedupe", [p.Source("a", "same\nfirst"), p.Source("b", "same\nsecond")]
         )
         ids = {row["source_key"]: row["id"] for row in snapshot.preview()}
@@ -105,8 +105,8 @@ def test_contamination_witnesses_use_public_reference_ids(
     tmp_path: Path, granularity: Literal["document", "span"]
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        target = db.corpus("target", [p.Source("a", "pré\n秘密\nfin")])
-        reference = db.corpus("reference", [p.Source("ref", "秘密")])
+        target = db.Corpus("target", [p.Source("a", "pré\n秘密\nfin")])
+        reference = db.Corpus("reference", [p.Source("ref", "秘密")])
         query = target.query(
             decontaminate=p.decontaminate(reference, algorithm="line", granularity=granularity)
         )
@@ -123,8 +123,8 @@ def test_contamination_witnesses_use_public_reference_ids(
 @pytest.mark.integration
 def test_read_only_lineage_needs_no_selection_or_query_execution_modules(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        target = db.corpus("target", [p.Source("a" * 64, "pré\n秘密\nfin")])
-        reference = db.corpus("reference", [p.Source("ref", "秘密")])
+        target = db.Corpus("target", [p.Source("a" * 64, "pré\n秘密\nfin")])
+        reference = db.Corpus("reference", [p.Source("ref", "秘密")])
         query = target.query(
             decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
         )

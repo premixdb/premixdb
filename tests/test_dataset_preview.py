@@ -17,25 +17,27 @@ from _type_support import (
 
 import premixdb as p
 from premixdb._sequences import Sequence
-from premixdb.v1 import dataset_pb2 as dataset_pb
+from premixdb.v1 import data_mixture_pb2 as dataset_pb
 
 
 @pytest.mark.parametrize(
     "tokenizer", [wordpiece_tokenizer(), p.ByteTokenizer()], ids=["wordpiece", "bytes"]
 )
-def test_dataset_preview_materializes_and_reuses_inline_examples(
+def test_dataset_preview_stays_lazy_and_matches_materialized_examples(
     tmp_path: Path, tokenizer: dataset_pb.Tokenizer
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("preview", [p.Source("a", "Hello world.\n" * 6)])
+            db.Corpus("preview", [p.Source("a", "Hello world.\n" * 6)])
             .query()
-            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
+            .mix(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)[0]
         )
         assert dataset.status is p.ExecutionStatus.PENDING
         examples = dataset.preview()
-        assert dataset.status is p.ExecutionStatus.COMPLETED
+        assert dataset.status is p.ExecutionStatus.PENDING
+        assert not dataset._proto.HasField("profile")
         assert len(examples) == 3
+        dataset.wait()
         for index, example in enumerate(examples):
             sequence = dataset[index]
             assert example["ordinal"] == index
@@ -57,7 +59,7 @@ def test_dataset_preview_pages_across_sequence_index_pages_after_reopening(
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus(
+            db.Corpus(
                 "preview",
                 [
                     p.Source(
@@ -67,7 +69,7 @@ def test_dataset_preview_pages_across_sequence_index_pages_after_reopening(
                 ],
             )
             .query()
-            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
+            .mix(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)[0]
             .wait()
         )
         assert len(dataset) == 131
@@ -117,10 +119,11 @@ def test_read_only_paged_preview_does_not_import_packing_code(
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("preview", [p.Source("a", " hello" * 96)])
+            db.Corpus("preview", [p.Source("a", " hello" * 96)])
             .query()
-            .dataset(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)
+            .mix(tokenizer=tokenizer, packing=tokenizer_packing(tokenizer), sequence_length=8)[0]
         )
+        dataset.wait()
         expected = dataset.preview(limit=1, offset=10)
         assert expected
         dataset_id = dataset.id
@@ -153,9 +156,9 @@ with p.PremixDB(storage=sys.argv[1], read_only=True) as db:
 def test_preview_includes_unicode_separators_padding_and_truncation(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         dataset = (
-            db.corpus("unicode", [p.Source("a", "é🌍ok")])
+            db.Corpus("unicode", [p.Source("a", "é🌍ok")])
             .query()
-            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=8)
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=8)[0]
         )
         examples = dataset.preview()
         assert examples[0]["text"] == "é🌍ok"
@@ -168,9 +171,9 @@ def test_preview_includes_unicode_separators_padding_and_truncation(tmp_path: Pa
         assert dataset.preview(max_characters=0)[0]["text"] == ""
         assert dataset.preview(limit=1, offset=100) == []
         long = (
-            db.corpus("long", [p.Source("a", "abc" * 200)])
+            db.Corpus("long", [p.Source("a", "abc" * 200)])
             .query()
-            .dataset(tokenizer=p.ByteTokenizer(), sequence_length=512)
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=512)[0]
         )
         example = long.preview(limit=1)[0]
         assert len(example["tokens"]) == len(example["mask"]) == 256
@@ -193,13 +196,13 @@ def test_invalid_preview_options_fail_before_materializing(
     tmp_path: Path, options: PreviewOptions, kind: str
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("preview", [p.Source("a", "hello")])
+        snapshot = db.Corpus("preview", [p.Source("a", "hello")])
         resource = (
             snapshot
             if kind == "snapshot"
             else snapshot.query()
             if kind == "query"
-            else snapshot.query().dataset()
+            else snapshot.query().mix()[0]
         )
         with patch.object(type(resource), "wait", side_effect=AssertionError("started execution")):
             with pytest.raises(ValueError):
@@ -209,5 +212,5 @@ def test_invalid_preview_options_fail_before_materializing(
 
 def test_empty_dataset_preview_is_empty(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        dataset = db.corpus("empty", []).query().dataset(tokenizer=p.ByteTokenizer())
+        dataset = db.Corpus("empty", []).query().mix(tokenizer=p.ByteTokenizer())[0]
         assert dataset.preview() == []

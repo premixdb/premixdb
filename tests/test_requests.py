@@ -12,9 +12,10 @@ from google.protobuf.descriptor import FileDescriptor
 from google.protobuf.message import Message
 
 import premixdb
+from premixdb import _requests
 from premixdb._protobuf import descriptor
 from premixdb.v1 import corpus_pb2 as corpora
-from premixdb.v1 import dataset_pb2 as datasets
+from premixdb.v1 import data_mixture_pb2 as datasets
 from premixdb.v1 import query_pb2 as queries
 from premixdb.v1 import snapshot_pb2 as snapshots
 from premixdb.v1 import storage_pb2 as source_types
@@ -36,7 +37,7 @@ class RequestTests(unittest.TestCase):
         inspect(datasets.DESCRIPTOR)
         inspect(queries.DESCRIPTOR)
         self.assertIn("premixdb/v1/storage.proto", seen)
-        self.assertIn("premixdb/v1/dataset.proto", seen)
+        self.assertIn("premixdb/v1/data_mixture.proto", seen)
         self.assertNotIn("premixdb/v1/source.proto", seen)
         self.assertNotIn("Source", snapshots.DESCRIPTOR.message_types_by_name)
         for resource in (queries.Query, datasets.Dataset):
@@ -71,7 +72,7 @@ class RequestTests(unittest.TestCase):
             snapshot, steps=[premixdb.where(premixdb.text.characters > 0)]
         )
         query = queries.Query(id=b"q" * 32)
-        create_dataset = premixdb.dataset(
+        create_dataset = _requests.dataset(
             query, tokenizer=premixdb.byte_tokenizer(), sequence_length=256
         )
         for request in (create_corpus, create_snapshot, create_query, create_dataset):
@@ -193,7 +194,7 @@ class RequestTests(unittest.TestCase):
             premixdb.snapshot(b"d" * 16, source=src, base=base)
 
     def test_zero_tokens_and_false_flags_retain_presence_on_wire(self) -> None:
-        request = premixdb.dataset(
+        request = _requests.dataset(
             b"d" * 32,
             tokenizer=premixdb.byte_tokenizer(),
             sequence_length=4,
@@ -251,8 +252,8 @@ class RequestTests(unittest.TestCase):
             lambda: premixdb.concat(drop_remainder=False),
             lambda: premixdb.concat(pad_token=0),
             lambda: premixdb.concat(separator=True),
-            lambda: premixdb.dataset(b"q" * 32, tokenizer=datasets.Tokenizer(), sequence_length=1),
-            lambda: premixdb.dataset(
+            lambda: _requests.dataset(b"q" * 32, tokenizer=datasets.Tokenizer(), sequence_length=1),
+            lambda: _requests.dataset(
                 b"q" * 32, tokenizer=premixdb.byte_tokenizer(), sequence_length=0
             ),
         ]
@@ -271,10 +272,11 @@ class Block(importlib.abc.MetaPathFinder):
             raise AssertionError("unexpected dependency: " + fullname)
 sys.meta_path.insert(0, Block())
 import premixdb
+from premixdb import _requests
 from google.protobuf.message import Message
 assert isinstance(premixdb.corpus("web"), Message)
 assert isinstance(premixdb.query(b"s" * 32, steps=[premixdb.dedupe()]), Message)
-assert isinstance(premixdb.dataset(b"q" * 32, tokenizer=premixdb.byte_tokenizer(), sequence_length=8), Message)
+assert isinstance(_requests.dataset(b"q" * 32, tokenizer=premixdb.byte_tokenizer(), sequence_length=8), Message)
 """
         subprocess.run([sys.executable, "-c", code], check=True)
 

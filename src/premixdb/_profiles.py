@@ -10,7 +10,7 @@ from dataclasses import field as dataclass_field
 from ._curation import selector
 from ._field_expr import FieldProjection, VectorField
 from ._field_ids import field_name, selector_field
-from .v1 import dataset_pb2 as d
+from .v1 import data_mixture_pb2 as d
 from .v1 import profile_pb2 as p
 from .v1 import query_pb2 as q
 from .v1.snapshot_pb2 import SnapshotProfile as _SnapshotProfile
@@ -223,39 +223,36 @@ def _query_profile_text(self: object) -> str:
     return "\n".join(lines)
 
 
-class _MixProfiles(list[d.DatasetProfile]):
-    """Candidate data with a bounded display; indexing retains complete profiles."""
-
-    def __repr__(self) -> str:
-        lines = ["MixProfile", f"  Candidates: {len(self):,}"]
-        if not self:
-            return "\n".join(lines)
-        rows = [("Candidate", "Content / budget", "Sequences", "Unique docs", "Repeats", "Padding")]
-        for index, profile in enumerate(self[:10]):
-            rows.append(
-                (
-                    str(index),
-                    f"{profile.content_tokens:,} / {profile.planned_content_tokens:,}",
-                    f"{profile.sequences:,}",
-                    f"{profile.source_documents:,}",
-                    f"{max(0, profile.document_occurrences - profile.source_documents):,}",
-                    f"{profile.padding_tokens:,}",
-                )
-            )
-        widths = [max(len(row[column]) for row in rows) for column in range(6)]
-        lines.extend(
-            "  "
-            + "  ".join(
-                value.ljust(width) for value, width in zip(row, widths, strict=True)
-            ).rstrip()
-            for row in rows
+def _mix_profile_text(self: object) -> str:
+    assert isinstance(self, d.MixProfile)
+    lines = [
+        "MixProfile",
+        f"  Population: {self.population_tokens:,} content tokens in {len(self.domain_tokens):,} domains",
+        f"  Candidates: {len(self.candidates):,}; budget: {self.tokens:,} content tokens each",
+        f"  Selection: {'query order, without resampling' if self.pass_through else 'seed=' + str(self.seed) + '; replacement=' + str(self.replacement)}",
+        f"  Weights: {'RegMix' if self.algorithm.HasField('regmix') else 'fixed' if not self.pass_through else 'natural'}",
+    ]
+    for candidate in self.candidates[:8]:
+        lines.append(
+            f"  Candidate {candidate.index}: {sum(candidate.tokens.values()):,} tokens in {sum(v > 0 for v in candidate.weights.values()):,} active domains"
         )
-        if len(self) > 10:
-            lines.append(f"  +{len(self) - 10:,} more candidates; index this result for details")
-        return "\n".join(lines)
+    if len(self.candidates) > 8:
+        lines.append(f"  +{len(self.candidates) - 8:,} more candidates")
+    return "\n".join(lines)
 
-    def __str__(self) -> str:
-        return repr(self)
+
+def _mix_preview_text(self: object) -> str:
+    assert isinstance(self, d.MixPreview)
+    from ._display import _mapping
+
+    lines = ["MixPreview"]
+    for candidate in self.candidates[:10]:
+        lines.append(
+            f"  Candidate {candidate.index}: {sum(candidate.tokens.values()):,} content tokens; weights={_mapping(candidate.weights)}"
+        )
+    if len(self.candidates) > 10:
+        lines.append(f"  +{len(self.candidates) - 10:,} more candidates")
+    return "\n".join(lines)
 
 
 def _dataset_profile_text(self: object) -> str:
@@ -285,3 +282,8 @@ q.QueryProfile.__repr__ = _query_profile_text
 
 d.DatasetProfile.__str__ = _dataset_profile_text
 d.DatasetProfile.__repr__ = _dataset_profile_text
+
+d.MixProfile.__str__ = _mix_profile_text
+d.MixProfile.__repr__ = _mix_profile_text
+d.MixPreview.__str__ = _mix_preview_text
+d.MixPreview.__repr__ = _mix_preview_text

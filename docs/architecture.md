@@ -1,7 +1,7 @@
 # Internals
 
 ```text
-sources → snapshot → query → candidate datasets → packed sequences
+sources → snapshot → query → mixture recipe → candidate datasets → packed sequences
 ```
 
 Recipes pin their inputs, policies, seeds, model assets, and execution environment.
@@ -14,6 +14,16 @@ inventories must fit in worker memory.
 Queries and datasets share one materialization pool. Reads prefer completed results;
 an active retry overrides an earlier failure. Recipes and failures are durable, so
 cache eviction does not discard their state.
+
+Mixtures register immutable recipes before resolving candidates. Recipe identity
+pins the current execution fingerprint. Resolving a pass-through recipe does not
+run the query; sampled mixtures resolve domain inventory and concrete weights.
+Mixture profiles describe that inventory and composition, not packed datasets.
+
+Preview execution consumes bounded query and packing streams without publishing
+completed results or exact profiles. Global selection dependencies are resolved
+when required to preserve final output semantics. Snapshot and completed-output
+previews read only the requested stored document/sequence windows.
 
 Local and partitioned execution share token serialization and disk-backed exact
 evidence grouping. Evidence groups stay readable while their stream is open;

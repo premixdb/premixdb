@@ -18,8 +18,8 @@ from premixdb.engine.snapshots import FRAME_BYTES, StoredDocument
 def test_document_preview_reads_only_visible_prefix_frames(tmp_path: Path, population: str) -> None:
     text = "DROP\n" + "é🌍" * (FRAME_BYTES // 6 + 100) + "\nDROP"
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("inspection", [p.Source("large", text)])
-        reference = db.corpus("reference", [p.Source("remove", "DROP")])
+        snapshot = db.Corpus("inspection", [p.Source("large", text)])
+        reference = db.Corpus("reference", [p.Source("remove", "DROP")])
         query = (
             snapshot.query(
                 decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
@@ -69,7 +69,7 @@ def test_document_preview_reads_only_visible_prefix_frames(tmp_path: Path, popul
 
 def test_document_pages_preserve_sampled_occurrences_and_filtered_totals(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("pages", [p.Source("keep", "é"), p.Source("other", "🌍")])
+        snapshot = db.Corpus("pages", [p.Source("keep", "é"), p.Source("other", "🌍")])
         query = snapshot.query(sampling=p.sample(seed=7, documents=125, replacement=True)).wait()
         service = coordinator(db)
         handle = service._query(_decode_id(query.id))

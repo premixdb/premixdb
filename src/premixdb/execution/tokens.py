@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterator, Mapping
+from typing import Iterator, Mapping, Protocol
 
 from .._sequences import INDEX_PAGE_SIZE, decode_preview
 from ..engine.contracts import Provenance, SourceRange
 from ..engine.datasets import Dataset, HuggingFaceTokenizer, Sequence
-from ..v1 import dataset_pb2 as datasets
+from ..v1 import data_mixture_pb2 as datasets
 from ..v1.storage_pb2 import ObjectProfile, SpanProfile, SpanRef
 from .storage import ObjectStore
 
 
-def _regions(handle: Dataset, sequence: Sequence) -> Iterator[datasets.TokenRegion]:
+class _Occurrences(Protocol):
+    def occurrence_document(self, ordinal: int) -> str: ...
+
+
+def _regions(handle: _Occurrences, sequence: Sequence) -> Iterator[datasets.TokenRegion]:
     ranges: dict[int, list[SourceRange]] = {}
     for source in sequence.source_ranges:
         ranges.setdefault(source["occurrence"], []).append(source)

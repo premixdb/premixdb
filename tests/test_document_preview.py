@@ -70,7 +70,7 @@ def test_inline_preview_reads_only_the_prefix_frame(tmp_path: Path, kind: str) -
             side_effect=AssertionError("decoded whole document"),
         ),
     ):
-        snapshot = db.corpus("preview", [p.Source("large", text)])
+        snapshot = db.Corpus("preview", [p.Source("large", text)])
         stored = coordinator(db)._snapshot(_decode_id(snapshot.id))
         document = next(iter(stored.documents.values()))
         assert isinstance(document, StoredDocument)
@@ -96,8 +96,8 @@ def test_saved_retained_previews_do_not_import_query_execution(
     tmp_path: Path, text: str, retained: str
 ) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        target = db.corpus("target", [p.Source("a", text)])
-        reference = db.corpus("reference", [p.Source("b", "秘密")])
+        target = db.Corpus("target", [p.Source("a", text)])
+        reference = db.Corpus("reference", [p.Source("b", "秘密")])
         query = target.query(
             decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
         ).wait()

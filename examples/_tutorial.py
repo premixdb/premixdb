@@ -43,9 +43,9 @@ def mixture_sources(
 ) -> tuple[Snapshot, Snapshot, Snapshot]:
     """Capture web pages and training papers plus the Shakespeare excerpt."""
     check_inputs(web, papers, literature, limit=limit)
-    web_snapshot = db.corpus("tutorial/c4", Source.read_jsonl(web, limit=limit))
-    science = db.corpus(
+    web_snapshot = db.Corpus("tutorial/c4", Source.read_jsonl(web, limit=limit))
+    science = db.Corpus(
         "tutorial/pes2o-train", Source.read_jsonl(papers, key_column="id", limit=limit)
     )
-    literature_snapshot = db.corpus("tutorial/tiny-shakespeare", tiny_sources(literature, limit))
+    literature_snapshot = db.Corpus("tutorial/tiny-shakespeare", tiny_sources(literature, limit))
     return web_snapshot, science, literature_snapshot

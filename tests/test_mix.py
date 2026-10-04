@@ -12,10 +12,11 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
+from premixdb import _requests
 from premixdb._ids import _decode_id, _encode_id, _public_dataset_profile
 from premixdb._resources import DomainInput
 from premixdb.engine.mixtures import MixturePool
-from premixdb.v1 import dataset_pb2 as pb
+from premixdb.v1 import data_mixture_pb2 as pb
 from premixdb.v1 import query_pb2 as query_pb
 
 
@@ -26,7 +27,7 @@ class MixTests(unittest.TestCase):
         self.root = Path(temp.name)
         self.client = premixdb.PremixDB(storage=self.root)
         self.addCleanup(self.client.close)
-        self.query = self.client.corpus(
+        self.query = self.client.Corpus(
             "mix",
             [
                 premixdb.Source("a", "abcd"),
@@ -44,9 +45,11 @@ class MixTests(unittest.TestCase):
         bounds: premixdb.Bounds | None = None,
         seed: int = 42,
         n_candidates: int = 1,
-    ) -> premixdb.Mix:
+    ) -> premixdb.DataMixture:
         return self.query.mix(
             tokenizer=premixdb.ByteTokenizer(),
+            weights=premixdb.RegMix(),
+            replacement=True,
             domains=domains,
             tokens=tokens,
             sequence_length=sequence_length,
@@ -58,7 +61,8 @@ class MixTests(unittest.TestCase):
     def test_registered_recipes_profiles_and_restarts_are_lazy(self) -> None:
         mix = self.mix(n_candidates=3)
         self.assertEqual(len(mix), 3)
-        self.assertEqual(len(mix._proto.dataset_ids), 3)
+        self.assertEqual(len(mix._proto.dataset_ids), 0)
+        self.assertIs(self.query.status, premixdb.ExecutionStatus.PENDING)
         weights = mix.weights
         self.assertFalse(coordinator(self.client)._storage.list("dataset", pb.Dataset))
         self.assertEqual(len(coordinator(self.client)._mix_pools), 1)
@@ -70,7 +74,7 @@ class MixTests(unittest.TestCase):
         self.assertIsInstance(recipe, pb.CreateDatasetRequest)
         recipe.Clear()
         self.assertTrue(mix._configs[0].query_id)
-        planned = mix.profile(0)
+        planned = mix[0].profile()
         self.assertEqual(sum(planned.planned_stratum_tokens.values()), 9)
         with premixdb.PremixDB(storage=self.root) as reopened:
             again = reopened._mix(mix.id)
@@ -88,11 +92,13 @@ class MixTests(unittest.TestCase):
             MixturePool, "_draw", autospec=True, side_effect=MixturePool._draw
         ) as draw:
             mix = self.mix(n_candidates=3)
-            self.assertEqual(draw.call_count, 3)
-            planned = mix.profile(0)
-            self.assertEqual(draw.call_count, 3)
+            self.assertEqual(draw.call_count, 0)
+            self.assertEqual(len(mix.preview().candidates), 3)
+            self.assertEqual(draw.call_count, 0)
+            planned = mix[0].profile()
+            self.assertEqual(draw.call_count, 1)
             candidate = mix[0].wait()
-            self.assertEqual(draw.call_count, 4)
+            self.assertEqual(draw.call_count, 2)
             self.assertEqual(candidate.profile(), planned)
             self.assertEqual(len(candidate), planned.sequences)
 
@@ -103,7 +109,7 @@ class MixTests(unittest.TestCase):
             lambda: self.mix(n_candidates=0),
             lambda: self.mix(domains={"invalid-id": "letters"}),
             lambda: self.query.mix(size=premixdb.Tokens(1), tokens=1),
-            lambda: self.query.mix(sampler=premixdb.RegMixSampler(minimum_weight=float("nan"))),
+            lambda: self.query.mix(weights=premixdb.RegMix(minimum_weight=float("nan"))),
         )
         with patch.object(self.query, "wait", side_effect=AssertionError("query ran")):
             for index, build in enumerate(invalid):
@@ -165,7 +171,7 @@ class MixTests(unittest.TestCase):
                 premixdb.Concat(separator=256),
                 premixdb.Concat(separator=256, drop_remainder=False, pad_token=257),
             ):
-                request = premixdb.dataset(
+                request = _requests.dataset(
                     self.query.id,
                     tokenizer=premixdb.ByteTokenizer(),
                     sampling=sampling,
@@ -178,7 +184,7 @@ class MixTests(unittest.TestCase):
                 dataset = self.client._dataset(
                     coordinator(self.client)
                     .CreateDataset(
-                        premixdb.dataset(
+                        _requests.dataset(
                             self.query.id,
                             tokenizer=premixdb.ByteTokenizer(),
                             sampling=sampling,
@@ -205,13 +211,13 @@ class MixTests(unittest.TestCase):
                 ordinals = []
                 for rank in range(3):
                     topology = premixdb.Topology(rank=rank, world_size=3)
-                    reader = dataset.reader(topology=topology)
+                    reader = dataset._reader(topology=topology)
                     first = next(reader, None)
                     if first:
                         ordinals.append(first.ordinal)
                     state = json.loads(json.dumps(reader.checkpoint()))
                     ordinals.extend(
-                        seq.ordinal for seq in dataset.reader(topology=topology, checkpoint=state)
+                        seq.ordinal for seq in dataset._reader(topology=topology, checkpoint=state)
                     )
                 self.assertEqual(sorted(ordinals), list(range(len(dataset))))
 
@@ -219,10 +225,13 @@ class MixTests(unittest.TestCase):
         service = coordinator(self.client)
         response = service.CreateMix(pb.CreateMixRequest(query_id=_decode_id(self.query.id)))
         mix = service.GetMix(pb.GetMixRequest(id=response.id)).mix
-        self.assertEqual(mix.tokens, 4)
-        self.assertEqual(mix.n_candidates, 3)
-        self.assertEqual(len(set(mix.dataset_ids)), 3)
-        self.assertTrue(mix.HasField("seed"))
+        self.assertEqual(mix.tokens, 0)
+        self.assertEqual(mix.n_candidates, 1)
+        self.assertEqual(len(mix.dataset_ids), 0)
+        self.assertTrue(mix.pass_through)
+        resolved = service._resolve_mix(response.id)
+        self.assertEqual(len(resolved.dataset_ids), 1)
+        self.assertIs(self.query.status, premixdb.ExecutionStatus.PENDING)
         for mutate in (
             lambda r: setattr(r.domains, "field", 999),
             lambda r: setattr(r.bounds, "max_epochs", 0),
@@ -234,10 +243,10 @@ class MixTests(unittest.TestCase):
             assert request is not None
             mutate(request)
             with self.assertRaises((ValueError, NotImplementedError)):
-                service.CreateMix(request)
+                service._resolve_mix(service.CreateMix(request).id)
         with self.assertRaises(ValueError):
             service.CreateDataset(
-                premixdb.dataset(
+                _requests.dataset(
                     self.query.id, sampling=pb.Sampling(weights={"a": float("nan")}, tokens=1)
                 )
             )
@@ -246,28 +255,106 @@ class MixTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             premixdb.mix(self.query.id, size=premixdb.Tokens(1), tokens=1)
 
-    def test_default_mix_creates_three_reproducible_datasets_for_one_domain(self) -> None:
-        mixture = self.query.mix(tokenizer=premixdb.ByteTokenizer(), seed=2**64 - 1)
-        self.assertEqual(len(mixture), 3)
-        self.assertEqual(len({dataset.id for dataset in mixture}), 3)
-        self.assertEqual([dataset._recipe.sampling.seed for dataset in mixture], [2**64 - 1, 0, 1])
-        self.assertTrue(all(weights == mixture.weights[0] for weights in mixture.weights))
-        self.assertTrue(
-            all(dataset.status is premixdb.ExecutionStatus.PENDING for dataset in mixture)
+    def test_default_mix_preserves_query_without_sampling(self) -> None:
+        mixture = self.query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
+        self.assertEqual(len(mixture), 1)
+        self.assertFalse(hasattr(self.query, "dataset"))
+        dataset = mixture[0]
+        self.assertFalse(dataset._recipe.HasField("sampling"))
+        self.assertIs(self.query.status, premixdb.ExecutionStatus.PENDING)
+        direct = coordinator(self.client)._plan_dataset(
+            _requests.dataset(self.query.id, tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
         )
-        self.assertEqual(
-            self.query.mix(tokenizer=premixdb.ByteTokenizer(), seed=2**64 - 1).id,
-            mixture.id,
-        )
-        self.assertEqual(len(self.query.mix(n_candidates=1)), 1)
-        self.assertEqual(premixdb.mix(self.query.id).n_candidates, 3)
+        self.assertEqual(dataset.id, _encode_id(direct.id))
+        self.assertEqual(dataset.profile().content_tokens, 7)
+        self.assertEqual(len(mixture.datasets), 1)
+        self.assertEqual(premixdb.mix(self.query.id).n_candidates, 1)
 
-    def test_default_mix_proposes_three_distinct_weights_for_multiple_domains(self) -> None:
-        mixture = self.query.mix(domains=premixdb.object.uri, tokenizer=premixdb.ByteTokenizer())
+    def test_explicit_policy_proposes_distinct_weights_for_multiple_domains(self) -> None:
+        mixture = self.query.mix(
+            domains=premixdb.object.uri,
+            weights=premixdb.RegMix(),
+            n_candidates=3,
+            tokens=4,
+            tokenizer=premixdb.ByteTokenizer(),
+        )
         self.assertEqual(len(mixture), 3)
         self.assertEqual(len({tuple(sorted(weights.items())) for weights in mixture.weights}), 3)
         self.assertEqual(len({dataset.id for dataset in mixture}), 3)
         self.assertEqual({dataset._recipe.sampling.seed for dataset in mixture}, {0})
+
+    def test_mixture_profile_and_preview_describe_compositions_without_draws(self) -> None:
+        with (
+            patch.object(MixturePool, "_draw", side_effect=AssertionError("constructed draws")),
+            patch.object(
+                coordinator(self.client),
+                "_profile_dataset",
+                side_effect=AssertionError("profiled candidate"),
+            ),
+        ):
+            mixture = self.mix(n_candidates=6, tokens=4)
+            profile = mixture.profile()
+            self.assertIsInstance(profile, pb.MixProfile)
+            self.assertEqual(dict(profile.domain_tokens), {"a": 4, "b": 3, "empty": 0})
+            self.assertEqual(profile.population_tokens, 7)
+            self.assertEqual(profile.tokens, 4)
+            self.assertEqual(len(profile.candidates), 6)
+            self.assertEqual([c.index for c in mixture.preview().candidates], [0, 1, 2])
+            self.assertEqual([c.index for c in mixture[::2].preview(offset=1).candidates], [2, 4])
+            self.assertFalse(mixture.preview(limit=0).candidates)
+            self.assertTrue(all(sum(c.tokens.values()) == 4 for c in profile.candidates))
+            self.assertFalse(any(dataset._proto.HasField("profile") for dataset in mixture))
+            profile.domain_tokens.clear()
+            self.assertTrue(mixture.profile().domain_tokens)
+
+    def test_fixed_weights_and_natural_budget(self) -> None:
+        fixed = self.query.mix(
+            domains=premixdb.object.uri,
+            weights={"a": 0.75, "b": 0.25, "empty": 0},
+            tokens=4,
+            tokenizer=premixdb.ByteTokenizer(),
+        )
+        self.assertEqual(fixed.weights, [{"a": 0.75, "b": 0.25, "empty": 0}])
+        self.assertEqual(dict(fixed.preview().candidates[0].tokens), {"a": 3, "b": 1, "empty": 0})
+        self.assertEqual(fixed[0].profile().planned_content_tokens, 4)
+        natural = self.query.mix(
+            domains=premixdb.object.uri, tokens=7, tokenizer=premixdb.ByteTokenizer()
+        )
+        self.assertFalse(natural[0]._recipe.sampling.replacement)
+        self.assertEqual(dict(natural.profile().candidates[0].tokens), {"a": 4, "b": 3, "empty": 0})
+        with self.assertRaisesRegex(ValueError, "multiple candidates"):
+            self.query.mix(n_candidates=2)
+        impossible = self.query.mix(
+            domains=premixdb.object.uri,
+            weights={"a": 1, "b": 0, "empty": 0},
+            tokens=5,
+            tokenizer=premixdb.ByteTokenizer(),
+        )
+        with self.assertRaisesRegex(ValueError, "infeasible|capacity"):
+            impossible[0]
+
+    def test_pending_mix_survives_restart_and_resolves_once(self) -> None:
+        mixture = self.mix(n_candidates=3, tokens=4)
+        identity = mixture.id
+        with premixdb.PremixDB(storage=self.root) as reopened:
+            again = reopened._mix(identity)
+            self.assertFalse(again._proto.dataset_ids)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                identities = list(
+                    pool.map(
+                        lambda _: (
+                            coordinator(reopened)._resolve_mix(_decode_id(identity)).dataset_ids[:]
+                        ),
+                        range(4),
+                    )
+                )
+            self.assertTrue(all(ids == identities[0] for ids in identities))
+            self.assertEqual(again.id, identity)
+            self.assertEqual(len(again.datasets), 3)
+            expected = again.profile()
+        with premixdb.PremixDB(storage=self.root, read_only=True) as reopened:
+            self.assertEqual(reopened._mix(identity).profile(), expected)
+            self.assertEqual(len(reopened._mix(identity).preview().candidates), 3)
 
     def test_assignments_no_replacement_and_pool_reuse(self) -> None:
         self.query.wait()
@@ -278,8 +365,8 @@ class MixTests(unittest.TestCase):
         self.assertNotEqual(first[0].id, second[0].id)
         self.assertEqual(len(coordinator(self.client)._mix_pools), 1)
         with self.assertRaises(Exception):
-            self.mix(domains={})
+            self.mix(domains={})[0]
         mixture = self.query.mix(tokenizer=premixdb.ByteTokenizer(), replacement=False)
         dataset = mixture[0].wait()
         self.assertEqual(dataset.profile().content_tokens, 7)
-        self.assertEqual(dataset.profile().document_occurrences, 2)
+        self.assertEqual(dataset.profile().document_occurrences, 3)

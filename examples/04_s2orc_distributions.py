@@ -15,7 +15,7 @@ LIMIT = 100
 def main() -> None:
     check_inputs(INPUT, limit=LIMIT)
     with p.PremixDB(storage=STORAGE) as db:
-        snapshot = db.corpus(
+        snapshot = db.Corpus(
             "tutorial/pes2o-validation",
             p.Source.read_jsonl(INPUT, key_column="id", limit=LIMIT),
         )

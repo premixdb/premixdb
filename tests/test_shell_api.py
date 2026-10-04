@@ -33,7 +33,7 @@ from premixdb.enrichment.language import _model_path
 @pytest.mark.parametrize(
     "cls, names",
     [
-        (p.PremixDB, "version close corpus"),
+        (p.PremixDB, "version close Corpus"),
         (
             p.Corpus,
             "id name latest snapshot list_document list_snapshot list_query list_mixture list_dataset",
@@ -44,10 +44,10 @@ from premixdb.enrichment.language import _model_path
         ),
         (
             p.Query,
-            "id status dataset preview profile mix wait",
+            "id status preview profile mix wait",
         ),
-        (p.Mix, "id weights profile"),
-        (p.Dataset, "id status wait profile preview torch reader"),
+        (p.DataMixture, "id datasets weights profile preview"),
+        (p.Dataset, "id status wait profile preview torch"),
         (Reader, "checkpoint"),
         (Sequence, "ordinal tokens mask attention_mask spans document_ids"),
         (CorpusCollection, "list"),
@@ -66,7 +66,7 @@ def test_supported_methods_have_docstrings_and_explicit_parameters() -> None:
         p.Snapshot,
         p.Query,
         p.Dataset,
-        p.Mix,
+        p.DataMixture,
         p.Source,
         p.Topology,
         p.RangeReader,
@@ -99,7 +99,7 @@ def test_supported_methods_have_docstrings_and_explicit_parameters() -> None:
 
 def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        old = db.corpus("pages", [p.Source(str(i), "sample text") for i in range(2)])
+        old = db.Corpus("pages", [p.Source(str(i), "sample text") for i in range(2)])
         query = old.query().wait()
         from premixdb._shell import _PublicCompleter
 
@@ -108,7 +108,7 @@ def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
             match.removeprefix("query.").split("(", 1)[0]
             for match in completer.attr_matches("query.")
         }
-        assert names == {"id", "status", "dataset", "preview", "profile", "mix", "wait"}
+        assert names == {"id", "status", "preview", "profile", "mix", "wait"}
         assert completer.attr_matches("query._") == []
         for removed in ("estimate", "describe", "provenance", "list_document"):
             assert not hasattr(query, removed)
@@ -117,8 +117,8 @@ def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
         assert [row["ordinal"] for row in old.preview(offset=1)] == [1]
         assert [row["ordinal"] for row in query.preview(offset=1)] == [1]
         assert old.preview(offset=2) == query.preview(offset=2) == []
-        newer = db.corpus("pages", [p.Source("new", "a different snapshot")])
-        assert db.corpus("pages").id == newer.id
+        newer = db.Corpus("pages", [p.Source("new", "a different snapshot")])
+        assert db.Corpus("pages").id == newer.id
         assert old.profile().documents == 2
         assert newer.preview()[0]["source_key"] == "new"
         assert newer.profile().added == 1
@@ -138,7 +138,7 @@ def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
 def test_execution_history_has_readable_identifiers_and_second_timestamps(tmp_path: Path) -> None:
     db = p.PremixDB(storage=tmp_path)
     try:
-        snapshot = db.corpus("history", [p.Source("a", "hello")])
+        snapshot = db.Corpus("history", [p.Source("a", "hello")])
         events = db._executions(snapshot.id)
         assert events
         for event in events:
@@ -166,7 +166,7 @@ def test_nine_speech_demo_upgrades_and_keeps_its_old_snapshot(tmp_path: Path) ->
     excerpt = (Path(p.__file__).parent / "data/tiny_shakespeare_excerpt.txt").read_text()
     db = p.PremixDB(storage=tmp_path)
     try:
-        old = db.corpus(
+        old = db.Corpus(
             "demo",
             [
                 p.Source(f"speech/{i:04d}", block + "\n\n")
@@ -175,12 +175,12 @@ def test_nine_speech_demo_upgrades_and_keeps_its_old_snapshot(tmp_path: Path) ->
         )
         with patch("premixdb._cli._demo_sources", return_value=SHELL_SOURCES) as demo_sources:
             _shell_banner(db)
-            current = db.corpus("demo")
+            current = db.Corpus("demo")
             assert current.profile().documents == len(SHELL_SOURCES)
             assert old.profile().documents == 9
             assert db._snapshot(old.id).profile().documents == 9
             _shell_banner(db)
-            assert db.corpus("demo").id == current.id
+            assert db.Corpus("demo").id == current.id
         demo_sources.assert_called_once_with()
     finally:
         db.close()
@@ -224,7 +224,7 @@ def test_profile_display_is_bounded_and_preserves_typed_data(tmp_path: Path) -> 
     from premixdb.v1.query_pb2 import QueryProfile, QueryStepProfile
 
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("summary", [p.Source("a", "hello"), p.Source("b", "world")])
+        snapshot = db.Corpus("summary", [p.Source("a", "hello"), p.Source("b", "world")])
         profile = snapshot.profile()
         assert profile.documents == profile.added == 2
         original = profile.SerializeToString()
@@ -249,7 +249,7 @@ def test_query_planning_and_reopening_do_not_execute(tmp_path: Path) -> None:
     from premixdb.execution import Coordinator
 
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("lazy", [p.Source("a", "hello"), p.Source("b", "world")])
+        snapshot = db.Corpus("lazy", [p.Source("a", "hello"), p.Source("b", "world")])
         assert isinstance(coordinator(db), Coordinator)
         with (
             patch.object(
@@ -273,23 +273,25 @@ def test_query_planning_and_reopening_do_not_execute(tmp_path: Path) -> None:
         restored = reopened._query(identity)
         assert restored.status is p.ExecutionStatus.PENDING
         assert sorted(row["text"] for row in restored.preview()) == ["hello", "world"]
+        assert restored.status is p.ExecutionStatus.PENDING
+        restored.profile()
         assert restored.status is p.ExecutionStatus.COMPLETED
 
 
 def test_default_policies_preserve_data_and_are_reproducible(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("defaults", [p.Source("a", "hello"), p.Source("b", "world")])
+        snapshot = db.Corpus("defaults", [p.Source("a", "hello"), p.Source("b", "world")])
         query = snapshot.query()
         assert not query._proto.HasField("sampling")
         assert not query._proto.HasField("decontaminate")
         assert query.profile().output_documents == 2
         assert p.sample() == p.sample(seed=0, fraction=1)
-        reference = db.corpus("reference", [p.Source("ref", "hello")])
+        reference = db.Corpus("reference", [p.Source("ref", "hello")])
         policy = p.decontaminate(reference)
         assert policy.n == 13
         assert policy.algorithm == policy.ALGORITHM_EXACT_NGRAM
         assert policy.granularity == policy.DOCUMENT
-        dataset = query.dataset(sequence_length=16)
+        dataset = query.mix(sequence_length=16)[0]
         assert len(dataset) == 1
         ids = {"hello": 31373, "world": 6894}
         expected = [token for row in query.preview() for token in [ids[row["text"]], 50256]]
@@ -299,27 +301,18 @@ def test_default_policies_preserve_data_and_are_reproducible(tmp_path: Path) -> 
 
 
 def test_mix_profile_display_is_bounded_without_losing_candidates() -> None:
-    from premixdb._profiles import _MixProfiles
-    from premixdb.v1.dataset_pb2 import DatasetProfile
+    from premixdb.v1.data_mixture_pb2 import DatasetProfile, MixComposition, MixProfile
 
-    profiles = _MixProfiles(
-        DatasetProfile(planned_content_tokens=12, content_tokens=12, source_documents=index)
-        for index in range(11)
+    profile = MixProfile(
+        candidates=[MixComposition(index=i, weights={"a": 1}, tokens={"a": 12}) for i in range(11)]
     )
-    assert isinstance(profiles, list) and len(profiles) == 11
-    original = [profile.SerializeToString() for profile in profiles]
-    for display in (str(profiles), repr(profiles)):
+    original = profile.SerializeToString()
+    for display in (str(profile), repr(profile)):
         assert len(display.splitlines()) <= 15
         assert "Candidates: 11" in display
-        assert "+1 more candidates" in display
-        assert all(
-            name in display
-            for name in ("Content / budget", "Sequences", "Unique docs", "Repeats", "Padding")
-        )
-    assert len(str(profiles[10]).splitlines()) <= 15
-    assert [profile.SerializeToString() for profile in profiles] == original
-    empty = _MixProfiles()
-    assert len(str(empty).splitlines()) <= 15
+        assert "+3 more candidates" in display
+    assert profile.SerializeToString() == original
+    assert len(str(MixProfile()).splitlines()) <= 15
     crowded = DatasetProfile(document_occurrences=20, source_documents=2, padding_tokens=10)
     crowded.source_tokens.update({str(i): i for i in range(11)})
     assert "Repeats: 18" in str(crowded)
@@ -329,10 +322,10 @@ def test_mix_profile_display_is_bounded_without_losing_candidates() -> None:
 
 def test_dataset_planning_is_lazy_and_survives_reopening(tmp_path: Path) -> None:
     from premixdb.execution import Coordinator
-    from premixdb.v1.dataset_pb2 import Dataset
+    from premixdb.v1.data_mixture_pb2 import Dataset
 
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("lazy-dataset", [p.Source("a", "hello world")])
+        snapshot = db.Corpus("lazy-dataset", [p.Source("a", "hello world")])
         query = snapshot.query()
         assert isinstance(coordinator(db), Coordinator)
         with (
@@ -351,11 +344,11 @@ def test_dataset_planning_is_lazy_and_survives_reopening(tmp_path: Path) -> None
             patch.object(coordinator(db), "_dataset_handle", side_effect=AssertionError("packing")),
             patch.object(p.Query, "wait", side_effect=AssertionError("query wait")),
         ):
-            dataset = query.dataset(sequence_length=8)
+            dataset = query.mix(sequence_length=8)[0]
             assert dataset.status is query.status is p.ExecutionStatus.PENDING
             assert not dataset._proto.HasField("profile")
             assert "GPT2Tokenizer()" in repr(dataset)
-            assert query.dataset(sequence_length=8).id == dataset.id
+            assert query.mix(sequence_length=8)[0].id == dataset.id
             assert db._dataset(dataset.id).status is p.ExecutionStatus.PENDING
             assert not coordinator(db)._storage.list("dataset", Dataset)
         identity, query_id = dataset.id, query.id
@@ -384,7 +377,7 @@ def test_dataset_planning_is_lazy_and_survives_reopening(tmp_path: Path) -> None
 
 def test_default_token_budget_uses_bpe_and_keeps_byte_policy_explicit(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        snapshot = db.corpus("bpe-budget", [p.Source("a", "hello world")])
+        snapshot = db.Corpus("bpe-budget", [p.Source("a", "hello world")])
         policy = p.sample(tokens=2, replacement=False)
         assert policy.tokenizer_asset == p.GPT2Tokenizer().hugging_face.asset
         profile = snapshot.query(sampling=policy).profile()
@@ -406,10 +399,10 @@ def test_database_instance_and_completion_expose_only_three_members(tmp_path: Pa
         assert {name for name in dir(db) if not name.startswith("_")} == {
             "version",
             "close",
-            "corpus",
+            "Corpus",
         }
         completer = _PublicCompleter(namespace={"db": db})
-        assert set(completer.attr_matches("db.")) == {"db.version", "db.close", "db.corpus"}
+        assert set(completer.attr_matches("db.")) == {"db.version", "db.close", "db.Corpus"}
         assert completer.attr_matches("db._") == []
         for removed in (
             "snapshot",

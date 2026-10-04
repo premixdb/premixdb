@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .v1.dataset_pb2 import Packing, Tokenizer
+from .v1.data_mixture_pb2 import Packing, Tokenizer
 
 if TYPE_CHECKING:
     pass
@@ -16,8 +16,8 @@ class ByteTokenizer:
     """Unchanged UTF-8 bytes map to IDs 0–255, with no implicit special tokens."""
 
     def _to_proto(self) -> Tokenizer:
-        from .v1.dataset_pb2 import ByteTokenizer as BytePolicy
-        from .v1.dataset_pb2 import Tokenizer
+        from .v1.data_mixture_pb2 import ByteTokenizer as BytePolicy
+        from .v1.data_mixture_pb2 import Tokenizer
 
         return Tokenizer(byte=BytePolicy())
 
@@ -40,8 +40,8 @@ class Concat:
         PackingPlan(1, self.separator, self.pad_token)
 
     def _to_proto(self) -> Packing:
-        from .v1.dataset_pb2 import Concat as ConcatPolicy
-        from .v1.dataset_pb2 import Packing
+        from .v1.data_mixture_pb2 import Concat as ConcatPolicy
+        from .v1.data_mixture_pb2 import Packing
 
         policy = ConcatPolicy(drop_remainder=self.drop_remainder)
         if self.separator is not None:

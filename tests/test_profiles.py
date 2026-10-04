@@ -12,6 +12,7 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
+from premixdb import _requests
 from premixdb._ids import _decode_id, _public_dataset_profile
 from premixdb._policies import Concat as ConcatPolicy
 from premixdb._profiles import DistributionSummary, _describe_field
@@ -20,7 +21,7 @@ from premixdb.engine.snapshots import StoredDocument
 from premixdb.enrichment.types import field
 from premixdb.execution import Coordinator
 from premixdb.execution.profiles import FieldProfiler, Histogram
-from premixdb.v1 import dataset_pb2 as pb
+from premixdb.v1 import data_mixture_pb2 as pb
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import profile_pb2 as p
 from premixdb.v1 import query_pb2 as q
@@ -80,8 +81,8 @@ class ProfileTests(unittest.TestCase):
 
     def test_closed_sessions_reject_new_profile_work_but_keep_cached_profiles(self) -> None:
         query = self.snapshot.query().wait()
-        dataset = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
-        uncached = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)
+        dataset = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)[0]
+        uncached = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)[0]
         query_profile = query.profile()
         dataset_profile = dataset.profile()
         snapshot_profile = self.snapshot.profile()
@@ -136,7 +137,7 @@ class ProfileTests(unittest.TestCase):
             (1, 3, 2),
         )
         self.assertEqual(query.profile().steps[0].input_documents, 3)
-        query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
+        query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=4)[0]
         second = self.corpus.snapshot(source=[premixdb.Source("new", "x")], base=self.snapshot)
         self.assertEqual((second.profile().documents, second.profile().content_bytes), (1, 1))
 
@@ -199,7 +200,7 @@ class ProfileTests(unittest.TestCase):
         ) -> pb.DatasetProfile:
             return _public_dataset_profile(
                 coordinator(self.client)._profile_dataset(
-                    premixdb.dataset(
+                    _requests.dataset(
                         query.id,
                         tokenizer=tokenizer,
                         sequence_length=sequence_length,
@@ -224,13 +225,13 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(
                 len(coordinator(self.client)._storage.list("dataset", pb.Dataset)), before
             )
-            built = query.dataset(
+            built = query.mix(
                 tokenizer=premixdb.ByteTokenizer(), sequence_length=7, packing=packing
-            ).profile()
+            )[0].profile()
             self.assertEqual(built, planned)
             candidates = query.mix(
                 domains=premixdb.object.uri,
-                sampler=premixdb.RegMixSampler(),
+                weights=premixdb.RegMix(),
                 size=premixdb.Tokens(10, tokenizer=premixdb.ByteTokenizer()),
                 bounds=premixdb.Bounds(max_epochs=4),
                 sequence_length=7,
@@ -238,7 +239,7 @@ class ProfileTests(unittest.TestCase):
                 seed=42,
             )
             before = len(coordinator(self.client)._storage.list("dataset", pb.Dataset))
-            planned = candidates.profile(0)
+            planned = candidates[0].profile()
             self.assertEqual(candidates[0].status, premixdb.ExecutionStatus.PENDING)
             self.assertEqual(
                 len(coordinator(self.client)._storage.list("dataset", pb.Dataset)), before
@@ -246,7 +247,7 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(sum(planned.planned_stratum_tokens.values()), 10)
             built = candidates[0].profile()
             self.assertEqual(built, planned)
-            self.assertEqual(candidates[:1].profile(0), planned)
+            self.assertEqual(candidates[:1][0].profile(), planned)
 
     def test_public_api_has_profiles_without_counts_or_content_inspection(self) -> None:
         self.assertFalse(hasattr(Coordinator, "GetSnapshotObjects"))

@@ -94,12 +94,12 @@ import tempfile
 os.environ.pop('PREMIXDB_GIT_COMMIT', None)
 with tempfile.TemporaryDirectory() as storage:
     with premixdb.PremixDB(storage=storage) as db:
-        snapshot = db.corpus('wheel-workflow', [premixdb.Source('a', 'hello')])
-        assert db.corpus('wheel-workflow').id == snapshot.id
+        snapshot = db.Corpus('wheel-workflow', [premixdb.Source('a', 'hello')])
+        assert db.Corpus('wheel-workflow').id == snapshot.id
         query = snapshot.query()
         assert query.profile().output_documents == 1
         assert query.preview()[0]['text'] == 'hello'
-        dataset = query.dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)
+        dataset = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)[0]
         assert dataset[0].tokens == list(b'hello') + [256, 257, 257]
         assert dataset[0].mask == [True] * 6 + [False] * 2
 """
@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory() as storage:
 from torch.utils.data import DataLoader
 with tempfile.TemporaryDirectory() as storage:
     with premixdb.PremixDB(storage=storage) as db:
-        dataset = db.corpus('training', [premixdb.Source('a', 'hello')]).query().dataset(sequence_length=8)
+        dataset = db.Corpus('training', [premixdb.Source('a', 'hello')]).query().mix(sequence_length=8)[0]
         assert dataset[0].tokens == [31373] + [50256] * 7
         data = dataset.torch()
     batch = next(iter(DataLoader(data, batch_size=1)))

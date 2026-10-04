@@ -9,7 +9,17 @@ from functools import wraps
 from pathlib import Path
 from threading import Lock
 from types import TracebackType
-from typing import Callable, Concatenate, Hashable, Iterable, Literal, Self, cast
+from typing import (
+    Callable,
+    Concatenate,
+    Generator,
+    Hashable,
+    Iterable,
+    Literal,
+    Mapping,
+    Self,
+    cast,
+)
 from weakref import WeakSet
 
 from blake3 import blake3
@@ -19,11 +29,12 @@ from .. import _requests, _runtime
 from .._identity import corpus_id as _corpus_id
 from .._inputs import source_files
 from .._protobuf import copy_message, descriptor_name
+from .._types import ExecutionError, PreviewSequence
 from ..engine import execution
 from ..engine.contracts import QuerySummary
 from ..engine.dataset_plan import BYTE_DEFINITION, DatasetPlan, PackingPlan
 from ..v1 import corpus_pb2 as corpora
-from ..v1 import dataset_pb2 as datasets
+from ..v1 import data_mixture_pb2 as datasets
 from ..v1 import query_pb2 as queries
 from ..v1 import snapshot_pb2 as snapshots
 from ..v1 import status_pb2 as status
@@ -415,10 +426,62 @@ class Coordinator(Catalog):
                 resource = self._snapshot_resource(request.id)
         return snapshots.GetSnapshotResponse(snapshot=resource)
 
+    def _preview_rows(self, resource: queries.Query) -> Generator[execution.Row, None, None]:
+        from .preview_execution import query_rows
+
+        yield from query_rows(self, resource)
+
+    @_read
+    def Preview(self, request: queries.PreviewRequest) -> queries.PreviewResponse:
+        from itertools import islice
+
+        from .previewing import bounded_text
+
+        limit, offset, width = _requests._preview_options(
+            request.limit if request.HasField("limit") else 3,
+            request.offset,
+            request.max_characters if request.HasField("max_characters") else 1024,
+            unit="documents",
+        )
+        if request.WhichOneof("input") != "query_id":
+            return Catalog.Preview(self, request)
+        resource = Catalog.GetQuery(self, queries.GetQueryRequest(id=request.query_id)).query
+        if resource.status == status.STATUS_COMPLETED:
+            return Catalog.Preview(self, request)
+        result = queries.PreviewResponse()
+        if not limit:
+            return result
+        rows = self._preview_rows(resource)
+        try:
+            for row in islice(rows, offset, offset + limit):
+                text, truncated = bounded_text(self._storage, row, width)
+                result.preview.documents.add(
+                    id=bytes.fromhex(row.id),
+                    corpus_id=bytes.fromhex(row.corpus_id),
+                    source_key=row.source_key,
+                    ordinal=row.ordinal,
+                    text=text,
+                    truncated=truncated,
+                )
+        finally:
+            rows.close()
+        return result
+
+    def _preview_dataset(
+        self, resource: datasets.Dataset, *, limit: int, offset: int, max_characters: int
+    ) -> list[PreviewSequence]:
+        from .preview_execution import dataset_preview
+
+        return dataset_preview(
+            self, resource, limit=limit, offset=offset, max_characters=max_characters
+        )
+
     def run_query(self, query: queries.Query) -> queries.Query:
         return self._execute_query(query)[0]
 
-    def _execute_query(self, query: queries.Query) -> tuple[queries.Query, execution.Query]:
+    def _execute_query(
+        self, query: queries.Query, *, publish: bool = True
+    ) -> tuple[queries.Query, execution.Query]:
         """Verify the resolved recipe before publishing any kernel result."""
         reject_unknown(query)
         expected = compile_query(query)
@@ -470,6 +533,8 @@ class Coordinator(Catalog):
         handle._encoding_provider = self._encodings
         if bytes.fromhex(handle.id) != query.id:
             raise RuntimeError("Python output identity does not match the resolved query")
+        if not publish:
+            return copy_message(query), handle
         result = copy_message(query)
         result.status = status.STATUS_COMPLETED
         result.estimate.CopyFrom(estimate)
@@ -499,9 +564,9 @@ class Coordinator(Catalog):
                 json.dumps(handle.provenance(), sort_keys=True, separators=(",", ":")).encode(),
             )
         )
-        from .selections import publish
+        from .selections import publish as publish_selection
 
-        publish(self._storage, handle)
+        publish_selection(self._storage, handle)
         publish_preview(self._storage, "query", result.id, handle)
         self._storage.save("query", result.id, result)
         with self._lock:
@@ -975,10 +1040,13 @@ class Coordinator(Catalog):
 
     @_operation
     def CreateMix(self, request: datasets.CreateMixRequest) -> datasets.CreateMixResponse:
-        def run() -> datasets.CreateMixResponse:
-            from .._mixing import RegMixSampler
+        """Pin and register the recipe without running its query or token inventory."""
+        reject_unknown(request)
 
-            template = self._resolve_dataset(copy_fields(request, datasets.CreateDatasetRequest()))
+        def run() -> datasets.CreateMixResponse:
+            template = self._resolve_dataset(
+                copy_fields(request, datasets.CreateDatasetRequest()), _lazy=True
+            )
             spec = copy_fields(request, datasets.CreateMixRequest())
             for name in ("tokenizer", "packing"):
                 getattr(spec, name).CopyFrom(getattr(template, name))
@@ -986,11 +1054,18 @@ class Coordinator(Catalog):
             spec.sequence_length = template.sequence_length
             if spec.domains.WhichOneof("kind") is None:
                 spec.domains.field = queries.FIELD_SOURCE_CORPUS_ID
+            if not spec.HasField("seed"):
+                spec.seed = 0
+            if not spec.HasField("replacement"):
+                spec.replacement = False
+            spec.n_candidates = spec.n_candidates or 1
             if spec.algorithm.WhichOneof("kind") is None:
-                spec.algorithm.CopyFrom(RegMixSampler()._to_proto())
+                spec.ClearField("algorithm")
             else:
+                from .._mixing import RegMix
+
+                defaults = RegMix()._to_proto().regmix
                 policy = spec.algorithm.regmix
-                defaults = RegMixSampler()._to_proto().regmix
                 for name in (
                     "prior_power",
                     "min_concentration",
@@ -1002,52 +1077,151 @@ class Coordinator(Catalog):
                         setattr(policy, name, getattr(defaults, name))
                 if not policy.HasField("seed"):
                     policy.seed = 0
-            if not spec.HasField("seed"):
-                spec.seed = 0
-            if not spec.HasField("replacement"):
-                spec.replacement = True
-            spec.n_candidates = spec.n_candidates or 3
-            inventory = self._mix_pool(template, spec.domains).inventory()
-            spec.tokens = spec.tokens or sum(inventory.values())
+            if not spec.bounds.ListFields():
+                spec.ClearField("bounds")
             mixing.validate_mix(spec)
-            candidates = mixing.generate(spec, inventory)
             result = copy_fields(spec, datasets.Mix())
-            recipes = []
-            single_domain = sum(value > 0 for value in inventory.values()) == 1
-            for index, weights in enumerate(candidates):
-                recipe = copy_message(template)
-                recipe.sampling.CopyFrom(
-                    datasets.Sampling(
-                        domains=spec.domains,
-                        weights=weights,
-                        tokens=spec.tokens,
-                        seed=(spec.seed + index) % (2**64) if single_domain else spec.seed,
-                        replacement=spec.replacement,
-                    )
-                )
-                if spec.bounds.HasField("max_epochs"):
-                    recipe.sampling.max_epochs = spec.bounds.max_epochs
-                resource = copy_fields(
-                    recipe,
-                    datasets.Dataset(
-                        id=self._dataset_id(recipe),
-                        status=status.STATUS_PENDING,
-                        profile=self._profile_dataset(recipe),
-                    ),
-                )
-                recipes.append(resource)
-                result.dataset_ids.append(resource.id)
-            result.id = mixing.canonical_digest("mix", result)
-            if result.ByteSize() + sum(r.ByteSize() for r in recipes) > 3 * 1024 * 1024:
-                raise ValueError("mixture metadata exceeds 3 MiB; use smaller candidate batches")
-            for resource in recipes:
-                self._storage.save("dataset", resource.id, resource, suffix=".recipe")
-            self._storage.save("mixture", result.id, result)
+            result.pass_through = (
+                not spec.tokens and not spec.weights and not spec.HasField("algorithm")
+            )
+            result.execution_fingerprint = _runtime.current_code().canonical_digest()
+            result.id = blake3(
+                mixing.canonical_digest("mix-plan", spec) + result.execution_fingerprint
+            ).digest()
+            if result.ByteSize() > 3 * 1024 * 1024:
+                raise ValueError("mixture metadata exceeds 3 MiB")
             with self._lock:
-                self._mixes[result.id] = result
+                try:
+                    self._storage.load("mixture", result.id, datasets.Mix)
+                except KeyError:
+                    self._storage.save("mixture", result.id, result, suffix=".recipe")
+                self._mixes.pop(result.id, None)
             return datasets.CreateMixResponse(id=result.id)
 
         return self._once(request, run)
+
+    def _resolve_mix(self, identity: bytes) -> datasets.Mix:
+        """Freeze concrete candidate recipes; profiles and packed output stay lazy."""
+
+        def run() -> datasets.Mix:
+            result = Catalog.GetMix(self, datasets.GetMixRequest(id=identity)).mix
+            if len(result.dataset_ids) == result.n_candidates:
+                return result
+            if (
+                result.execution_fingerprint
+                and result.execution_fingerprint != _runtime.current_code().canonical_digest()
+            ):
+                raise ExecutionError(
+                    "mixture execution environment changed; create a new mix recipe"
+                )
+            spec = copy_fields(result, datasets.CreateMixRequest())
+            template = copy_fields(result, datasets.CreateDatasetRequest())
+            recipes = []
+            if result.pass_through:
+                resource = copy_fields(
+                    template,
+                    datasets.Dataset(id=self._dataset_id(template), status=status.STATUS_PENDING),
+                )
+                recipes.append(resource)
+                if result.bounds.ListFields():
+                    inventory = self._mix_pool(template, result.domains).inventory()
+                    result.profile.CopyFrom(self._mix_profile(result, inventory, recipes))
+            else:
+                inventory = self._mix_pool(template, spec.domains).inventory()
+                spec.tokens = spec.tokens or sum(inventory.values())
+                candidates = mixing.generate(spec, inventory)
+                single_domain = sum(value > 0 for value in inventory.values()) == 1
+                for index, weights in enumerate(candidates):
+                    recipe = copy_message(template)
+                    recipe.sampling.CopyFrom(
+                        datasets.Sampling(
+                            domains=spec.domains,
+                            weights=weights,
+                            tokens=spec.tokens,
+                            seed=(spec.seed + index) % (2**64) if single_domain else spec.seed,
+                            replacement=spec.replacement,
+                        )
+                    )
+                    if spec.bounds.HasField("max_epochs"):
+                        recipe.sampling.max_epochs = spec.bounds.max_epochs
+                    resource = copy_fields(
+                        recipe,
+                        datasets.Dataset(id=self._dataset_id(recipe), status=status.STATUS_PENDING),
+                    )
+                    recipes.append(resource)
+                result.tokens = spec.tokens
+                result.domains.CopyFrom(spec.domains)
+                result.profile.CopyFrom(self._mix_profile(result, inventory, recipes))
+            result.dataset_ids.extend(resource.id for resource in recipes)
+            if result.ByteSize() + sum(recipe.ByteSize() for recipe in recipes) > 3 * 1024 * 1024:
+                raise ValueError("mixture metadata exceeds 3 MiB; use smaller candidate batches")
+            for resource in recipes:
+                try:
+                    Catalog.GetDataset(self, datasets.GetDatasetRequest(id=resource.id))
+                except KeyError:
+                    self._storage.save("dataset", resource.id, resource, suffix=".recipe")
+            self._storage.save("mixture", result.id, result)
+            with self._lock:
+                self._mixes[result.id] = copy_message(result)
+            return result
+
+        return copy_message(self._submissions.run(("resolve-mixture", identity), run))
+
+    def _mix_profile(
+        self,
+        resource: datasets.Mix,
+        inventory: Mapping[str, int],
+        recipes: list[datasets.Dataset],
+    ) -> datasets.MixProfile:
+        total = sum(inventory.values())
+        profile = datasets.MixProfile(
+            domain_tokens=inventory,
+            population_tokens=total,
+            tokens=resource.tokens or total,
+            domains=resource.domains,
+            algorithm=resource.algorithm if resource.HasField("algorithm") else None,
+            bounds=resource.bounds,
+            pass_through=resource.pass_through,
+            replacement=resource.replacement,
+            seed=resource.seed,
+        )
+        natural = {key: count / total if total else 0 for key, count in inventory.items()}
+        for index, recipe in enumerate(recipes):
+            weights = dict(recipe.sampling.weights) if recipe.HasField("sampling") else natural
+            counts = (
+                mixing.allocations(weights, recipe.sampling.tokens)
+                if recipe.HasField("sampling")
+                else dict(inventory)
+            )
+            profile.candidates.add(
+                index=index, dataset_id=recipe.id, weights=weights, tokens=counts
+            )
+        if resource.pass_through and total:
+            spec = copy_fields(resource, datasets.CreateMixRequest())
+            spec.tokens = total
+            mixing.generate(
+                spec, inventory
+            )  # Validate natural composition against requested bounds.
+        return profile
+
+    def _profile_mix(self, identity: bytes) -> datasets.Mix:
+        def run() -> datasets.Mix:
+            resource = self._resolve_mix(identity)
+            if resource.HasField("profile"):
+                return resource
+            template = copy_fields(resource, datasets.CreateDatasetRequest())
+            inventory = self._mix_pool(template, resource.domains).inventory()
+            recipes = [
+                Catalog.GetDataset(self, datasets.GetDatasetRequest(id=id)).dataset
+                for id in resource.dataset_ids
+            ]
+            resource.profile.CopyFrom(self._mix_profile(resource, inventory, recipes))
+            self._storage.save("mixture", resource.id, resource.profile, suffix=".profile")
+            with self._lock:
+                self._mixes[resource.id] = copy_message(resource)
+            return resource
+
+        return copy_message(self._submissions.run(("profile-mixture", identity), run))
 
     @_operation
     def CreateDataset(

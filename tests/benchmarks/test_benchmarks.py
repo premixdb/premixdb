@@ -43,7 +43,7 @@ def test_reader_shuffle(benchmark: Benchmark, count: int) -> None:
 def test_completed_selection_read_after_eviction(benchmark: Benchmark, tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path, cache_bytes=0) as db:
         query = (
-            db.corpus("bench", [p.Source(str(i), "a useful document") for i in range(1000)])
+            db.Corpus("bench", [p.Source(str(i), "a useful document") for i in range(1000)])
             .query()
             .wait()
         )

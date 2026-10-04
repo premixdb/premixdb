@@ -27,17 +27,18 @@ def main() -> None:
         population = web.union(science, literature).query(steps=[p.where(p.text.characters > 0)])
         candidates = population.mix(
             # Try more proposals to find four that meet the source bounds.
-            sampler=p.RegMixSampler(seed=123, oversample=1000),
+            weights=p.RegMix(seed=123, oversample=1000),
             seed=42,  # Document draws.
             n_candidates=4,
             tokens=1024,
+            replacement=True,
             bounds=p.Bounds(lower={domain: 0.1 for domain in names}),
             sequence_length=64,
             packing=p.Concat(separator=256, drop_remainder=False, pad_token=257),
         )
         for index, weights in enumerate(candidates.weights):
             print(f"Candidate {index}:", dict(sorted((names[k], v) for k, v in weights.items())))
-            assert candidates.profile(index).planned_content_tokens == 1024
+            assert candidates[index].profile().planned_content_tokens == 1024
         selected = candidates[::2]
         first = selected[0][0]  # Pack one sequence from the first choice.
         print("First chosen sequence:", first.ordinal, first.tokens[:16])

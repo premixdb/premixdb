@@ -20,7 +20,7 @@ Saved-data compatibility and the default full-feature installation remain suppor
 | 13. Expressions | Intrinsic and derived fields share operators, predicates, ordering, and selector conversion. Intrinsic counts remain uint64; derived integers remain int64. |
 | 14. Summaries | Removed the private SDK summary bridge and unused summary types. Service tests assert protobuf profiles; engine count records remain independent. |
 | 15. Hidden conveniences | Removed `_list_document` and `_describe`; tests use preview/profile. Kept `_with_fields`, which still plans projected fields and mix domains. |
-| 16. Mix naming | Internal annotations and reopening use `Mix`/`_mix`. Retained the one-line public `Datasets` alias for compatibility. |
+| 16. Mix naming | The public collection is `DataMixture`; `Query.mix()` is the only fluent dataset constructor. Removed the `Datasets` alias. |
 | 17. Protobuf indexing | Traverse cache rows and columns once with strict alignment; removed the repeated linear `at` helper. |
 | 18. Catalog paging | SQLite parent indexes supply filtering, state precedence, public ordering, and windows before payload loading. Bounded caches reuse paginated membership and token scopes; revisions invalidate them after local or external writes. |
 | 19. Empty namespaces | ObjectStore creates blob directories when publishing. Fresh initialization creates metadata only; legacy fixtures construct their layout explicitly. |

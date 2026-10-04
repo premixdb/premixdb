@@ -30,7 +30,8 @@ class _SnapshotOperations:
         Filters and dedupe steps infer the fields they need. Decontamination
         requires explicit references: decontaminate=p.decontaminate(reference).
         Decontamination and sampling policies are separate from steps.
-        wait(), profile(), preview(), and reading results start execution.
+        wait(), profile(), and reading results execute the full selection.
+        preview() consumes only the output window and its required dependencies.
         """
         return self.union().query(steps=steps, decontaminate=decontaminate, sampling=sampling)
 

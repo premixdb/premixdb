@@ -162,8 +162,8 @@ message Sampling {
   uint64 tokens = 5; // Exact content-token budget, before separators and packing tails.
   map<string, double> weights = 6; // Finite, nonnegative, sum to one; keyed by stratum.
 }
-// A persisted batch of candidate datasets with fixed recipes and planned profiles.
-// Candidate metadata is available before token materialization.
+// A lazy mixture recipe, later resolved to ordered candidate dataset recipes.
+// Mixture composition metadata is independent of candidate packing profiles.
 message Mix {
   bytes id = 1;
   repeated bytes dataset_ids = 2; // Ordered; every ID is retrievable with GetDataset.
@@ -179,9 +179,13 @@ message Mix {
   Domains domains = 12;
   Tokenizer tokenizer = 13;
   uint64 tokens = 14;
+  map<string, double> weights = 15; // Fixed weights; empty means natural proportions.
+  optional bool pass_through = 16; // Preserve the query's order and occurrences.
+  bytes execution_fingerprint = 18; // Recipe creation environment; absent on legacy resolved mixes.
+  MixProfile profile = 17; // Mixture inventory and composition, never packed sequence totals.
 }
 
-// Registers all candidate recipes and profiles; token materialization stays lazy.
+// Register a pinned mixture recipe without selection, tokenization, or packing.
 message CreateMixRequest {
   string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
   bytes query_id = 1;
@@ -196,6 +200,7 @@ message CreateMixRequest {
   Domains domains = 10;
   Tokenizer tokenizer = 11;
   uint64 tokens = 12;
+  map<string, double> weights = 13; // Mutually exclusive with algorithm.
 }
 message CreateMixResponse { bytes id = 1; }
 message GetMixRequest { bytes id = 1; }
@@ -208,3 +213,24 @@ message ListMixResponse {
   repeated Mix mixtures = 1;
   bytes next_page_token = 2;
 }
+
+// A candidate composition before packing. Token counts exclude separators/padding.
+message MixComposition {
+  uint32 index = 1;
+  bytes dataset_id = 2;
+  map<string, double> weights = 3;
+  map<string, uint64> tokens = 4;
+}
+message MixProfile {
+  map<string, uint64> domain_tokens = 1;
+  uint64 population_tokens = 2;
+  uint64 tokens = 3; // Per-candidate budget.
+  repeated MixComposition candidates = 4;
+  Domains domains = 5;
+  MixAlgorithm algorithm = 6;
+  MixBounds bounds = 7;
+  bool pass_through = 8;
+  bool replacement = 9;
+  uint64 seed = 10;
+}
+message MixPreview { repeated MixComposition candidates = 1; }
