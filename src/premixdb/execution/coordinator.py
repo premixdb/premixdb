@@ -245,9 +245,7 @@ class Coordinator(Catalog):
         return copy_message(self._submissions.run(key, run))
 
     @_operation
-    def CreateCorpus(
-        self, request: corpora.CreateCorpusRequest, *, timeout: float | None = None
-    ) -> corpora.CreateCorpusResponse:
+    def CreateCorpus(self, request: corpora.CreateCorpusRequest) -> corpora.CreateCorpusResponse:
         _requests.corpus(request.name)
 
         def run() -> corpora.CreateCorpusResponse:
@@ -354,7 +352,7 @@ class Coordinator(Catalog):
 
     @_operation
     def CreateSnapshot(
-        self, request: snapshots.CreateSnapshotRequest, *, timeout: float | None = None
+        self, request: snapshots.CreateSnapshotRequest
     ) -> snapshots.CreateSnapshotResponse:
         _requests.snapshot(
             request.corpus_id,
@@ -406,9 +404,7 @@ class Coordinator(Catalog):
         return self._once(request, run)
 
     @_read
-    def GetSnapshot(
-        self, request: snapshots.GetSnapshotRequest, *, timeout: float | None = None
-    ) -> snapshots.GetSnapshotResponse:
+    def GetSnapshot(self, request: snapshots.GetSnapshotRequest) -> snapshots.GetSnapshotResponse:
         _requests._id(request.id, 32)
         with self._lock:
             resource = self._snapshots.get(request.id)
@@ -674,9 +670,7 @@ class Coordinator(Catalog):
             return resource
 
     @_read
-    def GetQuery(
-        self, request: queries.GetQueryRequest, *, timeout: float | None = None
-    ) -> queries.GetQueryResponse:
+    def GetQuery(self, request: queries.GetQueryRequest) -> queries.GetQueryResponse:
         result = self._materialized_resource(
             "query", request.id, queries.Query, self._queries, ".pending"
         )
@@ -980,9 +974,7 @@ class Coordinator(Catalog):
             return copy_message(profile)
 
     @_operation
-    def CreateMix(
-        self, request: datasets.CreateMixRequest, *, timeout: float | None = None
-    ) -> datasets.CreateMixResponse:
+    def CreateMix(self, request: datasets.CreateMixRequest) -> datasets.CreateMixResponse:
         def run() -> datasets.CreateMixResponse:
             from .._mixing import RegMixSampler
 
@@ -1147,9 +1139,7 @@ class Coordinator(Catalog):
         return result
 
     @_read
-    def GetDataset(
-        self, request: datasets.GetDatasetRequest, *, timeout: float | None = None
-    ) -> datasets.GetDatasetResponse:
+    def GetDataset(self, request: datasets.GetDatasetRequest) -> datasets.GetDatasetResponse:
         resource = self._materialized_resource(
             "dataset", request.id, datasets.Dataset, self._datasets, ".recipe"
         )

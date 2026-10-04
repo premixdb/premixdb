@@ -10,15 +10,8 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Unpack
 
-from _type_support import (
-    SnapshotOptions,
-    TokenizerOptions,
-    invalid_call,
-)
-from blake3 import blake3
-
-from premixdb import local
-from premixdb.local import (
+import _reference as local
+from _reference import (
     ByteTokenizer,
     Concat,
     HuggingFaceTokenizer,
@@ -29,6 +22,12 @@ from premixdb.local import (
     object,
     where,
 )
+from _type_support import (
+    SnapshotOptions,
+    TokenizerOptions,
+    invalid_call,
+)
+from blake3 import blake3
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

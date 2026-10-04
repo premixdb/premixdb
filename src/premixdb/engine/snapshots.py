@@ -35,8 +35,16 @@ from .contracts import (
     TextProfile,
 )
 from .identity import Canonical, CodeVersion, digest, identity_domain
+from .records import FRAME_BYTES as FRAME_BYTES
+from .records import (
+    decode_document,
+    decode_frame,
+    schema,
+    text_profile,
+    totals,
+    validate_document,
+)
 
-FRAME_BYTES = 1024 * 1024
 PAGE_BYTES = 1024 * 1024
 MANIFEST_BYTES = 64 * 1024 * 1024
 COMMIT_HEADER = identity_domain("snapshot-commit")
@@ -46,22 +54,6 @@ def encode(value: object) -> bytes:
     import json
 
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
-
-
-def _schema(value: object, required: Iterable[str], optional: Iterable[str] = ()) -> None:
-    if (
-        not isinstance(value, dict)
-        or not set(required) <= value.keys()
-        or value.keys() - set(required) - set(optional)
-    ):
-        raise RuntimeError("invalid stored schema")
-
-
-def _totals(value: object, names: Iterable[str]) -> None:
-    _schema(value, names)
-    assert isinstance(value, dict)
-    if any(type(v) is not int or not 0 <= v < 2**64 for v in value.values()):
-        raise RuntimeError("invalid stored counts")
 
 
 class CountedDocument(Protocol):
@@ -223,42 +215,8 @@ class Snapshot:
         return self._changes.copy()
 
 
-def _profile(data: bytes) -> TextProfile:
-    text = data.decode()
-    return TextProfile(content_bytes=len(data), characters=len(text), newlines=text.count("\n"))
-
-
-def _decode_profile(raw: JSON) -> TextProfile:
-    obj = json_object(raw)
-    _totals(obj, ("content_bytes", "characters", "newlines"))
-    return TextProfile(
-        content_bytes=json_integer(obj["content_bytes"]),
-        characters=json_integer(obj["characters"]),
-        newlines=json_integer(obj["newlines"]),
-    )
-
-
-def _decode_frame(raw: JSON) -> Frame:
-    obj = json_object(raw)
-    _schema(obj, ("digest", "bytes"), ("profile",))
-    result = Frame(digest=json_integers(obj["digest"]), bytes=json_integer(obj["bytes"]))
-    if "profile" in obj:
-        result["profile"] = _decode_profile(obj["profile"])
-    return result
-
-
-def _decode_document(raw: dict[str, JSON]) -> DocumentRecord:
-    _schema(raw, ("key", "content", "bytes", "frames"))
-    return DocumentRecord(
-        key=json_string(raw["key"]),
-        content=json_integers(raw["content"]),
-        bytes=json_integer(raw["bytes"]),
-        frames=[_decode_frame(f) for f in json_list(raw["frames"])],
-    )
-
-
 def _decode_manifest(raw: dict[str, JSON]) -> Manifest:
-    _schema(
+    schema(
         raw,
         (
             "version",
@@ -276,9 +234,9 @@ def _decode_manifest(raw: dict[str, JSON]) -> Manifest:
     summary = json_object(raw["summary"])
     changes = json_object(raw["changes"])
     code = json_object(raw["code"])
-    _totals(summary, ("documents", "bytes", "characters"))
-    _totals(changes, ("added", "changed", "removed", "unchanged", "reused"))
-    _schema(code, ("repository", "commit", "environment"))
+    totals(summary, ("documents", "bytes", "characters"))
+    totals(changes, ("added", "changed", "removed", "unchanged", "reused"))
+    schema(code, ("repository", "commit", "environment"))
     result = Manifest(
         version=json_integer(raw["version"]),
         id=json_integers(raw["id"]),
@@ -305,19 +263,15 @@ def _decode_manifest(raw: dict[str, JSON]) -> Manifest:
         ),
     )
     if "pages" in raw:
-        result["pages"] = [_decode_frame(p) for p in json_list(raw["pages"])]
+        result["pages"] = [decode_frame(p) for p in json_list(raw["pages"])]
     if "documents" in raw:
-        result["documents"] = [
-            _decode_document(json_object(d)) for d in json_list(raw["documents"])
-        ]
+        result["documents"] = [decode_document(json_object(d)) for d in json_list(raw["documents"])]
     return result
 
 
 class Store:
     def __init__(self, path: str | PathLike[str]) -> None:
         self.root = Path(path).resolve()
-        for name in ("objects", "snapshots"):
-            (self.root / name).mkdir(parents=True, exist_ok=True)
 
     def _object(self, value: bytes | list[int], limit: int = MANIFEST_BYTES) -> bytes:
         try:
@@ -347,7 +301,7 @@ class Store:
             raise RuntimeError("invalid snapshot completion record")
         raw = json_object(load_json(self._object(commit[-32:])))
         manifest = _decode_manifest(raw)
-        _schema(
+        schema(
             manifest,
             (
                 "version",
@@ -362,9 +316,9 @@ class Store:
             ),
             ("documents", "pages"),
         )
-        _totals(manifest["summary"], ("documents", "bytes", "characters"))
-        _totals(manifest["changes"], ("added", "changed", "removed", "unchanged", "reused"))
-        _schema(manifest["code"], ("repository", "commit", "environment"))
+        totals(manifest["summary"], ("documents", "bytes", "characters"))
+        totals(manifest["changes"], ("added", "changed", "removed", "unchanged", "reused"))
+        schema(manifest["code"], ("repository", "commit", "environment"))
         if manifest["id"] != list(bytes.fromhex(id)):
             raise RuntimeError("snapshot manifest ID mismatch")
         return manifest
@@ -380,35 +334,13 @@ class Store:
                     rows = json_list(load_json(self._frame(page, PAGE_BYTES)))
                     if not rows:
                         raise RuntimeError("empty inventory page")
-                    yield from (_decode_document(json_object(row)) for row in rows)
+                    yield from (decode_document(json_object(row)) for row in rows)
             else:
                 raise RuntimeError("invalid snapshot manifest layout or version")
 
         previous, count = None, 0
         for record in records():
-            _schema(record, ("key", "content", "bytes", "frames"))
-            if (
-                len(bytes(record["content"])) != 32
-                or type(record["bytes"]) is not int
-                or not 0 <= record["bytes"] < 2**64
-            ):
-                raise RuntimeError("invalid stored document")
-            for frame in record["frames"]:
-                _schema(frame, ("digest", "bytes"), ("profile",))
-                if (
-                    len(bytes(frame["digest"])) != 32
-                    or type(frame["bytes"]) is not int
-                    or not 0 < frame["bytes"] <= 8 * FRAME_BYTES
-                ):
-                    raise RuntimeError("invalid frame size or digest")
-                if "profile" in frame:
-                    _totals(frame["profile"], ("content_bytes", "characters", "newlines"))
-                    p = frame["profile"]
-                    if (
-                        p["content_bytes"] != frame["bytes"]
-                        or not p["newlines"] <= p["characters"] <= p["content_bytes"]
-                    ):
-                        raise RuntimeError("invalid text profile")
+            validate_document(record)
             key = record["key"]
             if previous is not None and key <= previous:
                 raise RuntimeError("invalid snapshot inventory")
@@ -418,7 +350,7 @@ class Store:
             raise RuntimeError("invalid snapshot inventory")
 
     def _frame(self, frame: Frame, limit: int = 8 * FRAME_BYTES) -> bytes:
-        _schema(frame, ("digest", "bytes"), ("profile",))
+        schema(frame, ("digest", "bytes"), ("profile",))
         size = frame["bytes"]
         if len(bytes(frame["digest"])) != 32 or type(size) is not int or not 0 < size <= limit:
             raise RuntimeError("invalid frame size")
@@ -489,7 +421,7 @@ class Store:
             while end < len(data) and data[end] & 0xC0 == 0x80:
                 end -= 1
             part = data[start:end]
-            frames.append(dict(digest=self._put(part), bytes=len(part), profile=_profile(part)))
+            frames.append(dict(digest=self._put(part), bytes=len(part), profile=text_profile(part)))
             start = end
         return DocumentRecord(
             key=doc.source_key, content=list(doc.content), bytes=len(data), frames=frames
@@ -563,7 +495,7 @@ class Store:
             for frame in record["frames"]:
                 part = self._frame(frame)
                 text = part.decode()
-                if "profile" in frame and frame["profile"] != _profile(part):
+                if "profile" in frame and frame["profile"] != text_profile(part):
                     raise RuntimeError("text profile mismatch")
                 size += len(part)
                 if size > record["bytes"]:
@@ -573,7 +505,7 @@ class Store:
                 if not lazy:
                     parts.append(text)
                 elif "profile" not in frame:
-                    frame["profile"] = _profile(part)
+                    frame["profile"] = text_profile(part)
             if size != record["bytes"] or content_hash.digest() != bytes(record["content"]):
                 raise RuntimeError("document size or content mismatch")
             sources.append(

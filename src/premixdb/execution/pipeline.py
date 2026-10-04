@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import platform
+import time
 from bisect import bisect_left, bisect_right
 from collections import deque
 from concurrent.futures import Executor, Future, ProcessPoolExecutor
@@ -582,7 +583,17 @@ class PackedPartitions(Dataset):
         outputs: SequenceABC[Artifact],
         occurrences: list[Occurrence],
     ) -> None:
-        self.__dict__.update(handle.__dict__)
+        super().__init__(
+            handle._query,
+            handle.plan,
+            handle._input_counts,
+            (),
+            time.monotonic(),
+            handle._lengths,
+            stream=True,
+        )
+        self.elapsed_seconds = handle.elapsed_seconds
+        handle.close()
         self.pipeline, self.outputs = pipeline, outputs
         self._occurrences = occurrences
 

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from ._default_tokenizer import _GPT2_DIGEST, _GPT2_EOS, _gpt2_tokenizer
 from ._enums import DedupeAlgorithm, IntrinsicField, RemovalUnit
-from ._field_expr import FieldPredicate
+from ._field_expr import FieldPredicate, ScalarField
 from ._field_ids import field_id
 from ._ids import _decode_id
 from ._protobuf import copy_message
@@ -61,61 +61,25 @@ def _preview_options(
 
 
 @dataclass(frozen=True)
-class _Predicate:
-    field: IntrinsicField
-    operator: queries.Comparison.Operator
-    value: int | str
-
-    def __bool__(self) -> bool:
-        raise TypeError("use separate where() steps instead of chained comparisons or and/or")
-
-
-@dataclass(frozen=True, eq=False)
-class _Field[FieldValue: (int, str)]:
-    name: IntrinsicField
-
-    # Expression operators intentionally build a predicate rather than a bool.
-    def __eq__(self, value: FieldValue) -> _Predicate:  # ty: ignore[invalid-method-override]
-        return _Predicate(self.name, queries.Comparison.OPERATOR_EQ, value)
-
-    def __ne__(self, value: FieldValue) -> _Predicate:  # ty: ignore[invalid-method-override]
-        return _Predicate(self.name, queries.Comparison.OPERATOR_NE, value)
-
-    def __lt__(self, value: FieldValue) -> _Predicate:
-        return _Predicate(self.name, queries.Comparison.OPERATOR_LT, value)
-
-    def __le__(self, value: FieldValue) -> _Predicate:
-        return _Predicate(self.name, queries.Comparison.OPERATOR_LE, value)
-
-    def __gt__(self, value: FieldValue) -> _Predicate:
-        return _Predicate(self.name, queries.Comparison.OPERATOR_GT, value)
-
-    def __ge__(self, value: FieldValue) -> _Predicate:
-        return _Predicate(self.name, queries.Comparison.OPERATOR_GE, value)
-
-    def asc(self) -> queries.OrderBy:
-        """Order documents by this field from smallest to largest."""
-        return queries.OrderBy(field=field_id(self.name), direction=queries.OrderBy.DIRECTION_ASC)
-
-    def desc(self) -> queries.OrderBy:
-        """Order documents by this field from largest to smallest."""
-        return queries.OrderBy(field=field_id(self.name), direction=queries.OrderBy.DIRECTION_DESC)
-
-
-@dataclass(frozen=True)
 class _TextFields:
-    bytes: _Field[int] = field(default_factory=lambda: _Field(IntrinsicField.BYTES))
-    characters: _Field[int] = field(default_factory=lambda: _Field(IntrinsicField.CHARACTERS))
+    bytes: ScalarField[int] = field(default_factory=lambda: ScalarField(IntrinsicField.BYTES, int))
+    characters: ScalarField[int] = field(
+        default_factory=lambda: ScalarField(IntrinsicField.CHARACTERS, int)
+    )
 
 
 @dataclass(frozen=True)
 class _SourceFields:
-    corpus_id: _Field[str] = field(default_factory=lambda: _Field(IntrinsicField.CORPUS_ID))
+    corpus_id: ScalarField[str] = field(
+        default_factory=lambda: ScalarField(IntrinsicField.CORPUS_ID, str)
+    )
 
 
 @dataclass(frozen=True)
 class _ObjectFields:
-    uri: _Field[str] = field(default_factory=lambda: _Field(IntrinsicField.OBJECT_URI))
+    uri: ScalarField[str] = field(
+        default_factory=lambda: ScalarField(IntrinsicField.OBJECT_URI, str)
+    )
 
 
 text = _TextFields()
@@ -142,24 +106,13 @@ class _DocumentIdField:
 document_id = _DocumentIdField()
 
 
-def where(predicate: _Predicate | FieldPredicate | _DocumentPredicate) -> queries.Operation:
+def where(predicate: FieldPredicate | _DocumentPredicate) -> queries.Operation:
     """Build an ordered filter operation; never evaluate corpus data."""
     if isinstance(predicate, FieldPredicate):
         return predicate._operation()
     if isinstance(predicate, _DocumentPredicate):
         return queries.Operation(document_ids=queries.DocumentSelection(ids=predicate.ids))
-    if not isinstance(predicate, _Predicate):
-        raise TypeError("where() expects a field comparison")
-    if predicate.field == IntrinsicField.CORPUS_ID:
-        raise NotImplementedError("source.corpus_id is currently available for mix strata only")
-    comparison = queries.Comparison(operator=predicate.operator, field=field_id(predicate.field))
-    if predicate.field == IntrinsicField.OBJECT_URI:
-        if not isinstance(predicate.value, str):
-            raise TypeError("object.uri comparisons require a string")
-        comparison.text = predicate.value
-    else:
-        comparison.count = _uint(predicate.value, 64, "count")
-    return queries.Operation(where=comparison)
+    raise TypeError("where() expects a field comparison")
 
 
 @dataclass(frozen=True)
@@ -478,7 +431,11 @@ def mix(
         raise TypeError("replacement must be a bool")
     partition = datasets.Domains()
     strata = source.corpus_id if domains is None else domains
-    if isinstance(strata, _Field):
+    if (
+        isinstance(strata, ScalarField)
+        and field_id(strata.name) <= queries.FIELD_SOURCE_CORPUS_ID
+        and strata.projection == queries.FieldComparison.SCALAR
+    ):
         partition.field = field_id(strata.name)
     elif isinstance(strata, Mapping):
         labels = {_id(id, 32).hex(): label for id, label in cast(Mapping[str, str], strata).items()}
@@ -496,7 +453,7 @@ def mix(
             if strata is not Topic and strata is not ContentType and strata is not Language:
                 raise TypeError("expected Topic, ContentType, or Language")
             values = (strata,)
-        elif isinstance(strata, (str, _Field, FieldProjection, ClassifierProjection, VectorField)):
+        elif isinstance(strata, (str, FieldProjection, ClassifierProjection, VectorField)):
             values = (strata,)
         else:
             values = strata

@@ -1,4 +1,4 @@
-"""Sequence inspection reads saved assets only when a page contains examples."""
+"""Sequence previews read saved assets only when a page contains examples."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from _type_support import coordinator, wordpiece_tokenizer
 import premixdb as p
 from premixdb._sequences import Sequence
 from premixdb.execution.coordinator import Coordinator
-from premixdb.execution.inspection import sequences
 
 
 @pytest.fixture(params=["wordpiece", "bytes"])
@@ -37,7 +36,7 @@ def ready(
         yield coordinator(db), dataset
 
 
-def test_inspection_uses_saved_decoder(ready: tuple[Coordinator, p.Dataset]) -> None:
+def test_preview_uses_saved_decoder(ready: tuple[Coordinator, p.Dataset]) -> None:
     service, dataset = ready
     expected = dataset.preview(limit=20, max_characters=1_000_000)
     with (
@@ -48,48 +47,33 @@ def test_inspection_uses_saved_decoder(ready: tuple[Coordinator, p.Dataset]) -> 
             new_callable=PropertyMock,
             side_effect=AssertionError("expanded tokens"),
         ),
-        patch.object(Sequence, "_preview", side_effect=AssertionError("read masks")),
     ):
-        page = sequences(service, dataset.id, {})
-    assert page["total"] == len(dataset)
-    assert len(page["rows"]) == len(expected) == 20
-    for row, example in zip(page["rows"], expected, strict=True):
+        page = dataset.preview(limit=20, max_characters=1_000_000)
+    assert len(dataset) > 0
+    assert len(page) == len(expected) == 20
+    for row, example in zip(page, expected, strict=True):
         assert row["ordinal"] == example["ordinal"]
         assert row["tokens"] == example["tokens"]
         assert row["text"] == example["text"]
         assert row["truncated"] == example["truncated"]
 
 
-@pytest.mark.parametrize("parameters", [{"offset": ["999999"]}, {"documents": ["999999"]}])
-def test_empty_inspection_pages_do_not_load_tokenizer(
-    ready: tuple[Coordinator, p.Dataset], parameters: dict[str, list[str]]
-) -> None:
+def test_empty_preview_pages_do_not_load_tokenizer(ready: tuple[Coordinator, p.Dataset]) -> None:
     service, dataset = ready
     with (
         patch.object(service, "_tokenizer", side_effect=AssertionError("execution tokenizer")),
         patch("premixdb._sequences.preview_decoder", side_effect=AssertionError("loaded asset")),
     ):
-        page = sequences(service, dataset.id, parameters)
-    assert page["rows"] == []
-    assert page["total"] == (len(dataset) if "offset" in parameters else 0)
+        assert dataset.preview(offset=999999) == []
+        assert dataset.preview(limit=0) == []
 
 
-@pytest.mark.parametrize(
-    "parameters",
-    [
-        {"offset": ["-1"]},
-        {"offset": ["invalid"]},
-        {"documents": ["-1"]},
-        {"documents": ["invalid"]},
-        {"crossing": ["false"]},
-        {"padding": ["false"]},
-        {"source": ["invalid"]},
-    ],
-)
-def test_invalid_inspection_filters_fail_before_catalog_reads(
-    tmp_path: Path, parameters: dict[str, list[str]]
-) -> None:
+@pytest.mark.parametrize("offset", [-1, "invalid", True])
+def test_invalid_preview_offsets_fail_before_catalog_reads(tmp_path: Path, offset: object) -> None:
+    from _type_support import invalid_call
+
     with p.PremixDB(storage=tmp_path) as db:
-        with patch("premixdb.execution.inspection.resource", side_effect=AssertionError("read")):
+        dataset = db.corpus("invalid", [p.Source("a", "text")]).query().dataset()
+        with patch.object(dataset, "wait", side_effect=AssertionError("read")):
             with pytest.raises(ValueError):
-                sequences(coordinator(db), "unused", parameters)
+                invalid_call(dataset.preview, offset=offset)

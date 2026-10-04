@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 import unittest
@@ -22,7 +21,7 @@ from premixdb._typing import FieldValue
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.plans import Step
 from premixdb.engine.queries import CorpusIndex, Query
-from premixdb.engine.snapshots import FRAME_BYTES, StoredDocument
+from premixdb.engine.snapshots import StoredDocument
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.execution import enrichment
@@ -99,14 +98,10 @@ class ExtendedResourceTests(unittest.TestCase):
             ready = future.result()
             self.assertEqual(ready.profile().output_documents, 3)
             self.assertEqual(len(ready._proto.field_snapshot_ids), 2)
-        from premixdb.execution.inspection import matrix
-
         with patch(
             "premixdb.execution.enrichment.producer", side_effect=AssertionError("inference")
         ):
-            self.assertEqual(
-                sum(cell["documents"] for cell in matrix(coordinator(self.client), ready.id)), 3
-            )
+            self.assertEqual(ready.profile().output_documents, 3)
             reordered = (
                 snapshot.query()
                 ._with_fields([p.quality.educational_value, p.topic.label, p.topic.label])
@@ -120,15 +115,8 @@ class ExtendedResourceTests(unittest.TestCase):
             )
             self.assertEqual(mixed[0].wait().profile().planned_content_tokens, 4)
 
-    def test_inspection_requires_fields_but_mixture_domains_derive_them(self) -> None:
-        from premixdb.execution.inspection import matrix
-
+    def test_mixture_domains_derive_and_reuse_fields(self) -> None:
         query = self.population().query()
-        with patch(
-            "premixdb.execution.enrichment.producer", side_effect=AssertionError("inference")
-        ):
-            with self.assertRaisesRegex(ValueError, "requested by the query"):
-                matrix(coordinator(self.client), query.id)
         with patch(
             "premixdb.execution.enrichment.producer", side_effect=InspectionFields
         ) as producer:
@@ -395,191 +383,74 @@ class ExtendedResourceTests(unittest.TestCase):
         ]
         self.assertEqual(ranges, [(i, i + 1) for i in [0, 1, 2, 3, 4, 11, 12, 13, 14]])
 
-    def test_python_inspection_catalog_rows_and_history(self) -> None:
-        from premixdb.execution.inspection import catalog, history, rows
+    def test_catalog_preview_and_history(self) -> None:
+        snapshot = self.population()
+        query = snapshot.query(steps=[p.where(p.text.bytes == 5)])
+        self.assertEqual(len(self.client.corpus.list()), 1)
+        self.assertEqual(snapshot.profile().documents, 3)
+        self.assertEqual(query.profile().output_documents, 1)
+        self.assertEqual(len(query.preview()), 1)
+        self.assertTrue(self.client._execution_events())
 
-        query = self.population().query()
-        service = coordinator(self.client)
-        self.assertEqual(len(catalog(service)["snapshot"]), 1)
-        self.assertEqual(rows(service, "query", query.id, {})["total"], 3)
-        parameters = dict(
-            field=["FIELD_TEXT_BYTES"],
-            lower=[json.dumps({"count": "5"})],
-            upper=[json.dumps({"count": "5"})],
-        )
-        self.assertEqual(rows(service, "query", query.id, parameters)["total"], 1)
-        self.assertEqual(len(history(service, self.client._create_corpus("population").id)), 1)
-
-    def test_python_inspection_matrix_reuses_query_pinned_fields(self) -> None:
-        from premixdb.execution.inspection import matrix
-
+    def test_published_fields_reuse_pinned_values(self) -> None:
         with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
             query = (
                 self.population()
-                .query(
-                    sampling=p.sample(
-                        seed=3, documents=3, domains=(p.topic.label, p.quality.educational_value)
-                    )
-                )
+                .query()
+                ._with_fields([p.topic.label, p.quality.educational_value])
                 .wait()
             )
         with patch(
             "premixdb.execution.enrichment.projections",
             side_effect=AssertionError("recomputed pinned fields"),
         ):
-            cells = matrix(coordinator(self.client), query.id)
-        self.assertEqual(sum(cell["documents"] for cell in cells), 3)
-        self.assertTrue(any(cell["topic"] == "unknown" for cell in cells))
+            self.assertEqual(query.profile().output_documents, 3)
+            self.assertTrue(query.profile().fields)
 
-    def test_python_inspection_input_drilldown_and_field_coverage(self) -> None:
-        from premixdb.execution.inspection import coverage, rows
-
+    def test_filtered_preview_and_lineage_agree(self) -> None:
         snapshot = self.population()
         with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
             query = snapshot.query(steps=[p.where(p.quality.educational_value >= 0.5)]).wait()
-        service = coordinator(self.client)
-        inputs = rows(service, "query", query.id, {"population": ["input"]})
-        outputs = rows(service, "query", query.id, {})
-        self.assertEqual((inputs["total"], outputs["total"]), (3, 1))
-        removed = rows(
-            service,
-            "query",
-            query.id,
-            {"population": ["input"], "stage": ["0"], "outcome": ["removed"]},
+        self.assertEqual((snapshot.profile().documents, query.profile().output_documents), (3, 1))
+        self.assertEqual(query.preview()[0]["source_key"], "https://test/b")
+        lineage = query._provenance()
+        self.assertEqual(
+            sum(value["selection"]["kind"] == "filtered" for value in lineage.values()), 2
         )
-        self.assertEqual(removed["total"], 2)
-        self.assertTrue(
-            all(
-                row["provenance"] is not None
-                and row["provenance"]["selection"]["kind"] == "filtered"
-                for row in removed["rows"]
-            )
-        )
-        available = coverage(service, "snapshot", snapshot.id)
-        self.assertEqual(len(available["fields"]), 1)
-        quality = available["fields"][0]
-        self.assertEqual(quality["profile"]["null_documents"], "1")
-        self.assertTrue(coverage(service, "query", query.id)["fields"][0]["pinned"])
-        parameters = dict(
-            build=[quality["id"]],
-            field=["FIELD_QUALITY_EDUCATIONAL_VALUE"],
-            lower=[json.dumps({"number": 0.5})],
-            upper=[json.dumps({"number": 1.0})],
-        )
-        example = rows(service, "snapshot", snapshot.id, parameters)
-        self.assertEqual(example["rows"][0]["source"], "https://test/b")
 
-    def test_python_inspection_exact_and_candidate_index_statistics(self) -> None:
-        from premixdb.execution.inspection import coverage, index_statistics
-
+    def test_indexed_dedupe_publishes_evidence(self) -> None:
         snapshot = self.population()
         query = snapshot.query(steps=[p.indexed_dedupe(p.DedupeIndex.EXACT_DOCUMENT)]).wait()
-        available = coverage(coordinator(self.client), "snapshot", snapshot.id)
-        index = next(
-            index for index in available["indexes"] if index["name"] == "dupekit.exact_candidates"
-        )
-        with patch.object(
-            StoredDocument,
-            "text",
-            new_callable=PropertyMock,
-            side_effect=AssertionError("decoded whole duplicate"),
-        ):
-            statistics = index_statistics(coordinator(self.client), index["id"], {"size": ["2"]})
-        self.assertEqual(statistics["group_sizes"], {"2": "1"})
-        self.assertEqual(statistics["duplicate_documents"], "1")
-        self.assertEqual(
-            {r["source"] for r in statistics["examples"]}, {"https://test/a", "https://test/b"}
-        )
+        self.assertTrue(query._proto.index_snapshot_ids)
         self.assertEqual(query.profile().output_documents, 2)
 
-    def test_inspection_drilldown_uses_shared_field_projections(self) -> None:
-        from premixdb.execution.inspection import rows
-
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
-            query = (
-                self.population()
-                .query()
-                ._with_fields(
-                    [
-                        p.topic.label,
-                        p.quality.educational_value,
-                        p.embedding.harrier.component(0),
-                    ]
-                )
-                .wait()
-            )
+    def test_shared_field_projections_filter_without_decoding_text(self) -> None:
+        snapshot = self.population()
         cases = [
-            (
-                "FIELD_QUALITY_EDUCATIONAL_VALUE",
-                "SCALAR",
-                {},
-                '{"number":0.5}',
-                '{"number":1}',
-                {"b"},
-            ),
-            (
-                "FIELD_WEBORGANIZER_TOPIC",
-                "TOP_CLASS",
-                {},
-                json.dumps({"text": p.Topic.SCIENCE_AND_TECH.value}),
-                json.dumps({"text": p.Topic.SCIENCE_AND_TECH.value}),
-                {"a", "b"},
-            ),
-            (
-                "FIELD_WEBORGANIZER_TOPIC",
-                "CLASS_PROBABILITY",
-                {"class_name": [p.Topic.SCIENCE_AND_TECH.value]},
-                '{"number":0.9}',
-                '{"number":1}',
-                {"a", "b"},
-            ),
-            (
-                "FIELD_QUALITY_EDUCATIONAL_VALUE",
-                "IS_NULL",
-                {},
-                '{"boolean":true}',
-                '{"boolean":true}',
-                {"null"},
-            ),
-            (
-                "FIELD_EMBEDDING_HARRIER",
-                "VECTOR_COMPONENT",
-                {"component": ["0"]},
-                '{"number":1}',
-                '{"number":1}',
-                {"a", "b"},
-            ),
+            (p.quality.educational_value >= 0.5, {"b"}),
+            (p.topic.label == p.Topic.SCIENCE_AND_TECH, {"a", "b"}),
+            (p.topic.science_and_tech >= 0.9, {"a", "b"}),
+            (p.quality.educational_value.is_null(), {"null"}),
+            (p.embedding.harrier.component(0) == 1.0, {"a", "b"}),
         ]
+        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+            snapshot.query()._with_fields(
+                [p.topic.label, p.quality.educational_value, p.embedding.harrier.component(0)]
+            ).wait()
         with patch.object(
             StoredDocument,
             "text",
             new_callable=PropertyMock,
-            side_effect=AssertionError("decoded whole drilldown document"),
+            side_effect=AssertionError("decoded whole document"),
         ):
-            for field, projection, extra, lower, upper, expected in cases:
-                with self.subTest(projection=projection):
-                    page = rows(
-                        coordinator(self.client),
-                        "query",
-                        query.id,
-                        dict(
-                            field=[field],
-                            projection=[projection],
-                            lower=[lower],
-                            upper=[upper],
-                            **extra,
-                        ),
-                    )
-                    self.assertEqual(
-                        {item["source"].rsplit("/", 1)[-1] for item in page["rows"]}, expected
-                    )
-                    self.assertEqual(page["total"], len(expected))
-            with self.assertRaises(ValueError):
-                rows(
-                    coordinator(self.client),
-                    "query",
-                    query.id,
-                    dict(field=["FIELD_QUALITY_EDUCATIONAL_VALUE"], projection=["invalid"]),
+            for predicate, expected in cases:
+                query = snapshot.query(steps=[p.where(predicate)]).wait()
+                self.assertEqual(
+                    {
+                        row["source_key"].rsplit("/", 1)[-1]
+                        for row in query.preview(max_characters=0)
+                    },
+                    expected,
                 )
 
     def test_sampled_profiles_decode_and_project_each_selected_document_once(self) -> None:
@@ -609,40 +480,6 @@ class ExtendedResourceTests(unittest.TestCase):
             self.assertEqual(profile.documents, 200)
             self.assertEqual(profile.null_documents, nulls)
 
-    def test_matrix_examples_read_retained_unicode_prefixes(self) -> None:
-        from premixdb.execution.inspection import matrix
-
-        text = "DROP\n" + "é🌍" * (FRAME_BYTES // 6 + 100) + "\nDROP"
-        snapshot = self.client.corpus("large", [p.Source("https://test/a", text)])
-        reference = self.client.corpus("reference", [p.Source("remove", "DROP")])
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
-            query = (
-                snapshot.query(
-                    decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
-                )
-                ._with_fields([p.topic.label, p.quality.educational_value])
-                .wait()
-            )
-        service = coordinator(self.client)
-        with (
-            patch.object(
-                StoredDocument,
-                "text",
-                new_callable=PropertyMock,
-                side_effect=AssertionError("decoded whole matrix document"),
-            ),
-            patch.object(service._storage, "_get", wraps=service._storage._get) as read,
-        ):
-            cells = matrix(service, query.id)
-        self.assertEqual(len(cells), 1)
-        self.assertEqual(cells[0]["documents"], 1)
-        self.assertEqual(cells[0]["bytes"], len(text.replace("DROP", "").encode()))
-        self.assertEqual(cells[0]["examples"][0]["text"], text.replace("DROP", "")[:4096])
-        self.assertEqual(
-            sum(str(call.args[0]).startswith("snapshot/objects/") for call in read.call_args_list),
-            1,
-        )
-
     def test_fluent_recipes_reuse_completed_results_after_restart(self) -> None:
         path = self.root / "source.txt"
         path.write_text("first")
@@ -663,45 +500,17 @@ class ExtendedResourceTests(unittest.TestCase):
         )
         self.assertEqual(query_replay.mix(tokenizer=p.ByteTokenizer(), tokens=3).id, mix.id)
 
-    def test_python_inspection_sequence_geometry_source_and_stratum_drilldown(self) -> None:
-        from premixdb.execution.inspection import sequences
-
+    def test_sequence_preview_matches_packed_tokens_and_profile(self) -> None:
         left = self.client.corpus("left", [p.Source("left", "abcdef")])
         right = self.client.corpus("right", [p.Source("right", "12345")])
-        query = left.union(right).query()
-        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).wait()
-        service = coordinator(self.client)
-        page = sequences(service, dataset.id, {})
-        self.assertEqual(page["total"], len(dataset))
-        self.assertEqual([r["tokens"] for r in page["rows"]], [r.tokens for r in dataset])
-        crossing = sequences(service, dataset.id, {"crossing": ["true"]})
-        self.assertEqual(crossing["total"], dataset.profile().boundary_crossing_sequences)
-        for count, total in dataset.profile().documents_per_sequence.items():
-            self.assertEqual(
-                sequences(service, dataset.id, {"documents": [str(count)]})["total"], total
-            )
-        source_page = sequences(
-            service, dataset.id, {"source": [self.client._create_corpus("left").id]}
+        dataset = (
+            left.union(right).query().dataset(tokenizer=p.ByteTokenizer(), sequence_length=4).wait()
         )
-        self.assertTrue(source_page["rows"])
-        self.assertTrue(
-            all(97 in row["tokens"] or 101 in row["tokens"] for row in source_page["rows"])
-        )
-        mixed = query.mix(
-            tokenizer=p.ByteTokenizer(),
-            domains=p.source.corpus_id,
-            tokens=8,
-            n_candidates=1,
-            sampler=p.RegMixSampler(seed=1),
-        )[0].wait()
-        source = self.client._create_corpus("left").id
-        strata_page = sequences(service, mixed.id, {"stratum": [source]})
-        source_page = sequences(service, mixed.id, {"source": [source]})
-        self.assertEqual(strata_page, source_page)
-        with self.assertRaises(ValueError):
-            sequences(service, dataset.id, {"offset": ["-1"]})
+        page = dataset.preview(limit=100)
+        self.assertEqual(len(page), len(dataset))
+        self.assertEqual([row["tokens"] for row in page], [row.tokens for row in dataset])
+        self.assertEqual(sum(dataset.profile().documents_per_sequence.values()), len(dataset))
 
-    @pytest.mark.integration
     def test_process_pipeline_preserves_dataset_identity_and_boundaries(self) -> None:
         self.client.close()
         self.client = p.PremixDB(storage=self.root, process_workers=2)
@@ -719,7 +528,7 @@ class ExtendedResourceTests(unittest.TestCase):
             return [(seq.tokens, seq.mask, seq.attention_mask, seq.spans) for seq in dataset]
 
         expected = sequences(parallel)
-        expected_summary = parallel._summary()
+        expected_summary = parallel.profile()
         expected_provenance = query._provenance()
         self.client.close()
         self.client = p.PremixDB(storage=self.root / "sequential")
@@ -727,7 +536,7 @@ class ExtendedResourceTests(unittest.TestCase):
         sequential = sequential_query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=4)
         self.assertEqual(parallel.id, sequential.id)
         self.assertEqual(expected, sequences(sequential))
-        self.assertEqual(expected_summary, sequential._summary())
+        self.assertEqual(expected_summary, sequential.profile())
         self.assertEqual(expected_provenance, sequential_query._provenance())
         self.assertTrue(list((self.root / "partitions" / "receipts").glob("*")))
 

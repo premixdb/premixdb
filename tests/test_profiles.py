@@ -52,7 +52,7 @@ class ProfileTests(unittest.TestCase):
         self.assertAlmostEqual(captured.mean, 11 / 3)
         self.assertEqual(captured.quantile(0.5), premixdb.QuantileRange(3, 3))
         selected = self.snapshot.query(steps=[premixdb.where(premixdb.text.characters > 0)])
-        summary = selected._describe("text.characters")
+        summary = _describe_field(selected.profile().fields, "text.characters")
         self.assertEqual(summary.documents, 2)
         self.assertEqual(summary.mean, 5.5)
         self.assertEqual(summary.standard_deviation, 2.5)

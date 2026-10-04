@@ -14,15 +14,8 @@ from pathlib import Path
 from typing import Unpack
 from unittest.mock import patch
 
-from _type_support import (
-    PackingOptions,
-    SnapshotOptions,
-    invalid_call,
-)
-
-from premixdb import _runtime, local
-from premixdb.engine import execution
-from premixdb.local import (
+import _reference as local
+from _reference import (
     ByteTokenizer,
     Concat,
     PremixDB,
@@ -33,6 +26,14 @@ from premixdb.local import (
     text,
     where,
 )
+from _type_support import (
+    PackingOptions,
+    SnapshotOptions,
+    invalid_call,
+)
+
+from premixdb import _runtime
+from premixdb.engine import execution
 
 ROOT = Path(__file__).resolve().parents[1]
 CODE = execution.CodeVersion("local://test", "a" * 40, "09" * 32)

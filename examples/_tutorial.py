@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
 from pathlib import Path
 
 from premixdb import PremixDB, Snapshot, Source
 
 ROOT = Path(__file__).resolve().parents[1]
-TINY = ROOT / "examples/data/tiny_shakespeare_excerpt.txt"
+TINY = Path(str(files("premixdb").joinpath("data/tiny_shakespeare_excerpt.txt")))
 C4 = ROOT / ".cache/c4/c4-train.00000-of-01024.json.gz"
 PAPERS = ROOT / ".cache/s2orc/papers.jsonl"
 TRAIN_PAPERS = ROOT / ".cache/s2orc/train.jsonl"

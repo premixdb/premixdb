@@ -162,7 +162,7 @@ def test_saved_resource_reads_reject_a_closed_session(tmp_path: Path) -> None:
         lambda: db._snapshot(b"s" * 32),
         lambda: db._query(b"q" * 32),
         lambda: db._dataset(b"d" * 32),
-        lambda: db._datasets(b"m" * 32),
+        lambda: db._mix(b"m" * 32),
     ):
         with pytest.raises(ValueError, match="PremixDB is closed"):
             read()
@@ -369,9 +369,12 @@ def test_listing_arguments_and_document_defaults(tmp_path: Path) -> None:
         corpus = db._create_corpus("documents")
         query = snapshot.query().wait()
         complete = corpus.list_document(limit=100)
-        for listing in (corpus.list_document, query._list_document):
+        for listing in (corpus.list_document,):
             assert listing() == complete[:5]
             assert listing(limit=2, offset=5) == complete[5:7]
+        assert [row["id"] for row in query.preview(limit=2, offset=5, max_characters=0)] == [
+            row["id"] for row in complete[5:7]
+        ]
         for listing in (
             db.corpus.list,
             corpus_handle(corpus).list_snapshot,
@@ -385,3 +388,122 @@ def test_listing_arguments_and_document_defaults(tmp_path: Path) -> None:
                     invalid_call(listing, limit=limit, offset=offset)
     finally:
         db.close()
+
+
+def test_catalog_windows_load_only_requested_payloads(tmp_path: Path) -> None:
+    from premixdb.execution import metadata
+
+    with p.PremixDB(storage=tmp_path) as db:
+        snapshot = db.corpus("indexed", [p.Source("a", "text")])
+        corpus = db._create_corpus("indexed")
+        store = coordinator(db)._storage
+        for i in range(260):
+            query = q.Query(id=(i + 1).to_bytes(32), snapshot_ids=[_decode_id(snapshot.id)])
+            store.save("query", query.id, query, suffix=".pending")
+            dataset = d.Dataset(id=(i + 1).to_bytes(32), query_id=query.id)
+            store.save("dataset", dataset.id, dataset, suffix=".recipe")
+        with (
+            patch.object(store, "list", side_effect=AssertionError("scanned payloads")),
+            patch.object(metadata, "_decode", wraps=metadata._decode) as decode,
+        ):
+            assert len(corpus.list_query(limit=3, offset=200)) == 3
+            assert decode.call_count == 0
+            assert len(corpus.list_dataset(limit=3, offset=200)) == 3
+            assert decode.call_count == 3
+            decode.reset_mock()
+            assert len(db.corpus.list(limit=1)) == 1
+            assert decode.call_count == 1
+        with patch.object(store.metadata, "members", wraps=store.metadata.members) as members:
+            first = db._executor.ListQuery(q.ListQueryRequest())
+            second = db._executor.ListQuery(q.ListQueryRequest(page_token=first.next_page_token))
+            assert len(first.queries) == len(second.queries) == 128
+            assert members.call_count == 1
+
+
+def test_continuation_detects_membership_changes_from_another_connection(tmp_path: Path) -> None:
+    with ObjectStore(tmp_path) as store:
+        catalog = Catalog(store)
+        for i in range(130):
+            value = d.Mix(id=(i + 1).to_bytes(32), query_id=b"q" * 32)
+            store.save("mixture", value.id, value)
+        first = catalog.ListMix(d.ListMixRequest(query_id=b"q" * 32))
+        with ObjectStore(tmp_path) as writer:
+            value = d.Mix(id=b"z" * 32, query_id=b"q" * 32)
+            writer.save("mixture", value.id, value)
+        with pytest.raises(ValueError, match="page token"):
+            catalog.ListMix(d.ListMixRequest(query_id=b"q" * 32, page_token=first.next_page_token))
+        assert len(catalog.ListMix(d.ListMixRequest(query_id=b"q" * 32)).mixtures) == 128
+
+
+def test_catalog_state_precedence_is_applied_before_parent_filtering(tmp_path: Path) -> None:
+    with ObjectStore(tmp_path) as store:
+        catalog = Catalog(store)
+        identity = b"q" * 32
+        pending = q.Query(id=identity, snapshot_ids=[b"a" * 32], status=status.STATUS_PENDING)
+        failed = q.Query(id=identity, snapshot_ids=[b"a" * 32], status=status.STATUS_ERROR)
+        store.save("query", identity, pending, suffix=".pending")
+        store.save("query", identity, failed, suffix=".failed")
+        assert catalog.ListQuery(q.ListQueryRequest()).queries[0].status == status.STATUS_ERROR
+        active = q.Query(id=identity, snapshot_ids=[b"a" * 32], status=status.STATUS_RUNNING)
+        catalog._queries[identity] = active
+        assert catalog.ListQuery(q.ListQueryRequest()).queries[0].status == status.STATUS_RUNNING
+        complete = q.Query(id=identity, snapshot_ids=[b"b" * 32], status=status.STATUS_COMPLETED)
+        store.save("query", identity, complete)
+        assert catalog.ListQuery(q.ListQueryRequest()).queries[0].status == status.STATUS_COMPLETED
+        assert not catalog.ListQuery(q.ListQueryRequest(snapshot_id=b"a" * 32)).queries
+        assert catalog.ListQuery(q.ListQueryRequest(snapshot_id=b"b" * 32)).queries == [complete]
+
+
+def test_old_catalog_lists_read_only_and_backfills_on_writable_open(tmp_path: Path) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    with p.PremixDB(storage=tmp_path) as db:
+        first = db.corpus("legacy-index", [p.Source("a", "first")])
+        query = first.query().wait()
+        dataset = query.dataset(tokenizer=p.ByteTokenizer(), sequence_length=2).wait()
+        second = db.corpus("legacy-index", [p.Source("a", "second")], base=first)
+        corpus = db._create_corpus("legacy-index")
+        snapshots = corpus.list_snapshot()
+        queries = corpus.list_query()
+        mixtures = [value.id for value in corpus.list_mixture()]
+        datasets = [value.id for value in corpus.list_dataset()]
+    with closing(sqlite3.connect(tmp_path / "metadata.sqlite3")) as connection, connection:
+        connection.execute("DROP TABLE catalog_parents")
+        connection.execute("DELETE FROM migrations WHERE name='catalog-parents-v1'")
+    for read_only in (True, False, True):
+        with p.PremixDB(storage=tmp_path, read_only=read_only) as db:
+            corpus = p.Corpus(db, c.Corpus(id=_decode_id(first.corpus_id)))
+            assert corpus.list_snapshot() == snapshots
+            assert corpus.list_query() == queries
+            assert [value.id for value in corpus.list_mixture()] == mixtures
+            assert [value.id for value in corpus.list_dataset()] == datasets == [dataset.id]
+            assert db.corpus("legacy-index").id == second.id
+            assert db._executor.ListExecutions(status.ListExecutionRequest()).events
+
+
+def test_continuation_scope_keeps_the_revision_of_its_membership_snapshot(tmp_path: Path) -> None:
+    with ObjectStore(tmp_path) as store, ObjectStore(tmp_path) as writer:
+        catalog = Catalog(store)
+        for i in range(130):
+            value = d.Mix(id=(i + 1).to_bytes(32), query_id=b"q" * 32)
+            store.save("mixture", value.id, value)
+        read_members = store.metadata.members
+
+        def publish_after_read(
+            namespace: str,
+            *,
+            suffixes: tuple[str, ...],
+            parents: tuple[bytes, ...],
+            order: Literal["id", "public", "capture", "execution"],
+        ) -> list[tuple[bytes, str, int | None]]:
+            members = read_members(namespace, suffixes=suffixes, parents=parents, order=order)
+            value = d.Mix(id=b"z" * 32, query_id=b"q" * 32)
+            writer.save("mixture", value.id, value)
+            return members
+
+        with patch.object(store.metadata, "members", side_effect=publish_after_read):
+            first = catalog.ListMix(d.ListMixRequest(query_id=b"q" * 32))
+        assert len(first.mixtures) == 128
+        with pytest.raises(ValueError, match="page token"):
+            catalog.ListMix(d.ListMixRequest(query_id=b"q" * 32, page_token=first.next_page_token))

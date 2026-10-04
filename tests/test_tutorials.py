@@ -57,6 +57,7 @@ class LessonSettings(TypedDict, total=False):
 class QualityLesson(Protocol):
     INPUT: Path
     STORAGE: Path
+    MINIMUM: float
 
     def main(self) -> None: ...
 
@@ -201,7 +202,10 @@ def test_quality_lesson_reuses_real_cache_with_controlled_model(
     lesson.STORAGE = tmp_path / "store"
     with patch.object(enrichment, "producer", return_value=Scores()):
         lesson.main()
-    assert "Captured → selected documents: 2 → 1" in capsys.readouterr().out
+        assert "Captured → selected documents: 2 → 1" in capsys.readouterr().out
+        lesson.MINIMUM = 0.0
+        lesson.main()
+        assert "Captured → selected documents: 2 → 2" in capsys.readouterr().out
     assert Scores.calls == 1
 
 

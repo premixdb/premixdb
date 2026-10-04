@@ -34,6 +34,11 @@ TOKEN_SHARD_BYTES = 8 * 1024 * 1024
 
 
 def _tokenizer_definition(asset_digest: str) -> str:
+    """Historical v1 codec identity, not the installed tokenizers package version.
+
+    Preserve this label so saved tokenizer and dataset IDs remain reusable.
+    The execution CodeVersion separately fingerprints installed package versions.
+    """
     return (
         Canonical("tokenizer")
         .string("huggingface/tokenizers/0.22.2/python/onig/encode-no-special-tokens/v1")

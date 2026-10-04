@@ -12,14 +12,14 @@ uvx --python 3.12 premixdb shell
 
 The shell has already run these commands so you have `p` and `db` available:
 
-```bash
+```python
 import premixdb as p
-db = PremixDB()
+db = p.PremixDB()
 ```
 
 You can also use the tiny_shakespeare demo corpus of his plays:
 
-```bash
+```python
 from torch.utils.data import DataLoader
 
 dataset = db.corpus('demo').query().mix()[0].torch()

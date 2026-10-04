@@ -23,7 +23,7 @@ from typing import (
 from google.protobuf.message import Message
 from google.protobuf.unknown_fields import UnknownFieldSet
 
-from .._protobuf import at, parse
+from .._protobuf import parse
 from .._typing import Edge, FieldValue, checked_record, field_value
 from ..engine.curation import SelectedDocument
 from ..engine.plans import Step
@@ -349,6 +349,14 @@ def cached_rows(
             save(result)
             return result
 
+    def rows(result: e.DerivationCache) -> Iterator[e.DedupeEvidence | list[e.FieldValue]]:
+        if is_index:
+            yield from result.evidence.rows
+        else:
+            yield from (
+                list(row) for row in zip(*(column.rows for column in result.fields), strict=True)
+            )
+
     iterator = iter(documents)
     if service.pipeline is not None:
         # Bound outstanding text and preserve the fixed semantic cohort policy.
@@ -375,47 +383,37 @@ def cached_rows(
                 available[key(cohort)] = result
             for cohort in cohorts:
                 result = available[key(cohort)]
-                for i in range(len(cohort)):
-                    yield (
-                        at(result.evidence.rows, i)
-                        if is_index
-                        else [at(column.rows, i) for column in result.fields]
-                    )
+                yield from rows(result)
         return
     while docs := list(islice(iterator, COHORT_ROWS)):
         if scope == "batch":
             result = service._submissions.run(("derivation-cache", key(docs)), lambda: batch(docs))
-            results = [(result, i) for i in range(len(docs))]
+            yield from rows(result)
         else:
-            results, missing = {}, []
+            available, missing = {}, []
             for doc in docs:
                 try:
-                    results[doc.id] = load([doc])
+                    available[doc.id] = load([doc])
                 except KeyError:
                     missing.append(doc)
             if missing:
                 computed = compute(missing)
-                for i, doc in enumerate(missing):
+                for doc, row in zip(missing, rows(computed), strict=True):
                     result = e.DerivationCache(
                         id=key([doc]),
                         definition_json=definition,
                         document_ids=[bytes.fromhex(doc.id)],
                         schema_ids=schema_ids,
                     )
-                    if is_index:
-                        result.evidence.rows.append(computed.evidence.rows[i])
+                    if isinstance(row, e.DedupeEvidence):
+                        result.evidence.rows.append(row)
                     else:
-                        for column in computed.fields:
-                            result.fields.add(rows=[at(column.rows, i)])
+                        for value in row:
+                            result.fields.add(rows=[value])
                     save(result)
-                    results[doc.id] = result
-            results = [(results[doc.id], 0) for doc in docs]
-        for result, i in results:
-            yield (
-                at(result.evidence.rows, i)
-                if is_index
-                else [at(column.rows, i) for column in result.fields]
-            )
+                    available[doc.id] = result
+            for doc in docs:
+                yield from rows(available[doc.id])
 
 
 def build(service: Coordinator, request: e.DerivationPlan) -> e.Materialization:

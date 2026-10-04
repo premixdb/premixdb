@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from _type_support import coordinator
 from blake3 import blake3
 
 import premixdb as p
@@ -106,8 +105,6 @@ class ExtendedCurationTests(unittest.TestCase):
         self.assertNotIn("one two three", [d.text for d in query._proto.preview.documents])
 
     def test_sampling_intrinsic_strata_use_retained_text_lengths(self) -> None:
-        from premixdb.execution.inspection import rows
-
         target = self.snapshot("target", ["ab\n秘密\ncd", "uvwxyz"])
         reference = self.snapshot("reference", ["秘密"])
         query = target.query(
@@ -115,13 +112,9 @@ class ExtendedCurationTests(unittest.TestCase):
             sampling=p.sample(seed=3, documents=2, domains=p.text.bytes, weights={"[6]": 1.0}),
         )
         self.assertEqual(dict(query.profile().sampling.realized_domains), {"[6]": 2})
-        self.assertEqual(
-            rows(coordinator(self.client), "query", query.id, {"stratum": ["[6]"]})["total"], 2
-        )
+        self.assertEqual(len(query.preview()), 2)
 
     def test_character_strata_use_retained_unicode_text(self) -> None:
-        from premixdb.execution.inspection import rows
-
         target = self.snapshot("target", ["pré\n秘密\nfin", "abcdefgh"])
         reference = self.snapshot("reference", ["秘密"])
         query = target.query(
@@ -129,9 +122,7 @@ class ExtendedCurationTests(unittest.TestCase):
             sampling=p.sample(seed=3, documents=2, domains=p.text.characters, weights={"[8]": 1.0}),
         )
         self.assertEqual(dict(query.profile().sampling.realized_domains), {"[8]": 2})
-        self.assertEqual(
-            rows(coordinator(self.client), "query", query.id, {"stratum": ["[8]"]})["total"], 2
-        )
+        self.assertEqual(len(query.preview()), 2)
 
     def test_cosine_spill_covers_block_boundaries_and_extreme_finite_scales(self) -> None:
         from premixdb.engine.curation import cosine_edges

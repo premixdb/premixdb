@@ -2483,11 +2483,6 @@ dependencies = [
     { name = "transformers" },
 ]
 
-[package.optional-dependencies]
-huggingface = [
-    { name = "datasets" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "grpcio-tools" },
@@ -2508,7 +2503,6 @@ dev = [
 requires-dist = [
     { name = "blake3", specifier = ">=1.0.10" },
     { name = "datasets", specifier = ">=5.0.1,<6" },
-    { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=5.0.1,<6" },
     { name = "datatrove", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'", specifier = "==0.10.1" },
     { name = "datatrove", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", specifier = "==0.3.0" },
     { name = "einops", specifier = ">=0.8,<1" },

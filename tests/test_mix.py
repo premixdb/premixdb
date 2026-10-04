@@ -73,7 +73,7 @@ class MixTests(unittest.TestCase):
         planned = mix.profile(0)
         self.assertEqual(sum(planned.planned_stratum_tokens.values()), 9)
         with premixdb.PremixDB(storage=self.root) as reopened:
-            again = reopened._datasets(mix.id)
+            again = reopened._mix(mix.id)
             self.assertEqual(again.weights, mix.weights)
             self.assertFalse(hasattr(coordinator(reopened), "_dataset_handles"))
             dataset = again[0]

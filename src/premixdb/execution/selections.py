@@ -18,15 +18,9 @@ from blake3 import blake3
 
 from ..engine.curation import RetainedDocument, SelectedDocument
 from ..engine.identity import CodeVersion
-from ..engine.queries import Query, Row
-from ..engine.snapshots import (
-    FRAME_BYTES,
-    StoredDocument,
-    _decode_document,
-    _profile,
-    _schema,
-    _totals,
-)
+from ..engine.queries import CompletedQuery, Query, Row
+from ..engine.records import decode_document, text_profile, validate_document
+from ..engine.snapshots import StoredDocument
 from ..internal import derivation_pb2 as d
 from .catalog import wire
 
@@ -109,26 +103,17 @@ def restore(service: Coordinator, resource: q.Query) -> Query:
             origin = provenance.get(id)
             if origin is None or origin["selection"]["kind"] != "retained":
                 raise ValueError("stored query selection differs from its lineage")
-            source = _decode_document(json_object(load_json(record.source_record)))
-            _schema(source, ("key", "content", "bytes", "frames"))
+            source = decode_document(json_object(load_json(record.source_record)))
+            validate_document(source, require_profiles=True)
             if (
                 len(record.document_id) != 32
                 or record.corpus_id.hex() != origin["corpus_id"]
                 or source["key"] != origin["source_key"]
                 or bytes(source["content"]).hex() != origin["content"]
-                or type(source["bytes"]) is not int
-                or source["bytes"] < 0
                 or not origin["snapshots"]
                 or not set(origin["snapshots"]) <= {id.hex() for id in resource.snapshot_ids}
             ):
                 raise ValueError("stored selection source differs from its lineage")
-            if sum(frame["bytes"] for frame in source["frames"]) != source["bytes"]:
-                raise ValueError("stored selection source has incomplete frame coverage")
-            for frame in source["frames"]:
-                _schema(frame, ("digest", "bytes", "profile"))
-                _totals(frame["profile"], ("content_bytes", "characters", "newlines"))
-                if len(bytes(frame["digest"])) != 32 or not 0 < frame["bytes"] <= 8 * FRAME_BYTES:
-                    raise ValueError("invalid stored selection frame")
             document: SelectedDocument = StoredDocument(
                 record.corpus_id.hex(), source["key"], source, frames, id
             )
@@ -161,18 +146,19 @@ def restore(service: Coordinator, resource: q.Query) -> Query:
         or sum(row.document.size for row in rows) != resource.profile.output_content_bytes
     ):
         raise ValueError("stored query selection has incomplete coverage")
-    # Rehydrate the engine value, keeping construction (which runs the recipe)
-    # out of this read path. Only immutable snapshot text is needed for packing.
-    handle = Query.__new__(Query)
-    handle.code = code
+    handle = Query(
+        CompletedQuery(
+            id=resource.id.hex(),
+            inputs=tuple(id.hex() for id in resource.snapshot_ids),
+            field_snapshot_ids=tuple(resource.field_snapshot_ids),
+            rows=rows,
+            provenance=provenance,
+            summary=_summary(resource.profile),
+        ),
+        (),
+        code,
+    )
     handle._encoding_provider = service._encodings
-    handle._id = resource.id.hex()
-    handle.inputs = tuple(id.hex() for id in resource.snapshot_ids)
-    handle.field_snapshot_ids = tuple(resource.field_snapshot_ids)
-    handle._rows = rows
-    handle._provenance = provenance
-    handle._summary = _summary(resource.profile)
-    handle.elapsed_seconds = 0.0
     return handle
 
 
@@ -188,7 +174,7 @@ class _Frames:
         if (
             len(data) != frame["bytes"]
             or blake3(data).digest() != digest
-            or _profile(data) != frame["profile"]
+            or text_profile(data) != frame["profile"]
         ):
             raise ValueError("stored selection text frame integrity check failed")
         return data

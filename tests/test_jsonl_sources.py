@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from _reference import PremixDB as LocalDB
 from _type_support import invalid_call
 
 from premixdb import PremixDB, Source
-from premixdb.local import PremixDB as LocalDB
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 
 from .._protobuf import parse
 from .._typing import Interval, json_object, load_json
-from ..engine.snapshots import _decode_document
+from ..engine.records import decode_document
 from .storage import ObjectStore
 
 if TYPE_CHECKING:
@@ -186,7 +186,7 @@ def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
             raise ValueError("preview shard coverage differs")
         for ordinal in range(max(offset, chunk.first), min(end, cursor)):
             row = rows[ordinal - chunk.first]
-            source = _decode_document(json_object(load_json(row.source_record)))
+            source = decode_document(json_object(load_json(row.source_record)))
             ranges = [(r.start, r.end) for r in row.ranges] if row.transformed else None
             text, truncated = _text(store, source, width, ranges)
             item = result.preview.documents.add(

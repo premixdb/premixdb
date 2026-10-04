@@ -23,26 +23,20 @@ from ._lineage import decode_lineage
 from ._mixing import Bounds, RegMixSampler, Tokens
 from ._policies import ByteTokenizer as BytePolicy
 from ._policies import Concat as ConcatPolicy
-from ._profiles import DistributionSummary, ProfileSelector, _MixProfiles
+from ._profiles import ProfileSelector, _MixProfiles
 from ._progress import report_progress
 from ._protobuf import copy_message
 from ._reader import Reader as Reader
 from ._reader import Topology as Topology
-from ._requests import _Field
 from ._sequences import Sequence, read_page
 from ._storage import RangeReader
 from ._types import (
     Checkpoint,
-    DatasetSummary,
     DocumentListing,
     ExecutionError,
     ExecutionRecord,
     PreviewDocument,
     PreviewSequence,
-    QueryPopulationSummary,
-    QueryStepSummary,
-    QuerySummary,
-    SnapshotSummary,
 )
 from ._unions import SnapshotUnion as SnapshotUnion
 from ._unions import _SnapshotOperations
@@ -68,32 +62,14 @@ DomainInput = (
     type[Topic]
     | type[ContentType]
     | type[Language]
-    | _Field[int]
-    | _Field[str]
     | FieldProjection
     | LanguageFields
     | TopicFields
     | ContentTypeFields
-    | Iterable[_Field[int] | _Field[str] | FieldProjection]
+    | Iterable[FieldProjection]
     | datasets.Domains
     | Mapping[str, str]
 )
-
-
-def _counts(totals: snapshots.SnapshotProfile) -> SnapshotSummary:
-    return SnapshotSummary(
-        documents=totals.documents, bytes=totals.content_bytes, characters=totals.characters
-    )
-
-
-def _query_counts(
-    profile: queries.QueryProfile | queries.QueryStepProfile, prefix: str
-) -> QueryPopulationSummary:
-    return QueryPopulationSummary(
-        documents=getattr(profile, f"{prefix}_documents"),
-        bytes=getattr(profile, f"{prefix}_content_bytes"),
-        characters=getattr(profile, f"{prefix}_characters"),
-    )
 
 
 def _duration(value: float, name: str) -> float:
@@ -215,25 +191,17 @@ class PremixDB:
             raise PermissionError(f"read-only session: reopen with read_only=False to {action}")
 
     @overload
-    def _submit(
-        self, request: corpora.CreateCorpusRequest, *, timeout: float | None = None
-    ) -> corpora.CreateCorpusResponse: ...
+    def _submit(self, request: corpora.CreateCorpusRequest) -> corpora.CreateCorpusResponse: ...
     @overload
     def _submit(
-        self, request: snapshots.CreateSnapshotRequest, *, timeout: float | None = None
+        self, request: snapshots.CreateSnapshotRequest
     ) -> snapshots.CreateSnapshotResponse: ...
     @overload
-    def _submit(
-        self, request: queries.CreateQueryRequest, *, timeout: float | None = None
-    ) -> queries.CreateQueryResponse: ...
+    def _submit(self, request: queries.CreateQueryRequest) -> queries.CreateQueryResponse: ...
     @overload
-    def _submit(
-        self, request: datasets.CreateDatasetRequest, *, timeout: float | None = None
-    ) -> datasets.CreateDatasetResponse: ...
+    def _submit(self, request: datasets.CreateDatasetRequest) -> datasets.CreateDatasetResponse: ...
     @overload
-    def _submit(
-        self, request: datasets.CreateMixRequest, *, timeout: float | None = None
-    ) -> datasets.CreateMixResponse: ...
+    def _submit(self, request: datasets.CreateMixRequest) -> datasets.CreateMixResponse: ...
     @report_progress("Submitting operation")
     def _submit(
         self,
@@ -242,8 +210,6 @@ class PremixDB:
         | queries.CreateQueryRequest
         | datasets.CreateDatasetRequest
         | datasets.CreateMixRequest,
-        *,
-        timeout: float | None = None,
     ) -> (
         corpora.CreateCorpusResponse
         | snapshots.CreateSnapshotResponse
@@ -268,60 +234,37 @@ class PremixDB:
         raise TypeError("expected a corpus, snapshot, query, dataset or mix create request")
 
     @overload
-    def _get(
-        self, kind: Literal["Corpus"], id: bytes, *, timeout: float | None = None
-    ) -> corpora.Corpus: ...
+    def _get(self, kind: Literal["Corpus"], id: bytes) -> corpora.Corpus: ...
     @overload
-    def _get(
-        self, kind: Literal["Snapshot"], id: bytes, *, timeout: float | None = None
-    ) -> snapshots.Snapshot: ...
+    def _get(self, kind: Literal["Snapshot"], id: bytes) -> snapshots.Snapshot: ...
     @overload
-    def _get(
-        self, kind: Literal["Query"], id: bytes, *, timeout: float | None = None
-    ) -> queries.Query: ...
+    def _get(self, kind: Literal["Query"], id: bytes) -> queries.Query: ...
     @overload
-    def _get(
-        self, kind: Literal["Dataset"], id: bytes, *, timeout: float | None = None
-    ) -> datasets.Dataset: ...
+    def _get(self, kind: Literal["Dataset"], id: bytes) -> datasets.Dataset: ...
     @overload
-    def _get(
-        self, kind: Literal["Mix"], id: bytes, *, timeout: float | None = None
-    ) -> datasets.Mix: ...
+    def _get(self, kind: Literal["Mix"], id: bytes) -> datasets.Mix: ...
     @overload
     def _get(
         self,
         kind: _ResourceKind,
         id: bytes,
-        *,
-        timeout: float | None = None,
     ) -> _ResourceValue: ...
     def _get(
         self,
         kind: _ResourceKind,
         id: bytes,
-        *,
-        timeout: float | None = None,
     ) -> _ResourceValue:
         self._require_open()
-        duration = self._timeout if timeout is None else timeout
         if kind == "Corpus":
-            resource = self._executor.GetCorpus(
-                corpora.GetCorpusRequest(id=id), timeout=duration
-            ).corpus
+            resource = self._executor.GetCorpus(corpora.GetCorpusRequest(id=id)).corpus
         elif kind == "Snapshot":
-            resource = self._executor.GetSnapshot(
-                snapshots.GetSnapshotRequest(id=id), timeout=duration
-            ).snapshot
+            resource = self._executor.GetSnapshot(snapshots.GetSnapshotRequest(id=id)).snapshot
         elif kind == "Query":
-            resource = self._executor.GetQuery(
-                queries.GetQueryRequest(id=id), timeout=duration
-            ).query
+            resource = self._executor.GetQuery(queries.GetQueryRequest(id=id)).query
         elif kind == "Dataset":
-            resource = self._executor.GetDataset(
-                datasets.GetDatasetRequest(id=id), timeout=duration
-            ).dataset
+            resource = self._executor.GetDataset(datasets.GetDatasetRequest(id=id)).dataset
         elif kind == "Mix":
-            resource = self._executor.GetMix(datasets.GetMixRequest(id=id), timeout=duration).mix
+            resource = self._executor.GetMix(datasets.GetMixRequest(id=id)).mix
         else:
             raise ValueError("unknown resource kind")
         if resource.id != id:
@@ -425,7 +368,7 @@ class PremixDB:
         """Open a saved training dataset by its base64url, hexadecimal, or byte ID."""
         return Dataset(self, self._get("Dataset", _requests._id(id, 32)))
 
-    def _datasets(self, id: bytes | str) -> Datasets:
+    def _mix(self, id: bytes | str) -> Mix:
         """Open a saved mixture collection without packing its candidates."""
         return Mix(self, self._get("Mix", _requests._id(id, 32)))
 
@@ -555,13 +498,13 @@ class _Execution[
                 recipe = self._recipe
             response = self._db._submit(
                 recipe,
-                timeout=budget,
             )
             if response.id != value.id:
                 raise ExecutionError("materialization returned a different resource")
+            remaining()
             value = cast(
                 ResourceT,
-                self._db._get(kind, response.id, timeout=remaining()),
+                self._db._get(kind, response.id),
             )
         while value.status != status.STATUS_COMPLETED:
             if value.status == status.STATUS_ERROR:
@@ -581,21 +524,19 @@ class _Execution[
                 if not waited:
                     # A job can finish and leave the registry before this handle
                     # refreshes its running state. Check publication before sleeping.
-                    value = cast(ResourceT, self._db._get(kind, value.id, timeout=remaining()))
+                    remaining()
+                    value = cast(ResourceT, self._db._get(kind, value.id))
                     if value.status not in (status.STATUS_PENDING, status.STATUS_RUNNING):
                         continue
             if not waited:
                 time.sleep(min(self._db._poll_interval, remaining()))
+            remaining()
             value = cast(
                 ResourceT,
-                self._db._get(kind, value.id, timeout=remaining()),
+                self._db._get(kind, value.id),
             )
         self._resource = value
         return self
-
-    def profile(self) -> snapshots.SnapshotProfile | queries.QueryProfile | datasets.DatasetProfile:
-        """Return a detached typed profile, waiting for background execution."""
-        return copy_message(self.wait()._resource.profile)
 
     def _preview(
         self, *, limit: int = 3, offset: int = 0, max_characters: int = 1024
@@ -614,7 +555,6 @@ class _Execution[
             request.query_id = ready.id
         response = self._db._executor.Preview(
             request,
-            timeout=self._db._timeout,
         )
         return [
             dict(
@@ -627,42 +567,6 @@ class _Execution[
             )
             for doc in response.preview.documents
         ]
-
-    @overload
-    def _summary(self: _Execution[snapshots.Snapshot, RequestT]) -> SnapshotSummary: ...
-    @overload
-    def _summary(self: _Execution[queries.Query, RequestT]) -> QuerySummary: ...
-    @overload
-    def _summary(self: _Execution[datasets.Dataset, RequestT]) -> DatasetSummary: ...
-    def _summary(self) -> SnapshotSummary | QuerySummary | DatasetSummary:
-        """Return selection or packing counts for this completed resource."""
-        ready = self.wait()._resource
-        if not ready.HasField("profile"):
-            raise ExecutionError("completed resource has no published profile")
-        if isinstance(ready, snapshots.Snapshot):
-            return _counts(ready.profile)
-        if isinstance(ready, queries.Query):
-            p = ready.profile
-            return QuerySummary(
-                input=_query_counts(p, "input"),
-                output=_query_counts(p, "output"),
-                steps=[
-                    QueryStepSummary(
-                        before=_query_counts(op, "input"), after=_query_counts(op, "output")
-                    )
-                    for op in p.steps
-                ],
-            )
-        assert isinstance(ready, datasets.Dataset)
-        p = ready.profile
-        return DatasetSummary(
-            content_tokens=p.content_tokens,
-            separator_tokens=p.separator_tokens,
-            padding_tokens=p.padding_tokens,
-            dropped_tokens=p.dropped_tokens,
-            sequences=p.sequences,
-            output_tokens=p.sequences * ready.sequence_length,
-        )
 
 
 class Snapshot(
@@ -719,16 +623,6 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         """Wait for results and browse up to three selected documents, starting at offset."""
         return self._preview(limit=limit, offset=offset, max_characters=max_characters)
 
-    def _list_document(self, *, limit: int = 5, offset: int = 0) -> list[DocumentListing]:
-        """List selected document IDs and source keys without fetching text.
-
-        Wait for completion, then return at most limit rows (maximum 1000)
-        starting at offset. Repeated sampled occurrences keep separate ordinals.
-        """
-        from ._catalog import _list_documents
-
-        return _list_documents(self, limit=limit, offset=offset)
-
     def _with_fields(self, fields: Iterable[ProfileSelector]) -> Query:
         self._db._require_open()
         request = _requests.query(
@@ -749,15 +643,6 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
 
         assert isinstance(self._db._executor, Coordinator)
         return Query(self._db, self._db._executor._plan_query(request), request)
-
-    def _describe(self, field: ProfileSelector) -> DistributionSummary:
-        """Summarize a field, computing a missing derived projection when needed."""
-        from ._profiles import _describe_field
-
-        try:
-            return _describe_field(self.profile().fields, field)
-        except KeyError:
-            return _describe_field(self._with_fields([field]).profile().fields, field)
 
     def _provenance(self) -> dict[str, Provenance]:
         """Trace each selected document to its source and query decisions."""
@@ -812,7 +697,7 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         n_candidates: int = 3,
         replacement: bool = True,
         seed: int = 0,
-    ) -> Datasets:
+    ) -> Mix:
         """Register three lazy datasets by default, with reproducible sampling."""
         self._db._require_writable("plan mixtures")
         request = _requests.mix(
@@ -833,7 +718,6 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         id = self._db._submit(request).id
         response = self._db._executor.GetMix(
             datasets.GetMixRequest(id=id),
-            timeout=self._db._timeout,
         )
         return Mix(self._db, response.mix, request)
 
@@ -919,7 +803,7 @@ class Mix(_Resource[datasets.Mix, datasets.CreateMixRequest]):
             yield self[index]
 
 
-Datasets = Mix
+Datasets = Mix  # Public compatibility spelling; internal code uses Mix.
 
 
 class Dataset(_Execution[datasets.Dataset, datasets.CreateDatasetRequest]):

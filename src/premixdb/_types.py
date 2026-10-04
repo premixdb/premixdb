@@ -59,44 +59,12 @@ class PreviewSequence(TypedDict):
     truncated: bool
 
 
-class SnapshotSummary(TypedDict):
-    documents: int
-    bytes: int
-    characters: int
-
-
 class Changes(TypedDict):
     added: int
     changed: int
     removed: int
     unchanged: int
     reused: int
-
-
-class QueryPopulationSummary(TypedDict):
-    documents: int
-    bytes: int
-    characters: int
-
-
-class QueryStepSummary(TypedDict):
-    before: QueryPopulationSummary
-    after: QueryPopulationSummary
-
-
-class QuerySummary(TypedDict):
-    input: QueryPopulationSummary
-    output: QueryPopulationSummary
-    steps: list[QueryStepSummary]
-
-
-class DatasetSummary(TypedDict):
-    content_tokens: int
-    separator_tokens: int
-    padding_tokens: int
-    dropped_tokens: int
-    sequences: int
-    output_tokens: int
 
 
 class Checkpoint(TypedDict):

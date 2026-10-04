@@ -1,4 +1,4 @@
-"""Typed external-field expressions; no inference or execution runtime imports."""
+"""Typed intrinsic and derived field expressions; no inference or execution runtime imports."""
 
 from __future__ import annotations
 
@@ -34,6 +34,22 @@ class FieldPredicate:
 
     def _operation(self) -> q.Operation:
         selector = self.field
+        identity = field_id(selector.name)
+        if identity <= q.FIELD_SOURCE_CORPUS_ID and selector.projection == q.FieldComparison.SCALAR:
+            if identity == q.FIELD_SOURCE_CORPUS_ID:
+                raise NotImplementedError(
+                    "source.corpus_id is currently available for mix strata only"
+                )
+            comparison = q.Comparison(field=identity, operator=self.operator)
+            if identity == q.FIELD_OBJECT_URI:
+                if not isinstance(self.value, str):
+                    raise TypeError("object.uri comparisons require a string")
+                comparison.text = self.value
+            else:
+                if type(self.value) is not int or not 0 <= self.value < 2**64:
+                    raise ValueError("count must be an unsigned 64-bit integer")
+                comparison.count = self.value
+            return q.Operation(where=comparison)
         result = q.FieldComparison(
             field=field_id(selector.name),
             projection=selector.projection,
@@ -98,15 +114,19 @@ class ScalarField[T: str | int | float | bool | Enum]:
 
     def asc(self) -> q.OrderBy:
         """Order documents by this field from smallest to largest."""
-        from ._curation import selector
-
-        return q.OrderBy(direction=q.OrderBy.DIRECTION_ASC, selector=selector(self))
+        return self._order(q.OrderBy.DIRECTION_ASC)
 
     def desc(self) -> q.OrderBy:
         """Order documents by this field from largest to smallest."""
+        return self._order(q.OrderBy.DIRECTION_DESC)
+
+    def _order(self, direction: q.OrderBy.Direction) -> q.OrderBy:
         from ._curation import selector
 
-        return q.OrderBy(direction=q.OrderBy.DIRECTION_DESC, selector=selector(self))
+        identity = field_id(self.name)
+        if identity <= q.FIELD_SOURCE_CORPUS_ID and self.projection == q.FieldComparison.SCALAR:
+            return q.OrderBy(field=identity, direction=direction)
+        return q.OrderBy(selector=selector(self), direction=direction)
 
     def is_null(self) -> FieldPredicate:
         """Select documents whose field value is missing."""

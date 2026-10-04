@@ -163,7 +163,7 @@ def test_demo_is_the_complete_bundled_dataset() -> None:
 
 
 def test_nine_speech_demo_upgrades_and_keeps_its_old_snapshot(tmp_path: Path) -> None:
-    excerpt = Path("examples/data/tiny_shakespeare_excerpt.txt").read_text()
+    excerpt = (Path(p.__file__).parent / "data/tiny_shakespeare_excerpt.txt").read_text()
     db = p.PremixDB(storage=tmp_path)
     try:
         old = db.corpus(

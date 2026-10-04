@@ -1,36 +1,91 @@
-"""Value types and resource handles over the Python engine."""
+"""Independent engine harness for differential and engine behavior tests."""
 
 from __future__ import annotations
 
+import builtins
 from dataclasses import dataclass
 from os import PathLike, fspath
 from pathlib import Path
 from typing import Iterable, Iterator, Literal, cast
 
-from . import _requests, _runtime
-from ._enums import DedupeAlgorithm, RemovalUnit
-from ._field_expr import FieldPredicate
-from ._identity import corpus_id
-from ._inputs import source_files
-from ._policies import ByteTokenizer as ByteTokenizer
-from ._policies import Concat as Concat
-from ._policies import HuggingFaceTokenizer as HuggingFaceTokenizer
-from ._reader import Topology as Topology
+from premixdb import _requests, _runtime
+from premixdb._enums import DedupeAlgorithm, RemovalUnit
+from premixdb._field_expr import FieldPredicate
+from premixdb._identity import corpus_id
+from premixdb._inputs import source_files
+from premixdb._policies import ByteTokenizer as ByteTokenizer
+from premixdb._policies import Concat as Concat
+from premixdb._reader import Topology as Topology
 
 # The legacy direct API adapts the same expression/policy vocabulary as the SDK.
-from ._requests import SourceGroup as SourceGroup
-from ._requests import _Field as _Field
-from ._requests import object as object
-from ._requests import text as text
-from ._types import Checkpoint
-from .engine import execution
-from .engine.contracts import Changes, Counts, Occurrence, PackingSummary, Provenance, QuerySummary
-from .engine.execution import Reader, Row, Sequence, Source
-from .v1 import query_pb2 as q
+from premixdb._requests import SourceGroup as SourceGroup
+from premixdb._requests import object as object
+from premixdb._requests import text as text
+from premixdb._types import Checkpoint
+from premixdb.engine import execution
+from premixdb.engine.contracts import (
+    Changes,
+    Counts,
+    Occurrence,
+    PackingSummary,
+    Provenance,
+    QuerySummary,
+)
+from premixdb.engine.execution import Reader, Row, Sequence, Source
+from premixdb.v1 import query_pb2 as q
+
+
+@dataclass(frozen=True, init=False)
+class HuggingFaceTokenizer:
+    """Capture a local tokenizer.json verified against an expected BLAKE3.
+
+    The asset and engine define identity; the path does not. Encoding inserts
+    no special tokens. Truncation, padding, and stochastic dropout are rejected.
+    The byte limit bounds each whole-document encoding, not total dataset RAM.
+    """
+
+    _handle: execution.HuggingFaceTokenizer
+
+    def __init__(
+        self,
+        path: str | PathLike[str],
+        *,
+        digest: str,
+        max_document_bytes: int = 8 * 1024 * 1024,
+    ) -> None:
+        from premixdb.engine import execution
+
+        if "://" in fspath(path):
+            raise NotImplementedError("only local filesystem paths are supported")
+        if type(max_document_bytes) is not int or max_document_bytes <= 0:
+            raise ValueError("max_document_bytes must be a positive integer")
+        builtins.object.__setattr__(
+            self,
+            "_handle",
+            execution.HuggingFaceTokenizer(Path(path), digest, max_document_bytes),
+        )
+
+    @property
+    def definition(self) -> str:
+        """Versioned identity of the captured asset and encoding engine."""
+        return self._handle.definition
+
+    @property
+    def asset_digest(self) -> str:
+        """Return the captured tokenizer asset BLAKE3 digest in hexadecimal."""
+        return self._handle.asset_digest
+
+    def encode(self, text: str) -> list[int]:
+        """Encode text without inserting implicit special tokens."""
+        return self._handle.encode(text)
+
+    def token_to_id(self, token: str) -> int | None:
+        """Look up an explicit separator or padding token; absent tokens return None."""
+        return self._handle.token_to_id(token)
 
 
 def where(
-    predicate: _requests._Predicate | FieldPredicate | _requests._DocumentPredicate,
+    predicate: FieldPredicate | _requests._DocumentPredicate,
 ) -> execution.Step:
     """Describe an intrinsic-field comparison for a direct engine query."""
     return _steps([_requests.where(predicate)])[0]
@@ -61,8 +116,8 @@ def dedupe(
 
 
 def _steps(steps: Iterable[execution.Step | q.Operation]) -> list[execution.Step]:
-    from .execution.planner import execution_steps
-    from .v1.query_pb2 import CreateQueryRequest, Operation
+    from premixdb.execution.planner import execution_steps
+    from premixdb.v1.query_pb2 import CreateQueryRequest, Operation
 
     result = []
     for step in steps:
@@ -164,11 +219,6 @@ class Snapshot(_SnapshotOperations):
 
     _handle: execution.Snapshot
 
-    def __repr__(self) -> str:
-        from ._display import _local_repr
-
-        return _local_repr(self)
-
     @property
     def id(self) -> str:
         """Return the resource identity as a hexadecimal string."""
@@ -202,11 +252,6 @@ class Query:
     """An immutable execution; dataset builds inherit its frozen engine identity."""
 
     _handle: execution.Query
-
-    def __repr__(self) -> str:
-        from ._display import _local_repr
-
-        return _local_repr(self)
 
     @property
     def id(self) -> str:
@@ -264,11 +309,6 @@ class Dataset:
     """An in-memory dataset. Reading copies only the requested token/mask lists."""
 
     _handle: execution.Dataset
-
-    def __repr__(self) -> str:
-        from ._display import _local_repr
-
-        return _local_repr(self)
 
     @property
     def id(self) -> str:

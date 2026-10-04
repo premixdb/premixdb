@@ -151,10 +151,22 @@ class CorpusIndex:
         return Query(self, plan, version, fields)
 
 
+@dataclass(frozen=True)
+class CompletedQuery:
+    """Validated selection state; constructing a Query from it never executes a recipe."""
+
+    id: str
+    inputs: tuple[str, ...]
+    field_snapshot_ids: tuple[bytes, ...]
+    rows: list[Row]
+    provenance: dict[str, Provenance]
+    summary: QuerySummary
+
+
 class Query:
     def __init__(
         self,
-        index: CorpusIndex,
+        index: CorpusIndex | CompletedQuery,
         plan: Iterable[plans.Step],
         code: CodeVersion,
         fields: tuple[bytes, ...] = (),
@@ -164,11 +176,21 @@ class Query:
         self._encoding_provider: (
             Callable[[Row, HuggingFaceTokenizer], ByteTokens | TokenList] | None
         ) = None
+        if isinstance(index, CompletedQuery):
+            self.steps: tuple[plans.Step, ...] = ()
+            self._id = index.id
+            self.inputs = index.inputs
+            self.field_snapshot_ids = index.field_snapshot_ids
+            self._rows = list(index.rows)
+            self._provenance = deepcopy(index.provenance)
+            self._summary = deepcopy(index.summary)
+            self.elapsed_seconds = 0.0
+            return
         steps = tuple(plans.validate(step) for step in plan)
         self.steps = steps
         self._id = plans.query_identity(index.inputs, steps, code, fields)
         self.inputs = tuple(index.inputs)
-        self.field_snapshot_ids: tuple[bytes, ...] = ()
+        self.field_snapshot_ids = ()
         documents: list[SelectedDocument] = list(index.documents.values())
         provenance: dict[str, Provenance] = {
             id: dict(

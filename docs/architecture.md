@@ -28,6 +28,8 @@ exhausting or closing the stream releases its temporary database.
 | [`_sequences.py`](../src/premixdb/_sequences.py) | Verified sequence reads and preview decoding |
 | [`execution/`](../src/premixdb/execution) | Planning, execution, caching |
 | [`engine/`](../src/premixdb/engine) | Capture, curation, tokenization, packing |
+| [`engine/records.py`](../src/premixdb/engine/records.py) | Shared captured-document codec and structural checks |
 | [`proto/`](../proto/README.md) | Stored schemas |
 
-`premixdb.local` is the in-memory reference adapter used by engine tests.
+`tests/_reference.py` is the in-memory harness used by engine tests and
+independent comparisons with the SDK. It is not shipped in the package.

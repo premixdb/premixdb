@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Iterable, Mapping
 
 if TYPE_CHECKING:
-    from . import _api as local
     from . import _resources as sdk
 
 from ._default_tokenizer import _GPT2_DIGEST
@@ -19,8 +18,6 @@ from .v1 import status_pb2 as status
 from .v1.storage_pb2 import Source
 
 _OPERATORS = {1: "==", 2: "!=", 3: "<", 4: "<=", 5: ">", 6: ">="}
-_LOCAL_FIELDS = {"bytes": "text.bytes", "characters": "text.characters", "object_uri": "object.uri"}
-_LOCAL_OPERATORS = {"eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">="}
 
 
 def _id(value: bytes | str) -> str:
@@ -369,88 +366,4 @@ def _resource_repr(handle: sdk.Corpus | sdk.Snapshot | sdk.Query | sdk.Mix | sdk
         lines.append(f"Revision: {value.git_commit.hex()[:12]}")
     if hasattr(value, "error") and value.error:
         lines.append(f"Error: {value.error!r}")
-    return header + "\n" + "\n".join("  " + line for line in lines)
-
-
-def _local_repr(handle: local.Snapshot | local.Query | local.Dataset) -> str:
-    """The direct local API keeps native plans rather than protobuf resources."""
-    from .engine.dataset_plan import BYTE_DEFINITION
-    from .engine.datasets import Dataset
-    from .engine.queries import Query
-    from .engine.snapshots import Snapshot
-
-    value = handle._handle
-    header = f"{type(handle).__name__}(id={_id(value.id)!r})"
-    if isinstance(value, Snapshot):
-        totals = value.summary()
-        changes = value.changes()
-        lines = [
-            f"Documents: {totals['documents']:,}",
-            f"Text: {totals['bytes']:,} bytes; {totals['characters']:,} characters",
-            f"Changes: {changes['added']:,} added; {changes['changed']:,} changed; "
-            f"{changes['removed']:,} removed",
-            f"Corpus: {_id(value.corpus_id)}",
-            "Source keys: " + _items([repr(key) for key in value.documents]),
-        ]
-        if value.base:
-            lines.append(f"Base snapshot: {_id(value.base)}")
-    elif isinstance(value, Query):
-        summary = value.summary()
-        lines = [
-            f"Input: {summary['input']['documents']:,} documents",
-            f"Output: {summary['output']['documents']:,} document occurrences",
-            f"Text: {summary['output']['bytes']:,} bytes; "
-            f"{summary['output']['characters']:,} characters",
-            "Snapshots: " + _items([_id(v) for v in value.inputs]),
-        ]
-        for i, step in enumerate(value.steps, 1):
-            if step.kind == "Filter":
-                field = _LOCAL_FIELDS.get(step.field, step.field)
-                detail = f"where {field} {_LOCAL_OPERATORS[step.comparison]} {step.value!r}"
-            elif step.kind in ("Dedupe", "DedupeExact"):
-                orders = (
-                    ", ".join(
-                        f"{_LOCAL_FIELDS.get(name, name)} {'desc' if descending else 'asc'}"
-                        for name, descending in step.orders
-                    )
-                    or "document ID asc"
-                )
-                removal = (
-                    "document"
-                    if step.separator is None
-                    else f"source group (separator={step.separator!r})"
-                )
-                detail = f"dedupe exact_{step.unit.lower()}; remove {removal}; order by {orders}"
-            elif step.kind in ("FilterIds", "FilterDocuments"):
-                detail = "select document IDs: " + _items(sorted(_id(v) for v in step.members))
-            elif step.kind == "Policy":
-                assert step.payload is not None
-                if step.payload[0] == "sample":
-                    detail = "; ".join(_query(q.Query(sampling=step.payload[1]))[2:])
-                elif step.payload[0] == "decontaminate":
-                    detail = "; ".join(_query(q.Query(decontaminate=step.payload[1]))[2:])
-                else:
-                    detail = f"similarity dedupe; definition={_id(step.definition)}"
-            else:
-                detail = f"indexed dedupe {_id(step.definition)}"
-            lines.append(f"{i}. {detail}")
-        if not value.steps:
-            lines.append("Select all documents")
-    else:
-        assert isinstance(value, Dataset)
-        packing = value.plan.packing
-        tokenizer = (
-            "ByteTokenizer()"
-            if value.tokenizer_definition == BYTE_DEFINITION
-            else f"tokenizer definition {_id(value.tokenizer_definition)}"
-        )
-        lines = [
-            f"Output: {len(value):,} sequences",
-            f"Content tokens: {value.summary()['content_tokens']:,}",
-            f"Query: {_id(value.query_id)}",
-            f"Tokenizer: {tokenizer}",
-            f"Sequence length: {packing.length:,}",
-            f"Packing: Concat(separator={packing.separator!r}, pad={packing.padding!r}, "
-            f"drop_remainder={packing.padding is None!r})",
-        ]
     return header + "\n" + "\n".join("  " + line for line in lines)

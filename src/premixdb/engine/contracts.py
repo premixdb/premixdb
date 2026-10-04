@@ -5,8 +5,13 @@ from __future__ import annotations
 from typing import Literal, NotRequired, TypedDict
 
 from .._types import Changes as Changes
-from .._types import SnapshotSummary as Counts
 from .._typing import Interval
+
+
+class Counts(TypedDict):
+    documents: int
+    bytes: int
+    characters: int
 
 
 class EncodedTokens(TypedDict):

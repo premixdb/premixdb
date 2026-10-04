@@ -8,7 +8,7 @@ from ._field_expr import FieldProjection, VectorField
 from ._field_ids import field_id
 from ._policies import ByteTokenizer
 from ._protobuf import copy_message
-from ._requests import _Field, _id, _uint
+from ._requests import _id, _uint
 from .fields import ContentType, Language, Topic, content_type, language, topic
 from .v1 import dataset_pb2 as datasets
 from .v1 import query_pb2 as q
@@ -26,8 +26,6 @@ class ClassifierProjection(Protocol):
 
 type FieldSelector = (
     str
-    | _Field[int]
-    | _Field[str]
     | q.FieldComparison
     | FieldProjection
     | VectorField
@@ -41,8 +39,6 @@ type FieldSelector = (
 def selector(field: FieldSelector) -> q.FieldComparison:
     if isinstance(field, q.FieldComparison):
         return copy_message(field)
-    if isinstance(field, _Field):
-        return q.FieldComparison(field=field_id(field.name), projection=q.FieldComparison.SCALAR)
     if field is Topic:
         field = topic.label
     elif field is ContentType:

@@ -172,3 +172,24 @@ class ExpressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_unified_fields_preserve_unsigned_counts_and_signed_integers() -> None:
+    import pytest
+
+    assert where(premixdb.text.bytes == 2**64 - 1).where.count == 2**64 - 1
+    assert where(datatrove.n_words == -(2**63)).field_where.integer == -(2**63)
+    assert where(datatrove.n_words == 2**63 - 1).field_where.integer == 2**63 - 1
+    for value in (-1, 2**64):
+        with pytest.raises(ValueError):
+            where(premixdb.text.bytes == value)
+    for value in (-(2**63) - 1, 2**63):
+        with pytest.raises(ValueError):
+            where(datatrove.n_words == value)
+    for expression in (premixdb.text.bytes, datatrove.n_words):
+        with pytest.raises(TypeError):
+            operator.eq(expression, True)
+        with pytest.raises(TypeError):
+            bool(expression > 0)
+    with pytest.raises(NotImplementedError, match="mix strata"):
+        where(premixdb.source.corpus_id == "corpus")

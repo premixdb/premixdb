@@ -133,7 +133,7 @@ class EmbeddingServiceTests(unittest.TestCase):
                         self.release.set()
                     future.result()
                 # Reading results waits for completion without an explicit execution call.
-                self.assertEqual(first._summary()["output"]["documents"], 1)
+                self.assertEqual(first.profile().output_documents, 1)
                 self.assertEqual(second.profile().output_documents, 2)
                 stricter = self.snapshot.query(steps=[where(embedding[model].component(0) > 1.0)])
                 self.assertEqual(stricter.profile().output_documents, 0)
@@ -189,7 +189,7 @@ class EmbeddingServiceTests(unittest.TestCase):
                 with self.subTest(model=model):
                     query = self.snapshot.query(steps=[where(embedding[model].component(0) > 0.0)])
                     with self.assertRaisesRegex(premixdb.ExecutionError, "embedding unavailable"):
-                        query._summary()
+                        query.profile()
 
 
 if __name__ == "__main__":

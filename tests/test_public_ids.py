@@ -46,7 +46,9 @@ def test_public_ids_match_listings_provenance_profiles_and_old_checkpoints(tmp_p
         query = snapshot.query(
             steps=[p.where(p.document_id.is_in([row["id"] for row in rows]))]
         ).wait()
-        assert {row["id"] for row in query._list_document()} == {row["id"] for row in rows}
+        assert {row["id"] for row in query.preview(limit=5, max_characters=0)} == {
+            row["id"] for row in rows
+        }
         assert set(query._provenance()) == {
             row["id"] for row in snapshot.preview(limit=8, max_characters=0)
         }

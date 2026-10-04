@@ -150,3 +150,27 @@ def test_failed_worker_setup_preserves_caller_supplied_store(tmp_path: Path) -> 
             with pytest.raises(OSError, match="no workers"):
                 Coordinator(store, process_workers=1)
         assert store.metadata.contains("corpus", b"c" * 16) is False
+
+
+def test_storage_creates_blob_namespaces_only_when_published(tmp_path: Path) -> None:
+    from premixdb.execution.storage import ObjectStore
+
+    with ObjectStore(tmp_path) as store:
+        assert {path.name for path in tmp_path.iterdir()} <= {
+            "metadata.sqlite3",
+            "metadata.sqlite3-wal",
+            "metadata.sqlite3-shm",
+        }
+        store.put("query", b"published")
+        assert (tmp_path / "query/objects").is_dir()
+        assert not (tmp_path / "execution").exists()
+        assert not (tmp_path / "submission").exists()
+    with ObjectStore(tmp_path, read_only=True):
+        assert not (tmp_path / "dataset").exists()
+
+    root = tmp_path / "session"
+    with p.PremixDB(storage=root) as db:
+        assert not (root / "snapshot").exists()
+        db.corpus("lazy", [p.Source("a", "published")])
+        assert (root / "snapshot/objects").is_dir()
+        assert (root / "snapshot/snapshots").is_dir()

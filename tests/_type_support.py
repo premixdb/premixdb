@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import NotRequired, Protocol, TypedDict
 
+from _reference import Snapshot
 from blake3 import blake3
 
 from premixdb import PremixDB, Source
 from premixdb._typing import FieldValue
 from premixdb.execution import Coordinator
-from premixdb.local import Snapshot
 from premixdb.v1.dataset_pb2 import Packing, Tokenizer
 
 SHELL_SOURCES = (

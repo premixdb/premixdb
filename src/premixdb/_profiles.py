@@ -10,16 +10,13 @@ from dataclasses import field as dataclass_field
 from ._curation import selector
 from ._field_expr import FieldProjection, VectorField
 from ._field_ids import field_name, selector_field
-from ._requests import _Field
 from .v1 import dataset_pb2 as d
 from .v1 import profile_pb2 as p
 from .v1 import query_pb2 as q
 from .v1.snapshot_pb2 import SnapshotProfile as _SnapshotProfile
 
 type ProfileScalar = int | float | str | bool
-type ProfileSelector = (
-    str | _Field[int] | _Field[str] | FieldProjection | VectorField | q.FieldComparison
-)
+type ProfileSelector = str | FieldProjection | VectorField | q.FieldComparison
 
 
 def _value(endpoint: p.ProfileValue) -> ProfileScalar:

@@ -37,10 +37,10 @@ class PackagingTests(unittest.TestCase):
         for name in ("generate_protos.py", "prepare_s2orc.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts")
         (self.root / "examples").mkdir()
+        shutil.copy2(ROOT / "examples/01_tiny_shakespeare_snapshots.py", self.root / "examples")
         shutil.copy2(ROOT / "examples/04_s2orc_distributions.py", self.root / "examples")
         shutil.copy2(ROOT / "examples/_tutorial.py", self.root / "examples")
         shutil.copy2(ROOT / "examples/README.md", self.root / "examples")
-        shutil.copytree(ROOT / "examples/data", self.root / "examples/data")
 
     def run_python(
         self, code: str, *, root: Path | None = None, success: bool = True
@@ -152,6 +152,25 @@ with tempfile.TemporaryDirectory() as storage:
             installed = root / "installed"
             archive.extractall(installed)
         self.assert_importable(installed, training=training)
+        self.run_python(
+            f"""
+import runpy
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, {str(installed)!r})
+sys.path.insert(0, {str(root / "examples")!r})
+from _tutorial import TINY, tiny_sources
+assert TINY.is_relative_to({str(installed)!r})
+assert len(tiny_sources()) == 9
+lesson = runpy.run_path({str(root / "examples/01_tiny_shakespeare_snapshots.py")!r})
+with tempfile.TemporaryDirectory() as storage:
+    lesson['main'].__globals__['STORAGE'] = Path(storage)
+    lesson['main']()
+""",
+            root=root,
+        )
 
     def test_sdist_contains_schemas_and_rebuilds_bindings(self) -> None:
         # Even a developer's ignored local outputs must stay out of the sdist.
@@ -169,10 +188,10 @@ with tempfile.TemporaryDirectory() as storage:
                 "src/premixdb/data/gpt2-LICENSE.txt",
                 "proto/premixdb/v1/corpus.proto",
                 "scripts/prepare_s2orc.py",
+                "examples/01_tiny_shakespeare_snapshots.py",
                 "examples/04_s2orc_distributions.py",
                 "examples/_tutorial.py",
                 "examples/README.md",
-                "examples/data/tiny_shakespeare_excerpt.txt",
             ):
                 self.assertIn(prefix + name, names)
             archive.extractall(self.root / "unpacked", filter="data")

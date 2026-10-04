@@ -23,7 +23,8 @@ thresholds. Mixture examples use `WEB`, `PAPERS`, and `LITERATURE`. No CLI argum
 | [09 · Candidates](09_regmix_candidates.py) | Compare seeded recipes |
 | [10 · Resume](10_tiny_shakespeare_resume.py) | Restore a reader checkpoint |
 
-The Shakespeare examples use the included nine-block excerpt and work offline.
+The Shakespeare examples use the nine-block excerpt bundled in the installed
+`premixdb` package and work offline.
 It comes from [char-rnn's Tiny Shakespeare](https://github.com/karpathy/char-rnn).
 
 ## Data for the other examples
@@ -40,3 +41,13 @@ replace them: C4 needs `text`; papers need `id` and `text`.
 
 The quality example downloads QuRater on first use and starts with eight pages.
 Change `MINIMUM` to reuse the scores with a different cutoff.
+
+## Tests
+
+```bash
+uv run --locked pytest tests/test_readme_workflows.py tests/test_tutorials.py -m 'not performance'
+```
+
+These execute the README's Python blocks and all ten lessons with small offline
+inputs and controlled model scores. Package tests also run the snapshot lesson
+using the data bundled in a built wheel. Run `make test-all` for the full suite.

@@ -10,8 +10,6 @@ from ._ids import _encode_id
 from ._types import CorpusListing, DocumentListing, SnapshotListing
 from .v1 import corpus_pb2 as c
 from .v1 import dataset_pb2 as d
-from .v1 import query_pb2 as q
-from .v1 import snapshot_pb2 as s
 
 if TYPE_CHECKING:
     from ._inputs import SourceInput
@@ -28,7 +26,7 @@ class PageResponse(Protocol):
 
 
 class PageMethod[Request, Response](Protocol):
-    def __call__(self, request: Request, /, *, timeout: float | None = None) -> Response: ...
+    def __call__(self, request: Request, /) -> Response: ...
 
 
 def _pages[Request: PageRequest, Response: PageResponse, Item](
@@ -41,7 +39,7 @@ def _pages[Request: PageRequest, Response: PageResponse, Item](
     rows: list[Item] = []
     seen: set[bytes] = set()
     while True:
-        response = method(request, timeout=db._timeout)
+        response = method(request)
         rows.extend(values(response))
         page = response.next_page_token
         if not page:
@@ -105,16 +103,8 @@ class CorpusCollection:
         start, end = _window(self._db, limit=limit, offset=offset)
         if start == end:
             return []
-        values = sorted(
-            _pages(
-                self._db,
-                self._db._executor.ListCorpus,
-                c.ListCorpusRequest(),
-                lambda response: response.corpora,
-            ),
-            key=lambda value: _encode_id(value.id),
-        )
-        return [dict(id=_encode_id(value.id), name=value.name) for value in values[start:end]]
+        values = self._db._executor.browse("corpus", c.Corpus, limit=end - start, offset=start)
+        return [dict(id=_encode_id(value.id), name=value.name) for value in values]
 
 
 class _CorpusListings:
@@ -123,109 +113,76 @@ class _CorpusListings:
     _db: PremixDB
     _resource: c.Corpus
 
-    def _corpus_snapshots(self) -> list[s.Snapshot]:
-        return _pages(
-            self._db,
-            self._db._executor.ListSnapshot,
-            s.ListSnapshotRequest(corpus_id=self._resource.id),
-            lambda response: response.snapshots,
+    def _snapshot_ids(self) -> tuple[bytes, ...]:
+        return tuple(
+            id for id, _, _ in self._db._executor._members("snapshot", (self._resource.id,))
         )
 
-    def _corpus_queries(self) -> list[q.Query]:
-        snapshots = {value.id for value in self._corpus_snapshots()}
+    def _query_ids(self) -> tuple[bytes, ...]:
+        snapshots = self._snapshot_ids()
         if not snapshots:
-            return []
-        return [
-            value
-            for value in _pages(
-                self._db,
-                self._db._executor.ListQuery,
-                q.ListQueryRequest(),
-                lambda response: response.queries,
-            )
-            if snapshots.intersection(value.snapshot_ids)
-        ]
+            return ()
+        return tuple(id for id, _, _ in self._db._executor._members("query", snapshots))
 
     def list_snapshot(self, *, limit: int = 5, offset: int = 0) -> list[SnapshotListing]:
-        """List a page of snapshot IDs and UTC times, ordered by first capture.
-
-        Older imports without execution history have timestamp=None.
-        Recapturing an unchanged snapshot keeps its original timestamp.
-        """
+        """List snapshots by first capture time; older imports have timestamp=None."""
         start, end = _window(self._db, limit=limit, offset=offset)
         if start == end:
             return []
-        snapshots = self._corpus_snapshots()
-        if not snapshots:
-            return []
-        times = {}
-        for event in self._db._execution_events():
-            if (
-                event.operation != "CreateSnapshot"
-                or event.status != "completed"
-                or not event.ended_ns
-            ):
-                continue
-            ns = event.ended_ns
-            times[event.resource_id] = min(ns, times.get(event.resource_id, ns))
-        values = sorted(
-            snapshots,
-            key=lambda value: (value.id not in times, times.get(value.id, 0), value.id),
+        members = self._db._executor._storage.metadata.members(
+            "snapshot",
+            parents=(self._resource.id,),
+            order="capture",
+            limit=end - start,
+            offset=start,
         )
         return [
-            dict(
-                id=_encode_id(value.id),
-                timestamp=_timestamp(times[value.id]) if value.id in times else None,
-            )
-            for value in values[start:end]
+            dict(id=_encode_id(id), timestamp=_timestamp(ns) if ns is not None else None)
+            for id, _, ns in members
         ]
 
     def list_query(self, *, limit: int = 5, offset: int = 0) -> list[str]:
-        """List a page of query IDs across this corpus's snapshots, ordered by ID."""
+        """List query IDs across this corpus's snapshots, ordered by public ID."""
         start, end = _window(self._db, limit=limit, offset=offset)
-        if start == end:
+        snapshots = self._snapshot_ids() if start != end else ()
+        if not snapshots:
             return []
-        return sorted(_encode_id(value.id) for value in self._corpus_queries())[start:end]
+        members = self._db._executor._storage.metadata.members(
+            "query",
+            suffixes=("", ".failed", ".pending"),
+            parents=snapshots,
+            order="public",
+            limit=end - start,
+            offset=start,
+        )
+        return [_encode_id(id) for id, _, _ in members]
 
     def list_mixture(self, *, limit: int = 5, offset: int = 0) -> list[Mix]:
-        """List a page of mixture handles by ID without packing candidates."""
+        """List mixture handles by public ID without packing candidates."""
         from ._resources import Mix
 
         start, end = _window(self._db, limit=limit, offset=offset)
-        if start == end:
-            return []
-        queries = {value.id for value in self._corpus_queries()}
+        queries = self._query_ids() if start != end else ()
         if not queries:
             return []
-        values = [
-            value
-            for value in _pages(
-                self._db,
-                self._db._executor.ListMix,
-                d.ListMixRequest(),
-                lambda response: response.mixtures,
-            )
-            if value.query_id in queries
-        ]
         return [
             Mix(self._db, value)
-            for value in sorted(values, key=lambda value: _encode_id(value.id))[start:end]
+            for value in self._db._executor.browse(
+                "mixture", d.Mix, parents=queries, limit=end - start, offset=start
+            )
         ]
 
     def list_dataset(self, *, limit: int = 5, offset: int = 0) -> list[Dataset]:
-        """List a page of dataset handles by ID, including pending candidates."""
+        """List dataset handles by public ID, including pending candidates."""
         from ._resources import Dataset
 
         start, end = _window(self._db, limit=limit, offset=offset)
-        if start == end:
+        queries = self._query_ids() if start != end else ()
+        if not queries:
             return []
-        values = {}
-        for query in self._corpus_queries():
-            for value in _pages(
-                self._db,
-                self._db._executor.ListDatasets,
-                d.ListDatasetRequest(query_id=query.id),
-                lambda response: response.datasets,
-            ):
-                values[value.id] = value
-        return [Dataset(self._db, values[id]) for id in sorted(values, key=_encode_id)[start:end]]
+        return [
+            Dataset(self._db, value)
+            for value in self._db._executor.browse(
+                "dataset", d.Dataset, parents=queries, limit=end - start, offset=start
+            )
+        ]

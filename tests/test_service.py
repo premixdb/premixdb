@@ -107,7 +107,14 @@ class ServiceTests(unittest.TestCase):
         self.assertIsInstance(query._request, queries.CreateQueryRequest)
         self.assertIsInstance(query._proto, queries.Query)
         self.assertEqual(query._proto.status, common.STATUS_COMPLETED)
-        self.assertEqual(query._summary()["output"], dict(documents=1, bytes=9, characters=8))
+        self.assertEqual(
+            (
+                query.profile().output_documents,
+                query.profile().output_content_bytes,
+                query.profile().output_characters,
+            ),
+            (1, 9, 8),
+        )
         self.assertNotIn("engine", descriptor(query._proto).fields_by_name)
         query._proto.Clear()
         self.assertTrue(query.id)
@@ -125,9 +132,9 @@ class ServiceTests(unittest.TestCase):
             [m for sequence in dataset for m in sequence.mask], [True] * 10 + [False] * 2
         )
         self.assertEqual(len(dataset), 3)
-        self.assertEqual(dataset._summary()["padding_tokens"], 2)
+        self.assertEqual(dataset.profile().padding_tokens, 2)
         self.assertEqual(self.client._query(query.id).profile(), query.profile())
-        self.assertEqual(self.client._snapshot(snapshot.id)._summary(), snapshot._summary())
+        self.assertEqual(self.client._snapshot(snapshot.id).profile(), snapshot.profile())
         self.assertEqual(
             self.client._dataset(dataset.id)._tokenizer_definition, dataset._tokenizer_definition
         )
@@ -369,7 +376,7 @@ class ServiceTests(unittest.TestCase):
         page = rpc.ListDatasets(datasets.ListDatasetRequest(query_id=_decode_id(query.id)))
         self.assertEqual(page.datasets[0], dataset._proto)
         page.datasets[0].profile.Clear()
-        self.assertGreater(dataset._summary()["sequences"], 0)
+        self.assertGreater(dataset.profile().sequences, 0)
 
     def test_unknown_fields_are_rejected_inside_nested_requests(self) -> None:
         snapshot = self.snapshot()
@@ -444,7 +451,7 @@ assert "grpc" not in sys.modules
             )
 
     def test_fluent_reader_partitions_and_checkpoints_match_execution(self) -> None:
-        from premixdb.local import Topology as NativeTopology
+        from _reference import Topology as NativeTopology
 
         dataset = (
             self.snapshot().query().dataset(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)
@@ -482,7 +489,7 @@ assert "grpc" not in sys.modules
         pending.status = common.STATUS_PENDING
         handle = premixdb.Snapshot(self.client, pending)
         with patch.object(self.client, "_get", return_value=snapshot._proto) as get:
-            self.assertEqual(handle.wait()._summary(), snapshot._summary())
+            self.assertEqual(handle.wait().profile(), snapshot.profile())
             get.assert_called_once()
         failed = snapshot._proto
         failed.status = common.STATUS_ERROR

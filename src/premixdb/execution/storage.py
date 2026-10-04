@@ -49,9 +49,6 @@ class ObjectStore:
         self.read_only = read_only
         self._closed = False
         self._lock = RLock()
-        if not read_only:
-            for prefix in PREFIXES:
-                (self.root / prefix / "objects").mkdir(parents=True, exist_ok=True)
         path = Path(metadata_path) if metadata_path is not None else self.root / "metadata.sqlite3"
         self.metadata = MetadataStore(path, read_only=read_only)
         try:

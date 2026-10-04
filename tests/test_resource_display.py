@@ -8,12 +8,12 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import _reference as local
 import pytest
 from _type_support import coordinator
 from google.protobuf.message import Message
 
 import premixdb as p
-from premixdb import local
 from premixdb._resources import Dataset, Mix, Query, Snapshot
 from premixdb.v1 import dataset_pb2 as d
 from premixdb.v1 import query_pb2 as q
@@ -52,7 +52,7 @@ def test_shell_plans_survive_reopening_and_do_not_materialize(tmp_path: Path) ->
         reopened = [
             db._snapshot(snapshot.id),
             db._query(query.id),
-            db._datasets(mixture.id),
+            db._mix(mixture.id),
             db._dataset(dataset.id),
         ]
         originals = [snapshot, query, mixture, dataset]
@@ -235,29 +235,6 @@ def test_large_mixture_display_is_bounded_and_does_not_fetch_candidates() -> Non
     assert "... (92 more)" in repr(mixture)
     assert "Candidates: 0 of 100" in repr(mixture[:0])
     assert client.mock_calls == []
-
-
-def test_direct_local_api_retains_plan_after_input_list_is_mutated(tmp_path: Path) -> None:
-    db = local.PremixDB(storage=tmp_path)
-    snapshot = db.corpus("display").snapshot(source=[local.Source("a", "abcd")])
-    steps = [local.where(local.text.bytes > 0), local.dedupe(order_by=[local.object.uri.asc()])]
-    query = snapshot.query(steps=steps)
-    steps.clear()
-    dataset = query.dataset(
-        tokenizer=local.ByteTokenizer(),
-        sequence_length=4,
-        packing=local.Concat(separator=0, pad_token=0, drop_remainder=False),
-    )
-    assert "Source keys: 'a'" in shell_display(snapshot)
-    assert "Documents: 1" in shell_display(snapshot)
-    assert "Text: 4 bytes; 4 characters" in shell_display(snapshot)
-    assert "1. where text.bytes > 0" in shell_display(query)
-    assert "Output: 1 document occurrences" in shell_display(query)
-    assert "2. dedupe exact_document; remove document; order by object.uri asc" in repr(query)
-    assert "ByteTokenizer()" in shell_display(dataset)
-    assert "Output: 2 sequences" in shell_display(dataset)
-    assert "Content tokens: 4" in shell_display(dataset)
-    assert "Concat(separator=0, pad=0, drop_remainder=False)" in repr(dataset)
 
 
 def test_query_default_sampling_is_visible_without_execution(tmp_path: Path) -> None:

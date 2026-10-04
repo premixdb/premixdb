@@ -9,16 +9,13 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb._ids import _decode_id
+from premixdb._ids import _decode_id, _encode_id
 from premixdb.engine.queries import Query
 from premixdb.engine.snapshots import FRAME_BYTES, StoredDocument
-from premixdb.execution.inspection import rows
 
 
-@pytest.mark.parametrize("population", ["snapshot", "input", "output", "retained"])
-def test_document_inspection_reads_only_visible_prefix_frames(
-    tmp_path: Path, population: str
-) -> None:
+@pytest.mark.parametrize("population", ["snapshot", "output", "retained"])
+def test_document_preview_reads_only_visible_prefix_frames(tmp_path: Path, population: str) -> None:
     text = "DROP\n" + "é🌍" * (FRAME_BYTES // 6 + 100) + "\nDROP"
     with p.PremixDB(storage=tmp_path) as db:
         snapshot = db.corpus("inspection", [p.Source("large", text)])
@@ -34,9 +31,7 @@ def test_document_inspection_reads_only_visible_prefix_frames(
         original = next(iter(service._snapshot(_decode_id(snapshot.id)).documents.values()))
         assert isinstance(original, StoredDocument)
         assert len(original.record["frames"]) > 1
-        parameters = {"population": ["input"]} if population == "input" else {}
-        kind = "snapshot" if population == "snapshot" else "query"
-        identity = snapshot.id if population == "snapshot" else query.id
+        resource = snapshot if population == "snapshot" else query
         with (
             patch.object(
                 StoredDocument,
@@ -47,17 +42,25 @@ def test_document_inspection_reads_only_visible_prefix_frames(
             patch.object(Query, "rows", side_effect=AssertionError("copied entire query")),
             patch.object(service._storage, "_get", wraps=service._storage._get) as read,
         ):
-            page = rows(service, kind, identity, parameters)
-            empty = rows(service, kind, identity, {**parameters, "offset": ["1"]})
+            page = resource.preview(max_characters=4096)
+            empty = resource.preview(offset=1, max_characters=4096)
         expected = text.replace("DROP", "") if population == "retained" else text
-        assert page["total"] == empty["total"] == 1
-        assert page["rows"][0]["text"] == expected[:4096]
-        assert page["rows"][0]["ordinal"] == 0
-        assert empty["rows"] == []
+        assert (
+            snapshot.profile().documents
+            if population == "snapshot"
+            else query.profile().output_documents
+        ) == 1
+        assert page[0]["text"] == expected[:4096]
+        assert page[0]["ordinal"] == 0
+        assert empty == []
         frame_reads = [
             call.args[0]
             for call in read.call_args_list
-            if str(call.args[0]).startswith("snapshot/objects/")
+            if str(call.args[0])
+            in {
+                "snapshot/objects/" + bytes(frame["digest"]).hex()
+                for frame in original.record["frames"]
+            }
         ]
         assert frame_reads == [
             "snapshot/objects/" + bytes(original.record["frames"][0]["digest"]).hex()
@@ -72,26 +75,15 @@ def test_document_pages_preserve_sampled_occurrences_and_filtered_totals(tmp_pat
         handle = service._query(_decode_id(query.id))
         with patch.object(Query, "rows", side_effect=AssertionError("copied entire query")):
             for offset in (0, 100, 125, 1000):
-                page = rows(service, "query", query.id, {"offset": [str(offset)]})
-                assert page["total"] == 125
-                assert page["offset"] == offset
-                assert [item["ordinal"] for item in page["rows"]] == list(
+                page = query.preview(limit=100, offset=offset, max_characters=0)
+                assert query.profile().output_documents == 125
+                assert [item["ordinal"] for item in page] == list(
                     range(offset, min(offset + 100, 125))
                 )
-                assert [item["id"] for item in page["rows"]] == [
-                    handle.row(i).id for i in range(offset, min(offset + 100, 125))
+                assert [item["id"] for item in page] == [
+                    _encode_id(bytes.fromhex(handle.row(i).id))
+                    for i in range(offset, min(offset + 100, 125))
                 ]
-            page = rows(
-                service,
-                "query",
-                query.id,
-                {
-                    "field": ["FIELD_TEXT_BYTES"],
-                    "lower": ['{"count":"2"}'],
-                    "upper": ['{"count":"2"}'],
-                },
-            )
-        expected = [row.ordinal for row in handle if row.source_key == "keep"]
-        assert page["total"] == len(expected)
-        assert [item["ordinal"] for item in page["rows"]] == expected[:100]
-        assert all(item["text"] == "é" for item in page["rows"])
+        selected = snapshot.query(steps=[p.where(p.text.bytes == 2)])
+        assert selected.profile().output_documents == 1
+        assert selected.preview()[0]["text"] == "é"

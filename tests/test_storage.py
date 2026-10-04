@@ -19,6 +19,7 @@ def test_object_reads_bound_growth_and_keep_missing_errors(tmp_path: Path) -> No
     with ObjectStore(tmp_path) as store:
         relative = "dataset/objects/small"
         path = tmp_path / relative
+        path.parent.mkdir(parents=True)
         path.write_bytes(b"abcd")
         assert store._get(relative, 4) == b"abcd"
         with pytest.raises(ValueError, match="size limit"):

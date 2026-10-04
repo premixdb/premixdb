@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, cast
+from typing import cast
 
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import Message
@@ -29,14 +29,6 @@ def descriptor_name(value: Message) -> str:
     if not isinstance(name, str):
         raise TypeError("protobuf descriptor name must be a string")
     return name
-
-
-def at[T](values: Iterable[T], index: int) -> T:
-    # Protobuf's container indexing stubs erase the message element type.
-    for ordinal, value in enumerate(values):
-        if ordinal == index:
-            return value
-    raise IndexError(index)
 
 
 def descriptor(value: Message | type[Message]) -> Descriptor:

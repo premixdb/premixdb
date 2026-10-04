@@ -11,11 +11,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 
+import _reference as direct
 from _type_support import coordinator
 
 import premixdb
 from premixdb import _runtime
-from premixdb import local as direct
 from premixdb._ids import _decode_id
 from premixdb.engine import datasets as engine_datasets
 from premixdb.engine import execution
@@ -70,7 +70,15 @@ class CoreDesignTests(unittest.TestCase):
                 local_query = local_snapshot.query(steps=steps)
                 query = snapshot.query(steps=steps)
                 self.assertEqual(_decode_id(query.id).hex(), local_query.id)
-                self.assertEqual(query._summary(), local_query.summary())
+                self.assertEqual(
+                    query.profile().output_documents, local_query.summary()["output"]["documents"]
+                )
+                self.assertEqual(
+                    query.profile().output_content_bytes, local_query.summary()["output"]["bytes"]
+                )
+                self.assertEqual(
+                    query.profile().output_characters, local_query.summary()["output"]["characters"]
+                )
                 local_dataset = local_query.dataset(
                     tokenizer=direct.ByteTokenizer(), sequence_length=7, packing=packing
                 )
@@ -441,8 +449,8 @@ class MaterializationLifecycleTests(unittest.TestCase):
                 with patch.object(_resources.time, "monotonic", side_effect=[0.0, 0.8]):
                     resource.wait(timeout=1.0)
                 client._submit.assert_called_once()
-                self.assertEqual(client._submit.call_args.kwargs["timeout"], 1.0)
-                self.assertAlmostEqual(client._get.call_args.kwargs["timeout"], 0.2)
+                self.assertEqual(client._submit.call_args.kwargs, {})
+                self.assertEqual(client._get.call_args.kwargs, {})
                 self.assertEqual(client._get.call_args.args, (kind, pending.id))
                 self.assertIs(resource.status, premixdb.ExecutionStatus.COMPLETED)
 

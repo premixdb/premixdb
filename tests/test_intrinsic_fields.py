@@ -16,7 +16,6 @@ from premixdb.engine.curation import selector_key
 from premixdb.engine.snapshots import StoredDocument
 from premixdb.execution.coordinator import Coordinator
 from premixdb.execution.enrichment import projections, query_inputs
-from premixdb.execution.inspection import rows
 from premixdb.execution.planner import field_definitions
 from premixdb.v1 import query_pb2 as q
 
@@ -50,17 +49,6 @@ def test_intrinsic_projections_do_not_read_stored_text(ready: tuple[Coordinator,
         selectors, [7, 3, "https://example/a", document.corpus_id], strict=True
     ):
         assert values[selector_key(selector)] == {document.id: expected}
-
-
-def test_unspecified_drilldown_field_is_rejected(ready: tuple[Coordinator, p.Query]) -> None:
-    service, resource = ready
-    with pytest.raises(ValueError, match="intrinsic field"):
-        rows(
-            service,
-            "query",
-            resource.id,
-            {"field": ["FIELD_UNSPECIFIED"], "lower": ['{"text":""}'], "upper": ['{"text":"z"}']},
-        )
 
 
 def test_intrinsic_sampling_plans_and_selects_without_reading_text(tmp_path: Path) -> None:

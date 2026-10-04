@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-huggingface = ["datasets>=5.0.1,<6"]
+huggingface = []  # Compatibility spelling; Hub capture is included in the base install.
 
 [project.scripts]
 premixdb = "premixdb._cli:main"
