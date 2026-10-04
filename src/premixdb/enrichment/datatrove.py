@@ -6,15 +6,14 @@ from collections.abc import Iterable, Mapping
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Iterator, Protocol, Sequence, cast
 
-from .._typing import Metadata, Scalar
-from .types import ComputedRow
+from premixdb.contracts import Metadata, Scalar
+from premixdb.enrichment.types import ComputedRow
 
 if TYPE_CHECKING:
     from datatrove.data import Document as DTDocument
 
+from premixdb.enrichment.types import Document, check_documents, field, package_versions
 from premixdb.v1 import field_pb2 as f
-
-from .types import Document, check_documents, field, package_versions
 
 DOC_METRICS = (
     "length",

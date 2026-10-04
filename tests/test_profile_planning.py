@@ -11,10 +11,11 @@ from collections.abc import Iterable, Sequence
 from unittest.mock import patch
 
 import premixdb
-from premixdb._typing import field_value
+from premixdb.contracts import field_value
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.execution import Coordinator, catalog, compile_query, enrichment, profiles
+from premixdb.runtime import Coordinator, catalog, compile_query, enrichment
+from premixdb.storage import profiles
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import profile_pb2 as p
 from premixdb.v1 import query_pb2 as q

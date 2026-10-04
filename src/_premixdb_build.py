@@ -58,7 +58,7 @@ def generate_field_catalog(destination: Path, *, check: bool = False) -> None:
         "",
         "from enum import Enum",
         "",
-        "from ._field_expr import ScalarField",
+        "from premixdb.fields.expressions import ScalarField",
         "",
         "",
         "class IntrinsicField(str, Enum):",
@@ -91,7 +91,7 @@ def generate_field_catalog(destination: Path, *, check: bool = False) -> None:
         ]
     )
     content = "\n".join(lines).encode()
-    target = destination / "premixdb/_field_catalog.py"
+    target = destination / "premixdb/fields/catalog.py"
     if target.exists() and target.read_bytes() == content:
         return
     if check:

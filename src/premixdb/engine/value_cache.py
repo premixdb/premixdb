@@ -8,8 +8,8 @@ from contextlib import ExitStack
 from threading import RLock
 from typing import Iterable, Iterator
 
-from .._typing import FieldValue, field_value, json_string, load_json
-from .spill import _database
+from premixdb.contracts import FieldValue, field_value, json_string, load_json
+from premixdb.engine.spill import _database
 
 
 class ValueCache(MutableMapping[str, FieldValue]):

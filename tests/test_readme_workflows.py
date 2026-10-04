@@ -15,11 +15,11 @@ import pytest
 from _type_support import SHELL_SOURCES, invalid_call
 
 import premixdb as p
-from premixdb._typing import JSON, FieldValue
+from premixdb.contracts import JSON, FieldValue
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.execution import enrichment
 from premixdb.internal import derivation_pb2 as d
+from premixdb.runtime import enrichment
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import query_pb2 as q
 
@@ -85,11 +85,11 @@ class ReadmeWorkflows(unittest.TestCase):
     def test_package_reads_its_current_version(self) -> None:
         from importlib.metadata import PackageNotFoundError, version
 
-        from premixdb._version import current_version
+        from premixdb.version import current_version
 
         self.assertEqual(p.__version__, version("premixdb"))
         self.assertEqual(self.db.version, p.__version__)
-        with patch("premixdb._version.version", side_effect=PackageNotFoundError):
+        with patch("premixdb.version.version", side_effect=PackageNotFoundError):
             import tomllib
 
             project = Path(__file__).resolve().parents[1] / "pyproject.toml"

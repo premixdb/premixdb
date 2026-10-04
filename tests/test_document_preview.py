@@ -12,11 +12,11 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb._ids import _decode_id
 from premixdb.engine.contracts import DocumentRecord, Frame
 from premixdb.engine.snapshots import FRAME_BYTES, StoredDocument
-from premixdb.execution.previewing import _text
-from premixdb.execution.storage import ObjectStore
+from premixdb.schemas.ids import _decode_id
+from premixdb.storage.objects import ObjectStore
+from premixdb.storage.preview import _text
 
 
 def test_retained_previews_cross_utf8_frames_and_skip_removed_frames(tmp_path: Path) -> None:
@@ -115,8 +115,8 @@ import sys
 for module in (
     "premixdb.engine.queries",
     "premixdb.engine.curation",
-    "premixdb.execution.selections",
-    "premixdb.execution.coordinator",
+    "premixdb.storage.selections",
+    "premixdb.runtime.coordinator",
 ):
     sys.modules[module] = None
 import premixdb as p

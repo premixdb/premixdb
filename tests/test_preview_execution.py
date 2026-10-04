@@ -133,7 +133,7 @@ def test_dataset_preview_encodes_only_needed_documents_and_matches_full_packing(
         with (
             patch.object(service, "_execute_query", side_effect=AssertionError("full query")),
             patch.object(service, "_profile_dataset", side_effect=AssertionError("exact profile")),
-            patch("premixdb.execution.tokens.publish", side_effect=AssertionError("full packing")),
+            patch("premixdb.storage.tokens.publish", side_effect=AssertionError("full packing")),
             patch.object(HuggingFaceTokenizer, "encode_with_offsets", encode),
         ):
             examples = dataset.preview()

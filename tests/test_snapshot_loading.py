@@ -8,8 +8,8 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb._ids import _decode_id
 from premixdb.engine.snapshots import COMMIT_HEADER
+from premixdb.schemas.ids import _decode_id
 
 
 def capture(root: Path) -> bytes:

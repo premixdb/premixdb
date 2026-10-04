@@ -86,7 +86,7 @@ class Block(importlib.abc.MetaPathFinder):
             raise AssertionError(fullname)
 sys.meta_path.insert(0, Block())
 import premixdb
-from premixdb.execution import compile_query
+from premixdb.runtime import compile_query
 p = compile_query(premixdb.query('01'*32, steps=[premixdb.where(premixdb.text.bytes > 1)]))
 assert len(p.id) == 32 and len(p.git_commit) in (20,32)
 """

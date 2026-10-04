@@ -32,8 +32,8 @@ from _type_support import (
     invalid_call,
 )
 
-from premixdb import _runtime
 from premixdb.engine import execution
+from premixdb.runtime import environment as _runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 CODE = execution.CodeVersion("local://test", "a" * 40, "09" * 32)

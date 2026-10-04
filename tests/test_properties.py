@@ -8,11 +8,11 @@ from itertools import accumulate
 from hypothesis import given
 from hypothesis import strategies as st
 
-from premixdb._mixing import allocations
-from premixdb._reader import Topology, permutation
 from premixdb.engine.identity import CodeVersion
+from premixdb.engine.mixing import allocations
 from premixdb.engine.plans import filter_documents, query_identity
-from premixdb.execution.pipeline import _packing_blocks
+from premixdb.runtime.pipeline import _packing_blocks
+from premixdb.training.reader import Topology, permutation
 
 DIGESTS = st.binary(min_size=32, max_size=32).map(bytes.hex)
 CODE = CodeVersion("local://property-tests", "a" * 40, "09" * 32)

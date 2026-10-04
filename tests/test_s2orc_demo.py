@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from premixdb import Source
-from premixdb._typing import JSON
+from premixdb.contracts import JSON
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("prepare_s2orc", ROOT / "scripts/prepare_s2orc.py")

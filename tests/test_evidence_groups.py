@@ -11,8 +11,8 @@ from premixdb.engine.identity import CodeVersion
 from premixdb.engine.queries import CorpusIndex
 from premixdb.engine.snapshots import Snapshot
 from premixdb.engine.spill import classes
-from premixdb.execution.partitions import PartitionStore
-from premixdb.execution.pipeline import PartitionPipeline
+from premixdb.runtime.partitions import PartitionStore
+from premixdb.runtime.pipeline import PartitionPipeline
 
 
 def test_large_document_grouping_retains_one_encoded_copy() -> None:

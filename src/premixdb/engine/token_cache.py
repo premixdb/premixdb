@@ -7,18 +7,18 @@ from contextlib import ExitStack
 from threading import RLock
 from typing import TYPE_CHECKING
 
-from .._typing import checked_record, load_json
-from .contracts import EncodedTokens
-from .spill import _database
-from .token_codec import decode_tokens, encode_tokens
+from premixdb.contracts import checked_record, load_json
+from premixdb.engine.contracts import EncodedTokens
+from premixdb.engine.spill import _database
+from premixdb.engine.token_codec import decode_tokens, encode_tokens
 
 if TYPE_CHECKING:
-    from .datasets import ByteTokens, HuggingFaceTokenizer, TokenList
-    from .queries import Query
+    from premixdb.engine.datasets import ByteTokens, HuggingFaceTokenizer, TokenList
+    from premixdb.engine.queries import Query
 
 
 def token_pool(query: Query, tokenizer: HuggingFaceTokenizer) -> TokenCache:
-    from .datasets import encoded_tokens
+    from premixdb.engine.datasets import encoded_tokens
 
     pool = TokenCache()
     encode = query._encoding_provider or encoded_tokens

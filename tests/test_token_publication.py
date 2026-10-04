@@ -4,13 +4,13 @@ from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
 from premixdb import RangeReader
-from premixdb._sequences import read_page
 from premixdb.engine.datasets import Sequence
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.queries import CorpusIndex
 from premixdb.engine.snapshots import Snapshot
-from premixdb.execution.storage import ObjectStore
-from premixdb.execution.tokens import publish
+from premixdb.storage.objects import ObjectStore
+from premixdb.storage.tokens import publish
+from premixdb.training.sequences import read_page
 from premixdb.v1 import data_mixture_pb2 as d
 
 

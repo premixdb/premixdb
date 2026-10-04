@@ -5,16 +5,23 @@ from __future__ import annotations
 from functools import cached_property
 from typing import TYPE_CHECKING, Literal, Mapping, Sequence, cast
 
-from .._typing import Metadata, field_value
-from ..v1.field_pb2 import Field
-from .interfaces import ModelTokenizer, SequenceModel
-from .types import ComputedRow, Document
+from premixdb.contracts import Metadata, field_value
+from premixdb.enrichment.interfaces import ModelTokenizer, SequenceModel
+from premixdb.enrichment.types import ComputedRow, Document
+from premixdb.v1.field_pb2 import Field
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
     from torch import Tensor
 
-from .types import ModelPin, check_documents, field, matrix, package_versions, positive
+from premixdb.enrichment.types import (
+    ModelPin,
+    check_documents,
+    field,
+    matrix,
+    package_versions,
+    positive,
+)
 
 QUALITY_DIMENSIONS = (
     "writing_style",

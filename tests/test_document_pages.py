@@ -9,9 +9,9 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb._ids import _decode_id, _encode_id
 from premixdb.engine.queries import Query
 from premixdb.engine.snapshots import FRAME_BYTES, StoredDocument
+from premixdb.schemas.ids import _decode_id, _encode_id
 
 
 @pytest.mark.parametrize("population", ["snapshot", "output", "retained"])

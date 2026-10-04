@@ -10,10 +10,10 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb import _runtime
-from premixdb._ids import _decode_id
 from premixdb.engine.datasets import HuggingFaceTokenizer
 from premixdb.internal import derivation_pb2 as d
+from premixdb.runtime import environment as _runtime
+from premixdb.schemas.ids import _decode_id
 
 
 @pytest.mark.parametrize("mode", ["filtered", "span", "replacement", "empty"])

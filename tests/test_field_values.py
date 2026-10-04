@@ -9,10 +9,10 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from premixdb._protobuf import copy_message
-from premixdb._typing import FieldValue
-from premixdb.execution.enrichment import decode_value, encode_value
+from premixdb.contracts import FieldValue
 from premixdb.internal import derivation_pb2 as e
+from premixdb.runtime.enrichment import decode_value, encode_value
+from premixdb.schemas.protobuf import copy_message
 from premixdb.v1 import field_pb2 as f
 
 DOCUMENT_ID = b"x" * 32

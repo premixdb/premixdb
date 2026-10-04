@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-from .._types import Changes as Changes
-from .._typing import Interval
+from premixdb.contracts import Changes as Changes
+from premixdb.contracts import Interval
 
 
 class Counts(TypedDict):

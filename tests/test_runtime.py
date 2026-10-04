@@ -7,8 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from premixdb import _runtime
-from premixdb.execution.catalog import plan
+from premixdb.runtime import environment as _runtime
+from premixdb.runtime.catalog import plan
 
 
 def test_source_fingerprint_includes_uncommitted_code_but_ignores_bytecode(tmp_path: Path) -> None:

@@ -8,20 +8,7 @@ from os import PathLike, fspath
 from pathlib import Path
 from typing import Iterable, Iterator, Literal, cast
 
-from premixdb import _requests, _runtime
-from premixdb._enums import DedupeAlgorithm, RemovalUnit
-from premixdb._field_expr import FieldPredicate
-from premixdb._identity import corpus_id
-from premixdb._inputs import source_files
-from premixdb._policies import ByteTokenizer as ByteTokenizer
-from premixdb._policies import Concat as Concat
-from premixdb._reader import Topology as Topology
-
-# The legacy direct API adapts the same expression/policy vocabulary as the SDK.
-from premixdb._requests import SourceGroup as SourceGroup
-from premixdb._requests import object as object
-from premixdb._requests import text as text
-from premixdb._types import Checkpoint
+from premixdb.contracts import Checkpoint
 from premixdb.engine import execution
 from premixdb.engine.contracts import (
     Changes,
@@ -32,6 +19,20 @@ from premixdb.engine.contracts import (
     QuerySummary,
 )
 from premixdb.engine.execution import Reader, Row, Sequence, Source
+from premixdb.engine.names import corpus_id
+from premixdb.engine.policies import ByteTokenizer as ByteTokenizer
+from premixdb.engine.policies import Concat as Concat
+from premixdb.engine.sources import source_files
+from premixdb.fields.expressions import FieldPredicate
+from premixdb.runtime import environment as _runtime
+from premixdb.schemas import requests as _requests
+from premixdb.schemas.enums import DedupeAlgorithm, RemovalUnit
+
+# The legacy direct API adapts the same expression/policy vocabulary as the SDK.
+from premixdb.schemas.requests import SourceGroup as SourceGroup
+from premixdb.schemas.requests import object as object
+from premixdb.schemas.requests import text as text
+from premixdb.training.reader import Topology as Topology
 from premixdb.v1 import query_pb2 as q
 
 
@@ -116,7 +117,7 @@ def dedupe(
 
 
 def _steps(steps: Iterable[execution.Step | q.Operation]) -> list[execution.Step]:
-    from premixdb.execution.planner import execution_steps
+    from premixdb.runtime.planner import execution_steps
     from premixdb.v1.query_pb2 import CreateQueryRequest, Operation
 
     result = []

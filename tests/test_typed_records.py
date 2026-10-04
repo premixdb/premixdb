@@ -7,7 +7,7 @@ from typing import Literal, NotRequired, Required, TypedDict
 
 import pytest
 
-from premixdb._typing import JSON, checked_record
+from premixdb.contracts import JSON, checked_record
 
 
 class OptionalFields(TypedDict, total=False):

@@ -12,8 +12,8 @@ from google.protobuf.descriptor import FileDescriptor
 from google.protobuf.message import Message
 
 import premixdb
-from premixdb import _requests
-from premixdb._protobuf import descriptor
+from premixdb.schemas import requests as _requests
+from premixdb.schemas.protobuf import descriptor
 from premixdb.v1 import corpus_pb2 as corpora
 from premixdb.v1 import data_mixture_pb2 as datasets
 from premixdb.v1 import query_pb2 as queries
@@ -268,11 +268,11 @@ import importlib.abc
 import sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in ("premixdb.engine.execution", "premixdb._runtime", "grpc"):
+        if fullname in ("premixdb.engine.execution", "premixdb.runtime.environment", "grpc"):
             raise AssertionError("unexpected dependency: " + fullname)
 sys.meta_path.insert(0, Block())
 import premixdb
-from premixdb import _requests
+from premixdb.schemas import requests as _requests
 from google.protobuf.message import Message
 assert isinstance(premixdb.corpus("web"), Message)
 assert isinstance(premixdb.query(b"s" * 32, steps=[premixdb.dedupe()]), Message)

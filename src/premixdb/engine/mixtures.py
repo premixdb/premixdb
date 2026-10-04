@@ -7,16 +7,16 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping
 
-from .contracts import Counts, PackingGeometry, PackingProfile
-from .datasets import HuggingFaceTokenizer
+from premixdb.engine.contracts import Counts, PackingGeometry, PackingProfile
+from premixdb.engine.datasets import HuggingFaceTokenizer
 
 if TYPE_CHECKING:
-    from .queries import Query
+    from premixdb.engine.queries import Query
 
-from .dataset_plan import BYTE_DEFINITION, DatasetPlan, PackingPlan
-from .datasets import Dataset, encoded_tokens
-from .identity import Canonical, digest, unsigned
-from .snapshots import counts
+from premixdb.engine.dataset_plan import BYTE_DEFINITION, DatasetPlan, PackingPlan
+from premixdb.engine.datasets import Dataset, encoded_tokens
+from premixdb.engine.identity import Canonical, digest, unsigned
+from premixdb.engine.snapshots import counts
 
 
 class MixturePool:
@@ -47,7 +47,7 @@ class MixturePool:
         self._encoded = None
         with ExitStack() as startup:
             if tokenizer:
-                from .token_cache import token_pool
+                from premixdb.engine.token_cache import token_pool
 
                 self._encoded = token_pool(query, tokenizer)
                 startup.callback(self._encoded.close)

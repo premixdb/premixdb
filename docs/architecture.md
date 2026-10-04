@@ -31,15 +31,41 @@ exhausting or closing the stream releases its temporary database.
 
 | Code | Responsibility |
 | --- | --- |
-| [`_resources.py`](../src/premixdb/_resources.py) | Python API |
-| [`_inputs.py`](../src/premixdb/_inputs.py) | Source values and request conversion |
-| [`_files.py`](../src/premixdb/_files.py) | Publish complete immutable files and synchronize writes |
-| [`_lineage.py`](../src/premixdb/_lineage.py) | Validated provenance and public witness IDs |
-| [`_sequences.py`](../src/premixdb/_sequences.py) | Verified sequence reads and preview decoding |
-| [`execution/`](../src/premixdb/execution) | Planning, execution, caching |
+| [`api/`](../src/premixdb/api) | Sessions, resource handles, collections, and display |
+| [`contracts.py`](../src/premixdb/contracts.py) | Shared records, checkpoints, scalar types, and JSON validation |
+| [`fields/`](../src/premixdb/fields) | Typed field catalog, expressions, selectors, and stable field IDs |
+| [`schemas/`](../src/premixdb/schemas) | Request builders, protobuf adapters, and wire validation |
+| [`runtime/`](../src/premixdb/runtime) | Planning, scheduling, enrichment, and partition execution |
+| [`storage/`](../src/premixdb/storage) | Metadata, immutable publication, catalogs, profiles, and restoration |
+| [`training/`](../src/premixdb/training) | Verified sequence reads, checkpoints, and PyTorch adapters |
+| [`cli/`](../src/premixdb/cli) | Command-line entry point and interactive shell |
 | [`engine/`](../src/premixdb/engine) | Capture, curation, tokenization, packing |
-| [`engine/records.py`](../src/premixdb/engine/records.py) | Shared captured-document codec and structural checks |
+| [`enrichment/`](../src/premixdb/enrichment) | Model and provider integrations |
 | [`proto/`](../proto/README.md) | Stored schemas |
+
+Application imports remain available from `premixdb`, with typed field namespaces
+also available from `premixdb.fields`. Generated `v1/` and `internal/` schema
+packages retain their existing paths. Other modules are implementation details;
+the package name and its responsibility identify their home without a leading
+underscore on every filename.
+
+The API delegates execution to the runtime, which composes engine algorithms and
+storage services. Engine, schema, field, storage, training, and provider modules
+do not import API or runtime modules. Shared request and field vocabulary lives
+below the API so planning and restoration use the same validation. Resource
+classes live in individual API modules; `api/base.py` owns their shared identity
+and waiting behavior.
+
+`runtime/coordinator.py` owns session lifecycle, scheduling, and service entry
+points. Dataset and mixture operations live in `runtime/datasets.py` and
+`runtime/mixtures.py`; explicit delegates preserve the coordinator's request
+tracking and method dispatch. Read-only catalogs and training readers can load
+without importing the runtime. Stored recipes, protobuf names, and data codecs
+retain their existing formats; moving Python implementation modules changes the
+execution source fingerprint used for newly created recipes.
+
+`tests/test_architecture.py` enforces these import boundaries. Place new code in
+the package that owns its behavior instead of adding a general utilities package.
 
 `tests/_reference.py` is the in-memory harness used by engine tests and
 independent comparisons with the SDK. It is not shipped in the package.

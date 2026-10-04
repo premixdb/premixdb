@@ -14,7 +14,7 @@ import pytest
 from _type_support import coordinator, invalid_call
 
 import premixdb as p
-from premixdb._progress import operation
+from premixdb.api.progress import operation
 from premixdb.v1 import data_mixture_pb2 as dataset_pb
 from premixdb.v1 import query_pb2 as query_pb
 
@@ -47,9 +47,9 @@ class StatusOutput(io.StringIO):
 def output() -> Iterator[StatusOutput]:
     stream = StatusOutput()
     with (
-        patch("premixdb._progress._DELAY", 0.01),
-        patch("premixdb._progress._INTERVAL", 0.01),
-        patch("premixdb._progress.sys", SimpleNamespace(stderr=stream)),
+        patch("premixdb.api.progress._DELAY", 0.01),
+        patch("premixdb.api.progress._INTERVAL", 0.01),
+        patch("premixdb.api.progress.sys", SimpleNamespace(stderr=stream)),
     ):
         yield stream
     assert not any(thread.name == "premixdb-progress" for thread in threads())
@@ -68,7 +68,7 @@ def test_reports_repeatedly_before_the_operation_finishes(output: StatusOutput) 
 
 
 def test_fast_and_disabled_operations_are_quiet(output: StatusOutput) -> None:
-    with patch("premixdb._progress._DELAY", 60):
+    with patch("premixdb.api.progress._DELAY", 60):
         with operation("Fast operation"):
             pass
     with operation("Disabled operation", enabled=False):
@@ -106,8 +106,8 @@ def test_closed_output_does_not_fail_work() -> None:
     stream = io.StringIO()
     stream.close()
     with (
-        patch("premixdb._progress.sys.stderr", stream),
-        patch("premixdb._progress._DELAY", 0),
+        patch("premixdb.api.progress.sys.stderr", stream),
+        patch("premixdb.api.progress._DELAY", 0),
     ):
         with operation("No terminal"):
             pass

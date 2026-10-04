@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .contracts import Counts, PackingGeometry, PackingProfile, PackingSummary
-from .identity import Canonical, CodeVersion, digest, unsigned
+from premixdb.engine.contracts import Counts, PackingGeometry, PackingProfile, PackingSummary
+from premixdb.engine.identity import Canonical, CodeVersion, digest, unsigned
 
 BYTE_DEFINITION = (
     Canonical("tokenizer").string("text.utf8_bytes/u32/no-special-tokens/v1").finish().hex()
@@ -106,7 +106,7 @@ class PackingPlan:
         """Exact boundary/source counts without constructing tokens or sequences."""
         occurrences = list(occurrences)
         totals = self.measure([length for _, _, length in occurrences])
-        from .curation import coalesce
+        from premixdb.engine.curation import coalesce
 
         source_tokens: dict[str, int] = {}
         intervals: dict[str, list[tuple[int, int]]] = {}

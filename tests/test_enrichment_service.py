@@ -14,13 +14,13 @@ from _type_support import coordinator
 
 import premixdb
 from premixdb import ContentType, Topic, content_type, language, quality, topic, where
-from premixdb._ids import _decode_id
-from premixdb._typing import FieldValue
+from premixdb.contracts import FieldValue
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.execution import catalog
-from premixdb.execution import enrichment as worker
 from premixdb.internal import derivation_pb2 as d
+from premixdb.runtime import catalog
+from premixdb.runtime import enrichment as worker
+from premixdb.schemas.ids import _decode_id
 from premixdb.v1 import query_pb2 as q
 
 
@@ -181,7 +181,7 @@ class EnrichmentServiceTests(unittest.TestCase):
         self.assertEqual(self.producer.call_count, 2)
 
     def test_pending_query_resumes_after_restart(self) -> None:
-        from premixdb.execution.planner import compile_query
+        from premixdb.runtime.planner import compile_query
 
         pending = compile_query(premixdb.query(self.snapshot.id, steps=[where(language.en > 0.8)]))
         coordinator(self.client)._storage.save("query", pending.id, pending, suffix=".pending")
@@ -198,7 +198,7 @@ class EnrichmentServiceTests(unittest.TestCase):
             with self.assertRaises((ValueError, NotImplementedError)):
                 self.snapshot.query(steps=steps)
         with self.assertRaises((ValueError, NotImplementedError)):
-            from premixdb.execution.planner import compile_query
+            from premixdb.runtime.planner import compile_query
 
             compile_query(premixdb.query(self.snapshot.id, field_snapshot_ids=[b"x" * 32]))
         wrong = where(language.en > 0.8)
@@ -213,7 +213,7 @@ class EnrichmentServiceTests(unittest.TestCase):
         self.producer.assert_not_called()
 
     def test_enum_requests_and_legacy_names_resolve_identically(self) -> None:
-        from premixdb.execution.planner import compile_query
+        from premixdb.runtime.planner import compile_query
 
         current = where(language.en > 0.8)
         legacy = q.Operation.FromString(current.SerializeToString())
@@ -265,7 +265,7 @@ class EnrichmentServiceTests(unittest.TestCase):
             self.assertEqual(first.profile(), second.profile())
 
     def test_planning_pins_models_without_constructing_workers(self) -> None:
-        from premixdb.execution.planner import compile_query
+        from premixdb.runtime.planner import compile_query
 
         plan = compile_query(
             premixdb.query(self.snapshot.id, steps=[where(topic.science_and_tech > 0.5)])

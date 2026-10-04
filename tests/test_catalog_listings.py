@@ -13,11 +13,11 @@ from _type_support import coordinator, invalid_call
 from google.protobuf.message import Message
 
 import premixdb as p
-from premixdb._ids import _decode_id, _encode_id
-from premixdb._resources import Dataset, Query
-from premixdb._types import CorpusListing, SnapshotListing
-from premixdb.execution.catalog_reader import Catalog
-from premixdb.execution.storage import ObjectStore
+from premixdb.api import Dataset, Query
+from premixdb.contracts import CorpusListing, SnapshotListing
+from premixdb.schemas.ids import _decode_id, _encode_id
+from premixdb.storage.catalog import Catalog
+from premixdb.storage.objects import ObjectStore
 from premixdb.v1 import corpus_pb2 as c
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
@@ -402,7 +402,7 @@ def test_listing_arguments_and_document_defaults(tmp_path: Path) -> None:
 
 
 def test_catalog_windows_load_only_requested_payloads(tmp_path: Path) -> None:
-    from premixdb.execution import metadata
+    from premixdb.storage import metadata
 
     with p.PremixDB(storage=tmp_path) as db:
         snapshot = db.Corpus("indexed", [p.Source("a", "text")])

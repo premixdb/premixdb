@@ -15,7 +15,7 @@ from blake3 import blake3
 
 import premixdb as p
 from premixdb.engine.datasets import HuggingFaceTokenizer
-from premixdb.execution.enrichment import numeric_vector
+from premixdb.runtime.enrichment import numeric_vector
 
 
 @pytest.mark.parametrize("replacement", [False, True])

@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from .._typing import JSON, json_integer, json_integers, json_list, json_object, json_string
-from .contracts import DocumentRecord, Frame, TextProfile
+from premixdb.contracts import (
+    JSON,
+    json_integer,
+    json_integers,
+    json_list,
+    json_object,
+    json_string,
+)
+from premixdb.engine.contracts import DocumentRecord, Frame, TextProfile
 
 FRAME_BYTES = 1024 * 1024
 

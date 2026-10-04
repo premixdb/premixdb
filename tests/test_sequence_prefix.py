@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from premixdb import RangeReader
-from premixdb._sequences import Sequence
-from premixdb.execution.storage import ObjectStore
+from premixdb.storage.objects import ObjectStore
+from premixdb.training.sequences import Sequence
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1.storage_pb2 import SpanRef
 

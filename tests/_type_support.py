@@ -9,8 +9,8 @@ from _reference import Snapshot
 from blake3 import blake3
 
 from premixdb import PremixDB, Source
-from premixdb._typing import FieldValue
-from premixdb.execution import Coordinator
+from premixdb.contracts import FieldValue
+from premixdb.runtime import Coordinator
 from premixdb.v1.data_mixture_pb2 import Packing, Tokenizer
 
 SHELL_SOURCES = (

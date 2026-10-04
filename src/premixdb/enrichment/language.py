@@ -11,11 +11,16 @@ from typing import TYPE_CHECKING, Protocol, Sequence, cast
 
 from blake3 import blake3
 
+from premixdb.contracts import Metadata
+from premixdb.enrichment.types import (
+    ComputedRow,
+    Document,
+    check_documents,
+    field,
+    package_versions,
+)
 from premixdb.fields import Language
-
-from .._typing import Metadata
-from ..v1.field_pb2 import Field
-from .types import ComputedRow, Document, check_documents, field, package_versions
+from premixdb.v1.field_pb2 import Field
 
 if TYPE_CHECKING:
     from datatrove.data import Document as DTDocument

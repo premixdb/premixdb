@@ -10,13 +10,13 @@ from unittest.mock import patch
 import pytest
 from blake3 import blake3
 
-from premixdb._typing import JSON
+from premixdb.contracts import JSON
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.snapshots import Snapshot, Store, StoredDocument
 from premixdb.enrichment.types import Document
-from premixdb.execution.partitions import Artifact, Kernel, PartitionStore, PartitionTask
-from premixdb.execution.pipeline import PartitionPipeline
 from premixdb.internal import derivation_pb2 as e
+from premixdb.runtime.partitions import Artifact, Kernel, PartitionStore, PartitionTask
+from premixdb.runtime.pipeline import PartitionPipeline
 
 
 @pytest.mark.parametrize(

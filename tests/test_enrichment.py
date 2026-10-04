@@ -32,7 +32,7 @@ from premixdb.enrichment import (
 from premixdb.enrichment.interfaces import ModelTokenizer, SequenceModel
 from premixdb.enrichment.models import QUALITY_DIMENSIONS
 from premixdb.enrichment.types import field
-from premixdb.execution.enrichment import numeric_vector
+from premixdb.runtime.enrichment import numeric_vector
 from premixdb.v1 import field_pb2 as fields
 
 REVISION = "a" * 40
@@ -89,8 +89,8 @@ def classifier_tokenizer() -> ModelTokenizer:
 class ModelTests(unittest.TestCase):
     def test_builtin_metadata_and_empty_batches_do_not_load_models(self) -> None:
         from premixdb.enrichment.language import LanguageScores
-        from premixdb.execution.catalog import recipe
-        from premixdb.execution.enrichment import producer
+        from premixdb.runtime.catalog import recipe
+        from premixdb.runtime.enrichment import producer
 
         with patch(
             "premixdb.enrichment.models._sequence_model", side_effect=AssertionError("model load")

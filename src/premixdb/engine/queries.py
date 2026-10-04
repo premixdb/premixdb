@@ -8,8 +8,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Mapping, Sequence
 
-from .._typing import EvidenceRange, FieldValue
-from .contracts import (
+from premixdb.contracts import EvidenceRange, FieldValue
+from premixdb.engine.contracts import (
     Contamination,
     Counts,
     PackingProfile,
@@ -19,18 +19,18 @@ from .contracts import (
     SamplingStatistics,
     Selection,
 )
-from .curation import ReferenceProvider, SelectedDocument
-from .identity import CodeVersion
-from .snapshots import Snapshot
+from premixdb.engine.curation import ReferenceProvider, SelectedDocument
+from premixdb.engine.identity import CodeVersion
+from premixdb.engine.snapshots import Snapshot
 
 if TYPE_CHECKING:
-    from .datasets import ByteTokens, Dataset, HuggingFaceTokenizer, TokenList
-    from .mixtures import MixturePool
+    from premixdb.engine.datasets import ByteTokens, Dataset, HuggingFaceTokenizer, TokenList
+    from premixdb.engine.mixtures import MixturePool
 
-from . import plans
-from .curation import RetainedDocument
-from .dataset_plan import PackingPlan
-from .snapshots import Document, counts
+from premixdb.engine import plans
+from premixdb.engine.curation import RetainedDocument
+from premixdb.engine.dataset_plan import PackingPlan
+from premixdb.engine.snapshots import Document, counts
 
 _OPS = dict(
     eq=operator.eq, ne=operator.ne, lt=operator.lt, le=operator.le, gt=operator.gt, ge=operator.ge
@@ -103,7 +103,7 @@ class CorpusIndex:
         if self.class_provider is not None:
             return self.class_provider(self, unit)
         if sum(document.size for document in self.documents.values()) > 8 * 1024 * 1024:
-            from .spill import classes
+            from premixdb.engine.spill import classes
 
             return classes(self, unit)
         if unit not in self._classes:
@@ -234,7 +234,7 @@ class Query:
                         provenance[d.id]["selection"] = dict(kind="filtered", step=ordinal)
                 documents = retained
             elif step.kind == "Policy":
-                from . import curation
+                from premixdb.engine import curation
 
                 assert step.payload is not None
                 if step.payload[0] == "decontaminate":
@@ -309,7 +309,7 @@ class Query:
         policy: plans.Step,
         ordinal: int,
     ) -> list[SelectedDocument]:
-        from .curation import ordering
+        from premixdb.engine.curation import ordering
 
         def key(d: SelectedDocument) -> str | tuple[str, str]:
             if policy.separator is None:
@@ -408,11 +408,11 @@ class Query:
         *,
         stream: bool = False,
     ) -> Dataset:
-        from .datasets import Dataset
+        from premixdb.engine.datasets import Dataset
 
         return Dataset.from_query(self, length, separator, padding, tokenizer, stream=stream)
 
     def mixture_pool(self, field: str, assignments: Mapping[str, str]) -> MixturePool:
-        from .mixtures import MixturePool
+        from premixdb.engine.mixtures import MixturePool
 
         return MixturePool(self, field, assignments)

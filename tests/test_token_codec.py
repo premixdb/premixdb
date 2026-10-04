@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from premixdb._typing import JSON, Interval
+from premixdb.contracts import JSON, Interval
 from premixdb.engine.contracts import EncodedTokens
 from premixdb.engine.datasets import ByteRanges, ByteTokens, TokenList
 from premixdb.engine.token_cache import TokenCache

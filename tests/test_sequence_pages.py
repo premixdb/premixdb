@@ -10,8 +10,8 @@ import pytest
 from _type_support import coordinator, wordpiece_tokenizer
 
 import premixdb as p
-from premixdb._sequences import Sequence
-from premixdb.execution.coordinator import Coordinator
+from premixdb.runtime.coordinator import Coordinator
+from premixdb.training.sequences import Sequence
 
 
 @pytest.fixture(params=["wordpiece", "bytes"])
@@ -62,7 +62,10 @@ def test_empty_preview_pages_do_not_load_tokenizer(ready: tuple[Coordinator, p.D
     service, dataset = ready
     with (
         patch.object(service, "_tokenizer", side_effect=AssertionError("execution tokenizer")),
-        patch("premixdb._sequences.preview_decoder", side_effect=AssertionError("loaded asset")),
+        patch(
+            "premixdb.training.sequences.preview_decoder",
+            side_effect=AssertionError("loaded asset"),
+        ),
     ):
         assert dataset.preview(offset=999999) == []
         assert dataset.preview(limit=0) == []

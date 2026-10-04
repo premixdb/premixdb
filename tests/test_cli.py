@@ -14,7 +14,7 @@ import pytest
 from _type_support import SHELL_SOURCES
 
 import premixdb as p
-from premixdb._cli import main
+from premixdb.cli.main import main
 
 
 @pytest.fixture
@@ -79,7 +79,7 @@ def test_shell_closes_when_the_repl_raises(shell_store: Path, error: BaseExcepti
         seen.append(db)
         raise error
 
-    with patch("premixdb._shell._interact", side_effect=interact), pytest.raises(type(error)):
+    with patch("premixdb.cli.shell._interact", side_effect=interact), pytest.raises(type(error)):
         main(["--storage", str(shell_store), "shell"])
     assert seen[0]._closed
     seen[0].close.assert_called_once_with()
@@ -96,7 +96,7 @@ def test_ipython_completes_only_public_names_and_saves_history(
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
 
-    from premixdb._shell import _interact, _Shell
+    from premixdb.cli.shell import _interact, _Shell
 
     with p.PremixDB(storage=shell_store) as db:
         query = db.Corpus("completion", [p.Source("a", "hello")]).query()
@@ -153,7 +153,7 @@ def test_cli_reads_metadata_profiles_and_bounded_previews(
         dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0].wait()
     prefix = ["--storage", str(tmp_path)]
     with patch(
-        "premixdb.execution.coordinator.Coordinator._execute_query", side_effect=AssertionError
+        "premixdb.runtime.coordinator.Coordinator._execute_query", side_effect=AssertionError
     ):
         assert main([*prefix, "corpora", "--json"]) == 0
         assert json.loads(capsys.readouterr().out)[0]["snapshot_id"] == snapshot.id
@@ -223,8 +223,8 @@ def test_shells_supply_the_existing_python_api_and_close_storage(tmp_path: Path)
         seen.append(db)
 
     with (
-        patch("premixdb._cli._demo_sources", return_value=SHELL_SOURCES) as demo_sources,
-        patch("premixdb._shell._interact", side_effect=interact),
+        patch("premixdb.cli.main._demo_sources", return_value=SHELL_SOURCES) as demo_sources,
+        patch("premixdb.cli.shell._interact", side_effect=interact),
     ):
         assert main(["--storage", str(tmp_path), "shell"]) == 0
     demo_sources.assert_called_once_with()
@@ -255,8 +255,8 @@ def test_shell_upgrades_previous_builtin_demo(tmp_path: Path) -> None:
         assert db._snapshot(previous.id).profile().documents == 4
 
     with (
-        patch("premixdb._cli._demo_sources", return_value=SHELL_SOURCES) as demo_sources,
-        patch("premixdb._shell._interact", side_effect=interact),
+        patch("premixdb.cli.main._demo_sources", return_value=SHELL_SOURCES) as demo_sources,
+        patch("premixdb.cli.shell._interact", side_effect=interact),
     ):
         assert main(["--storage", str(tmp_path), "shell"]) == 0
     demo_sources.assert_called_once_with()
@@ -284,7 +284,7 @@ def test_shell_preserves_existing_demo_and_read_only_storage(
     arguments = ["--storage", str(tmp_path)]
     if read_only:
         arguments.append("--read-only")
-    with patch("premixdb._shell._interact", side_effect=interact):
+    with patch("premixdb.cli.shell._interact", side_effect=interact):
         assert main([*arguments, "shell"]) == 0
 
 

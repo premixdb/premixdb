@@ -12,15 +12,15 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
-from premixdb import _requests
-from premixdb._ids import _decode_id, _public_dataset_profile
-from premixdb._policies import Concat as ConcatPolicy
-from premixdb._profiles import DistributionSummary, _describe_field
-from premixdb._typing import FieldValue, field_value
+from premixdb.api.profiles import DistributionSummary, _describe_field
+from premixdb.contracts import FieldValue, field_value
+from premixdb.engine.policies import Concat as ConcatPolicy
 from premixdb.engine.snapshots import StoredDocument
 from premixdb.enrichment.types import field
-from premixdb.execution import Coordinator
-from premixdb.execution.profiles import FieldProfiler, Histogram
+from premixdb.runtime import Coordinator
+from premixdb.schemas import requests as _requests
+from premixdb.schemas.ids import _decode_id, _public_dataset_profile
+from premixdb.storage.profiles import FieldProfiler, Histogram
 from premixdb.v1 import data_mixture_pb2 as pb
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import profile_pb2 as p
@@ -73,9 +73,7 @@ class ProfileTests(unittest.TestCase):
             )
 
     def test_missing_field_does_not_launch_inference(self) -> None:
-        with patch(
-            "premixdb.execution.enrichment.producer", side_effect=AssertionError("inference")
-        ):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=AssertionError("inference")):
             with self.assertRaises(KeyError):
                 _describe_field(self.snapshot.profile().fields, premixdb.quality.educational_value)
 

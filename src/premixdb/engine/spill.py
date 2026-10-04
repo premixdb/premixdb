@@ -17,13 +17,13 @@ from typing import (
     cast,
 )
 
-from .._typing import Edge, EvidenceRange
-from ..v1 import query_pb2 as q
+from premixdb.contracts import Edge, EvidenceRange
+from premixdb.v1 import query_pb2 as q
 
 if TYPE_CHECKING:
-    from .curation import SelectedDocument, Unit
-    from .queries import CorpusIndex
-    from .snapshots import Document
+    from premixdb.engine.curation import SelectedDocument, Unit
+    from premixdb.engine.queries import CorpusIndex
+    from premixdb.engine.snapshots import Document
 
 
 @contextmanager
@@ -81,7 +81,7 @@ def reference_rows(rows: Iterable[tuple[bytes, str, int, int]]) -> Iterator[Refe
 def references(
     documents: Sequence[Document], policy: q.Decontaminate
 ) -> ContextManager[ReferenceLookup]:
-    from .curation import units
+    from premixdb.engine.curation import units
 
     return reference_rows(
         (unit_key(value), doc.id, start, end)
@@ -181,7 +181,7 @@ def jaccard_edges(
     threshold: float,
     candidates: Iterable[Edge] | None = None,
 ) -> Iterator[Edge]:
-    from .curation import word_ranges
+    from premixdb.engine.curation import word_ranges
 
     by_id = {doc.id: doc for doc in documents}
     with _database("jaccard") as database:
@@ -254,7 +254,7 @@ def evidence_groups(rows: Iterable[tuple[bytes, str, int, int]]) -> Generator[Gr
 
 
 def classes(index: CorpusIndex, unit: str) -> Generator[Group, None, None]:
-    from .curation import units
+    from premixdb.engine.curation import units
 
     # Document and line units are already byte keys; retain them without copying.
     return evidence_groups(

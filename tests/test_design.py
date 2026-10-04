@@ -15,8 +15,6 @@ import _reference as direct
 from _type_support import coordinator
 
 import premixdb
-from premixdb import _requests, _runtime
-from premixdb._ids import _decode_id
 from premixdb.engine import datasets as engine_datasets
 from premixdb.engine import execution
 from premixdb.engine import queries as engine_query
@@ -24,11 +22,14 @@ from premixdb.engine.plans import external_filter, filter
 from premixdb.enrichment import DupekitIndex
 from premixdb.enrichment.types import ComputedRow, Document, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.execution import catalog, enrichment
-from premixdb.execution.cache import MemoryCache
-from premixdb.execution.materialization import SingleFlight
-from premixdb.execution.storage import ObjectStore
 from premixdb.internal import derivation_pb2 as d
+from premixdb.runtime import catalog, enrichment
+from premixdb.runtime import environment as _runtime
+from premixdb.runtime.materialization import SingleFlight
+from premixdb.schemas import requests as _requests
+from premixdb.schemas.ids import _decode_id
+from premixdb.storage.cache import MemoryCache
+from premixdb.storage.objects import ObjectStore
 from premixdb.v1 import query_pb2 as query_pb
 from premixdb.v1 import status_pb2 as status_pb
 
@@ -387,7 +388,7 @@ class DerivationReuseTests(unittest.TestCase):
 
 class MaterializationLifecycleTests(unittest.TestCase):
     def test_dataset_failure_reports_error_without_completion_and_can_retry(self) -> None:
-        from premixdb.execution import tokens
+        from premixdb.storage import tokens
         from premixdb.v1 import data_mixture_pb2 as pb
 
         with (
@@ -425,7 +426,8 @@ class MaterializationLifecycleTests(unittest.TestCase):
     def test_materialization_deadline_includes_submission_and_fetch(self) -> None:
         from types import SimpleNamespace
 
-        from premixdb import _resources
+        from premixdb import api as _resources
+        from premixdb.api import base as resource_base
         from premixdb.v1 import data_mixture_pb2 as pb
         from premixdb.v1 import query_pb2 as query_pb
         from premixdb.v1 import status_pb2 as status
@@ -447,7 +449,7 @@ class MaterializationLifecycleTests(unittest.TestCase):
                     if isinstance(pending, query_pb.Query)
                     else _resources.Dataset(client, pending)
                 )
-                with patch.object(_resources.time, "monotonic", side_effect=[0.0, 0.8]):
+                with patch.object(resource_base.time, "monotonic", side_effect=[0.0, 0.8]):
                     resource.wait(timeout=1.0)
                 client._submit.assert_called_once()
                 self.assertEqual(client._submit.call_args.kwargs, {})
@@ -461,7 +463,7 @@ class MaterializationLifecycleTests(unittest.TestCase):
                     if isinstance(pending, query_pb.Query)
                     else _resources.Dataset(client, pending)
                 )
-                with patch.object(_resources.time, "monotonic", side_effect=[0.0, 1.1]):
+                with patch.object(resource_base.time, "monotonic", side_effect=[0.0, 1.1]):
                     with self.assertRaisesRegex(TimeoutError, f"waiting for {kind.lower()}"):
                         resource.wait(timeout=1.0)
                 client._get.assert_not_called()

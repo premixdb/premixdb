@@ -72,3 +72,11 @@ class CodeVersion:
 
     def as_tuple(self) -> tuple[str, str, str]:
         return self.repository, self.commit, self.environment
+
+
+def identity(domain: str, *parts: bytes) -> bytes:
+    digest = blake3(domain.encode() + b"\0")
+    for part in parts:
+        digest.update(len(part).to_bytes(8, "big"))
+        digest.update(part)
+    return digest.digest()

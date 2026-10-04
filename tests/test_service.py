@@ -16,11 +16,11 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
-from premixdb import _requests
-from premixdb._ids import _decode_id, _encode_id
-from premixdb._protobuf import descriptor
 from premixdb.engine import execution
-from premixdb.execution import Coordinator, compile_query
+from premixdb.runtime import Coordinator, compile_query
+from premixdb.schemas import requests as _requests
+from premixdb.schemas.ids import _decode_id, _encode_id
+from premixdb.schemas.protobuf import descriptor
 from premixdb.v1 import corpus_pb2 as corpora
 from premixdb.v1 import data_mixture_pb2 as datasets
 from premixdb.v1 import query_pb2 as queries
@@ -195,7 +195,7 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 coordinator(self.client).run_query(broken)
         with patch(
-            "premixdb._runtime.current_code",
+            "premixdb.runtime.environment.current_code",
             return_value=execution.CodeVersion("premixdb://repository", "f" * 40, "00" * 32),
         ):
             with self.assertRaisesRegex(NotImplementedError, "Git revision"):
@@ -289,7 +289,7 @@ class ServiceTests(unittest.TestCase):
             raise RuntimeError("temporary worker failure")
 
         with (
-            patch("premixdb.execution.materialization.Future", WaitingFuture),
+            patch("premixdb.runtime.materialization.Future", WaitingFuture),
             patch.object(service, "run_query", wraps=service.run_query) as execute,
         ):
             execute.side_effect = fail
@@ -405,8 +405,8 @@ import json, sys, premixdb
 with premixdb.PremixDB(storage=sys.argv[1], read_only=True) as db:
     print(json.dumps(db._dataset(sys.argv[2])[0].tokens))
 assert "premixdb.engine.execution" not in sys.modules
-assert "premixdb.execution.coordinator" not in sys.modules
-assert "premixdb._runtime" not in sys.modules
+assert "premixdb.runtime.coordinator" not in sys.modules
+assert "premixdb.runtime.environment" not in sys.modules
 assert "grpc" not in sys.modules
 """
         output = subprocess.check_output(

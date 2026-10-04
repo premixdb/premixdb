@@ -22,7 +22,7 @@ import pytest
 import premixdb as p
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.execution import enrichment
+from premixdb.runtime import enrichment
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"

@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Callable, Iterable, Literal
 
-from .._typing import Edge, Orders
-from ..v1 import query_pb2 as q
-from .identity import Canonical, CodeVersion, digest, unsigned
+from premixdb.contracts import Edge, Orders
+from premixdb.engine.identity import Canonical, CodeVersion, digest, unsigned
+from premixdb.v1 import query_pb2 as q
 
 if TYPE_CHECKING:
-    from .curation import SelectedDocument
-    from .datasets import HuggingFaceTokenizer
-    from .snapshots import Document
+    from premixdb.engine.curation import SelectedDocument
+    from premixdb.engine.datasets import HuggingFaceTokenizer
+    from premixdb.engine.snapshots import Document
 
 type PolicyPayload = (
     tuple[Literal["decontaminate"], q.Decontaminate, list[Document] | tuple[()]]

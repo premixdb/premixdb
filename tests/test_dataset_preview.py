@@ -16,7 +16,7 @@ from _type_support import (
 )
 
 import premixdb as p
-from premixdb._sequences import Sequence
+from premixdb.training.sequences import Sequence
 from premixdb.v1 import data_mixture_pb2 as dataset_pb
 
 
@@ -105,7 +105,7 @@ def test_dataset_preview_pages_across_sequence_index_pages_after_reopening(
         dataset_id = dataset.id
     with p.PremixDB(storage=tmp_path, read_only=True) as db:
         with patch(
-            "premixdb.execution.coordinator.Coordinator", side_effect=AssertionError("compute")
+            "premixdb.runtime.coordinator.Coordinator", side_effect=AssertionError("compute")
         ):
             assert db._dataset(dataset_id).preview(limit=4, offset=127) == examples
 
@@ -135,7 +135,7 @@ def test_read_only_paged_preview_does_not_import_packing_code(
 import json
 import sys
 
-sys.modules["premixdb.execution.tokens"] = None
+sys.modules["premixdb.storage.tokens"] = None
 sys.modules["premixdb.engine.datasets"] = None
 import premixdb as p
 

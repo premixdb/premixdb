@@ -7,7 +7,7 @@ from blake3 import blake3
 from hypothesis import given
 from hypothesis import strategies as st
 
-from premixdb._typing import Interval
+from premixdb.contracts import Interval
 from premixdb.engine.curation import RetainedDocument
 from premixdb.engine.datasets import (
     ByteRanges,

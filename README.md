@@ -74,5 +74,6 @@ uv add premixdb
 ```
 
 - [Runnable examples](examples/README.md)
+- [Model data recipes](examples/recipes/README.md): T5/C4, Falcon, Gopher, LLaMA 1, GPT-3 on custom corpora
 - [Curation](docs/curation.md) · [Fields](docs/enrichment.md) · [Training](docs/training.md)
 - [Storage](docs/persistence.md) · [Internals](docs/architecture.md) · [Development](docs/development.md)

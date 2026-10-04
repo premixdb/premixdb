@@ -10,9 +10,8 @@ from typing import Sequence
 
 from blake3 import blake3
 
+from premixdb.contracts import FieldValue
 from premixdb.v1 import field_pb2 as fields
-
-from .._typing import FieldValue
 
 
 @dataclass(frozen=True)

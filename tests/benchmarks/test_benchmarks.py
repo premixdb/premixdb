@@ -12,9 +12,9 @@ from _type_support import (
 )
 
 import premixdb as p
-from premixdb._reader import permutation
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.plans import filter, query_identity
+from premixdb.training.reader import permutation
 
 pytestmark = pytest.mark.performance
 CODE = CodeVersion("local://benchmarks", "a" * 40, "09" * 32)

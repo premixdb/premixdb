@@ -14,10 +14,10 @@ from _type_support import Vectors, coordinator
 
 import premixdb
 from premixdb import EmbeddingModel, embedding, where
-from premixdb._ids import _decode_id
-from premixdb.execution import catalog
-from premixdb.execution import enrichment as worker
-from premixdb.execution.planner import compile_query
+from premixdb.runtime import catalog
+from premixdb.runtime import enrichment as worker
+from premixdb.runtime.planner import compile_query
+from premixdb.schemas.ids import _decode_id
 
 
 class EmbeddingServiceTests(unittest.TestCase):

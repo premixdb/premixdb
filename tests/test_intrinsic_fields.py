@@ -10,13 +10,13 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb import _runtime
-from premixdb._ids import _decode_id
 from premixdb.engine.curation import selector_key
 from premixdb.engine.snapshots import StoredDocument
-from premixdb.execution.coordinator import Coordinator
-from premixdb.execution.enrichment import projections, query_inputs
-from premixdb.execution.planner import field_definitions
+from premixdb.runtime import environment as _runtime
+from premixdb.runtime.coordinator import Coordinator
+from premixdb.runtime.enrichment import projections, query_inputs
+from premixdb.runtime.planner import field_definitions
+from premixdb.schemas.ids import _decode_id
 from premixdb.v1 import query_pb2 as q
 
 

@@ -12,13 +12,9 @@ from _type_support import SHELL_SOURCES, coordinator
 from blake3 import blake3
 
 import premixdb as p
-from premixdb._catalog import CorpusCollection
-from premixdb._cli import _demo_sources, _shell_banner
-from premixdb._field_expr import ScalarField, VectorField
-from premixdb._ids import _decode_id
-from premixdb._reader import Reader
-from premixdb._resources import Sequence
-from premixdb._unions import SnapshotUnion
+from premixdb.api.collections import CorpusCollection
+from premixdb.api.unions import SnapshotUnion
+from premixdb.cli.main import _demo_sources, _shell_banner
 from premixdb.enrichment import (
     DataTroveFields,
     DupekitIndex,
@@ -28,6 +24,10 @@ from premixdb.enrichment import (
     WebOrganizer,
 )
 from premixdb.enrichment.language import _model_path
+from premixdb.fields.expressions import ScalarField, VectorField
+from premixdb.schemas.ids import _decode_id
+from premixdb.training.reader import Reader
+from premixdb.training.sequences import Sequence
 
 
 @pytest.mark.parametrize(
@@ -101,7 +101,7 @@ def test_preview_pages_and_snapshot_surface(tmp_path: Path) -> None:
     with p.PremixDB(storage=tmp_path) as db:
         old = db.Corpus("pages", [p.Source(str(i), "sample text") for i in range(2)])
         query = old.query().wait()
-        from premixdb._shell import _PublicCompleter
+        from premixdb.cli.shell import _PublicCompleter
 
         completer = _PublicCompleter(namespace={"query": query})
         names = {
@@ -173,7 +173,7 @@ def test_nine_speech_demo_upgrades_and_keeps_its_old_snapshot(tmp_path: Path) ->
                 for i, block in enumerate(excerpt.strip().split("\n\n"))
             ],
         )
-        with patch("premixdb._cli._demo_sources", return_value=SHELL_SOURCES) as demo_sources:
+        with patch("premixdb.cli.main._demo_sources", return_value=SHELL_SOURCES) as demo_sources:
             _shell_banner(db)
             current = db.Corpus("demo")
             assert current.profile().documents == len(SHELL_SOURCES)
@@ -246,7 +246,7 @@ def test_profile_display_is_bounded_and_preserves_typed_data(tmp_path: Path) -> 
 
 
 def test_query_planning_and_reopening_do_not_execute(tmp_path: Path) -> None:
-    from premixdb.execution import Coordinator
+    from premixdb.runtime import Coordinator
 
     with p.PremixDB(storage=tmp_path) as db:
         snapshot = db.Corpus("lazy", [p.Source("a", "hello"), p.Source("b", "world")])
@@ -321,7 +321,7 @@ def test_mix_profile_display_is_bounded_without_losing_candidates() -> None:
 
 
 def test_dataset_planning_is_lazy_and_survives_reopening(tmp_path: Path) -> None:
-    from premixdb.execution import Coordinator
+    from premixdb.runtime import Coordinator
     from premixdb.v1.data_mixture_pb2 import Dataset
 
     with p.PremixDB(storage=tmp_path) as db:
@@ -393,7 +393,7 @@ def test_default_token_budget_uses_bpe_and_keeps_byte_policy_explicit(tmp_path: 
 
 
 def test_database_instance_and_completion_expose_only_three_members(tmp_path: Path) -> None:
-    from premixdb._shell import _PublicCompleter
+    from premixdb.cli.shell import _PublicCompleter
 
     with p.PremixDB(storage=tmp_path) as db:
         assert {name for name in dir(db) if not name.startswith("_")} == {

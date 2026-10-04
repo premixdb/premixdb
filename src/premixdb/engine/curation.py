@@ -19,20 +19,28 @@ from typing import (
     Sequence,
 )
 
-from .._typing import Edge, EvidenceRange, FieldValue, FieldValues, Interval, Orders, Scalar
-from ..v1 import query_pb2 as q
-from .contracts import Contamination, Provenance, SamplingStatistics
+from premixdb.contracts import (
+    Edge,
+    EvidenceRange,
+    FieldValue,
+    FieldValues,
+    Interval,
+    Orders,
+    Scalar,
+)
+from premixdb.engine.contracts import Contamination, Provenance, SamplingStatistics
+from premixdb.v1 import query_pb2 as q
 
 if TYPE_CHECKING:
-    from .datasets import HuggingFaceTokenizer
+    from premixdb.engine.datasets import HuggingFaceTokenizer
 
 from blake3 import blake3
 
-from .._mixing import _domain_key, allocations
-from .identity import identity_domain
-from .snapshots import Document
-from .spill import cosine_edges as cosine_edges
-from .spill import jaccard_edges as jaccard_edges
+from premixdb.engine.identity import identity_domain
+from premixdb.engine.mixing import _domain_key, allocations
+from premixdb.engine.snapshots import Document
+from premixdb.engine.spill import cosine_edges as cosine_edges
+from premixdb.engine.spill import jaccard_edges as jaccard_edges
 
 type SelectedDocument = Document | RetainedDocument
 type Unit = bytes | tuple[str, ...]
@@ -129,7 +137,7 @@ def decontaminate(
     evidence: EvidenceLookup | None = None,
 ) -> list[SelectedDocument]:
     if evidence is None:
-        from .spill import references as reference_index
+        from premixdb.engine.spill import references as reference_index
 
         with (provider or reference_index)(references, policy) as lookup:
             return decontaminate(documents, references, policy, provenance, evidence=lookup)
@@ -175,7 +183,7 @@ def ordering(
 ) -> list[SelectedDocument]:
     def value(document: SelectedDocument, field: str) -> Scalar:
         if field.startswith("external:"):
-            from .._typing import scalar
+            from premixdb.contracts import scalar
 
             return scalar(values[field].get(document.id))
         return (
@@ -215,7 +223,7 @@ def greedy(
     provenance: dict[str, Provenance],
     ordinal: int,
 ) -> list[SelectedDocument]:
-    from .spill import edge_database
+    from premixdb.engine.spill import edge_database
 
     result = []
     with edge_database(edges) as database:
@@ -257,7 +265,7 @@ def label(
 
 
 def selector_key(selector: q.FieldComparison) -> str:
-    from .identity import Canonical
+    from premixdb.engine.identity import Canonical
 
     digest = (
         Canonical("field-projection/v1")

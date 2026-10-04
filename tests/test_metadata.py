@@ -15,10 +15,10 @@ import pytest
 from _type_support import coordinator
 
 import premixdb
-from premixdb._ids import _public_dataset_profile
-from premixdb.execution.metadata import MetadataStore
-from premixdb.execution.planner import copy_fields
-from premixdb.execution.storage import ObjectStore
+from premixdb.runtime.planner import copy_fields
+from premixdb.schemas.ids import _public_dataset_profile
+from premixdb.storage.metadata import MetadataStore
+from premixdb.storage.objects import ObjectStore
 from premixdb.v1 import corpus_pb2 as c
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
@@ -235,7 +235,7 @@ def test_backup_closes_destination_on_every_exit(tmp_path: Path, failure: str | 
     try:
         if failure == "backup":
             store.close()
-        with patch("premixdb.execution.metadata.sqlite3.connect", side_effect=destination):
+        with patch("premixdb.storage.metadata.sqlite3.connect", side_effect=destination):
             if failure is None:
                 store.backup(tmp_path / "backup.sqlite3")
             else:

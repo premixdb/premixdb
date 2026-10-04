@@ -5,17 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-from .._typing import Metadata
-from .types import Document
+from premixdb.contracts import Metadata
+from premixdb.enrichment.types import Document
 
 if TYPE_CHECKING:
     from pyarrow import RecordBatch
 
 from blake3 import blake3
 
+from premixdb.enrichment.types import check_documents, package_versions, positive
 from premixdb.v1 import index_pb2 as ix
-
-from .types import check_documents, package_versions, positive
 
 
 @dataclass(frozen=True)

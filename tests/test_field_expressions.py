@@ -51,7 +51,7 @@ class ExpressionTests(unittest.TestCase):
         )
 
     def test_catalog_is_complete(self) -> None:
-        from premixdb._field_ids import DERIVED_FIELD_NAMES, FIELD_IDS, field_id, field_name
+        from premixdb.fields.ids import DERIVED_FIELD_NAMES, FIELD_IDS, field_id, field_name
 
         self.assertEqual(set(FIELD_IDS), {member.value for member in premixdb.IntrinsicField})
         self.assertEqual(len(DERIVED_FIELD_NAMES), 200)
@@ -89,7 +89,7 @@ class ExpressionTests(unittest.TestCase):
         self.assertIs(datatrove.n_words.value_type, int)
         self.assertIs(datatrove[DataTroveMetric.N_WORDS].value_type, int)
         for namespace in (language, topic, content_type, quality, datatrove, embedding):
-            from premixdb._field_expr import ScalarField, VectorField
+            from premixdb.fields.expressions import ScalarField, VectorField
 
             for selector in vars(type(namespace)).values():
                 if isinstance(selector, (ScalarField, VectorField)):

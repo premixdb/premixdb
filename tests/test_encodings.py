@@ -10,10 +10,10 @@ from premixdb.engine.curation import RetainedDocument
 from premixdb.engine.datasets import HuggingFaceTokenizer, encoded_tokens
 from premixdb.engine.queries import Row
 from premixdb.engine.snapshots import Document
-from premixdb.execution.catalog import wire
-from premixdb.execution.encodings import Encodings
-from premixdb.execution.storage import ObjectStore
 from premixdb.internal import derivation_pb2 as d
+from premixdb.runtime.catalog import wire
+from premixdb.runtime.encodings import Encodings
+from premixdb.storage.objects import ObjectStore
 
 
 @pytest.fixture

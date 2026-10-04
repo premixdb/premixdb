@@ -10,7 +10,7 @@ import pytest
 from _type_support import invalid_call
 
 import premixdb as p
-from premixdb._typing import JSON, Scalar
+from premixdb.contracts import JSON, Scalar
 
 
 @pytest.fixture
@@ -57,10 +57,10 @@ def test_invalid_reader_topology_does_not_materialize_candidate(candidate: p.Dat
 
 
 def test_invalid_streaming_seed_does_not_discover_distributed_rank() -> None:
-    from premixdb._torch import streaming_topology
+    from premixdb.training.torch import streaming_topology
 
     with patch(
-        "premixdb._torch.torch.distributed.is_available",
+        "premixdb.training.torch.torch.distributed.is_available",
         side_effect=AssertionError("discovered rank"),
     ):
         with pytest.raises(ValueError, match="uint64"):

@@ -11,8 +11,8 @@ import pytest
 from _type_support import invalid_call
 
 import premixdb as p
-from premixdb.execution import Coordinator
-from premixdb.execution.storage import ObjectStore
+from premixdb.runtime import Coordinator
+from premixdb.storage.objects import ObjectStore
 
 
 @pytest.mark.parametrize("factory", [p.PremixDB, Coordinator])
@@ -71,8 +71,8 @@ def test_pathlike_storage_uses_the_filesystem_protocol(tmp_path: Path, read_only
 @pytest.mark.parametrize(
     "failure",
     [
-        "premixdb.execution.coordinator.execution.Store",
-        "premixdb.execution.pipeline.PartitionPipeline",
+        "premixdb.runtime.coordinator.execution.Store",
+        "premixdb.runtime.pipeline.PartitionPipeline",
     ],
 )
 def test_failed_startup_closes_owned_metadata_and_workers(tmp_path: Path, failure: str) -> None:
@@ -90,8 +90,8 @@ def test_failed_startup_closes_owned_metadata_and_workers(tmp_path: Path, failur
             pools.append(self)
 
     with (
-        patch("premixdb.execution.coordinator.ObjectStore", TrackingStore),
-        patch("premixdb.execution.materialization.ThreadPoolExecutor", TrackingPool),
+        patch("premixdb.runtime.coordinator.ObjectStore", TrackingStore),
+        patch("premixdb.runtime.materialization.ThreadPoolExecutor", TrackingPool),
         patch(failure, side_effect=OSError("startup failed")),
     ):
         with pytest.raises(OSError, match="startup failed"):
@@ -145,7 +145,7 @@ def test_invalid_wait_duration_does_not_execute_a_pending_recipe(
 def test_failed_worker_setup_preserves_caller_supplied_store(tmp_path: Path) -> None:
     with ObjectStore(tmp_path) as store:
         with patch(
-            "premixdb.execution.pipeline.PartitionPipeline", side_effect=OSError("no workers")
+            "premixdb.runtime.pipeline.PartitionPipeline", side_effect=OSError("no workers")
         ):
             with pytest.raises(OSError, match="no workers"):
                 Coordinator(store, process_workers=1)
@@ -153,7 +153,7 @@ def test_failed_worker_setup_preserves_caller_supplied_store(tmp_path: Path) -> 
 
 
 def test_storage_creates_blob_namespaces_only_when_published(tmp_path: Path) -> None:
-    from premixdb.execution.storage import ObjectStore
+    from premixdb.storage.objects import ObjectStore
 
     with ObjectStore(tmp_path) as store:
         assert {path.name for path in tmp_path.iterdir()} <= {

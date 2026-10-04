@@ -12,10 +12,10 @@ from unittest.mock import patch
 from _type_support import coordinator
 
 import premixdb
-from premixdb import _requests
-from premixdb._ids import _decode_id, _encode_id, _public_dataset_profile
-from premixdb._resources import DomainInput
 from premixdb.engine.mixtures import MixturePool
+from premixdb.fields.selectors import DomainInput
+from premixdb.schemas import requests as _requests
+from premixdb.schemas.ids import _decode_id, _encode_id, _public_dataset_profile
 from premixdb.v1 import data_mixture_pb2 as pb
 from premixdb.v1 import query_pb2 as query_pb
 
@@ -122,13 +122,13 @@ class MixTests(unittest.TestCase):
         with premixdb.PremixDB(storage=self.root, read_only=True) as db:
             query = db._query(self.query.id)
             with (
-                patch("premixdb._resources._requests.mix", side_effect=AssertionError("planned")),
+                patch("premixdb.schemas.requests.mix", side_effect=AssertionError("planned")),
                 self.assertRaisesRegex(PermissionError, "read-only session.*plan mixtures"),
             ):
                 query.mix()
         self.client.close()
         with (
-            patch("premixdb._resources._requests.mix", side_effect=AssertionError("planned")),
+            patch("premixdb.schemas.requests.mix", side_effect=AssertionError("planned")),
             self.assertRaisesRegex(ValueError, "PremixDB is closed"),
         ):
             self.query.mix()

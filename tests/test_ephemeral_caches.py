@@ -26,7 +26,7 @@ from premixdb.engine.snapshots import Snapshot
 from premixdb.engine.spill import cosine_edges
 from premixdb.engine.token_cache import TokenCache, token_pool
 from premixdb.engine.value_cache import ValueCache
-from premixdb.execution import enrichment
+from premixdb.runtime import enrichment
 from premixdb.v1 import query_pb2 as q
 
 
@@ -181,7 +181,7 @@ def test_failed_publication_releases_the_native_dataset_pool(
         assert_closed(opened)
         opened.clear()
         with patch(
-            "premixdb.execution.coordinator.tokens.publish", side_effect=OSError("publish failed")
+            "premixdb.runtime.datasets.tokens.publish", side_effect=OSError("publish failed")
         ):
             with pytest.raises(OSError, match="publish failed") as failure:
                 dataset.wait()
@@ -346,8 +346,8 @@ def test_query_columns_close_while_indexes_and_failures_remain_alive(
             ExitStack() as failures,
         ):
             target = {
-                "estimate": "premixdb.execution.profiles.estimate_query",
-                "publish": "premixdb.execution.previewing.inline",
+                "estimate": "premixdb.storage.profiles.estimate_query",
+                "publish": "premixdb.storage.preview.inline",
             }.get(stage)
             if target is not None:
                 failures.enter_context(patch(target, side_effect=RuntimeError("columns failed")))

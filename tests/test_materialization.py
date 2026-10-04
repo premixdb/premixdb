@@ -13,11 +13,11 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb._ids import _decode_id
-from premixdb._protobuf import copy_message
-from premixdb.execution.catalog_reader import Catalog
-from premixdb.execution.coordinator import wait
-from premixdb.execution.materialization import Materializer
+from premixdb.runtime.coordinator import wait
+from premixdb.runtime.materialization import Materializer
+from premixdb.schemas.ids import _decode_id
+from premixdb.schemas.protobuf import copy_message
+from premixdb.storage.catalog import Catalog
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 from premixdb.v1 import status_pb2 as status
@@ -53,8 +53,8 @@ def test_resource_wait_wakes_on_local_completion_without_polling(
 
         try:
             with (
-                patch("premixdb.execution.coordinator.wait", side_effect=finish) as wake,
-                patch("premixdb._resources.time.sleep", side_effect=AssertionError("polled")),
+                patch("premixdb.runtime.coordinator.wait", side_effect=finish) as wake,
+                patch("premixdb.api.base.time.sleep", side_effect=AssertionError("polled")),
             ):
                 if fail:
                     with pytest.raises(p.ExecutionError, match="worker failed"):
@@ -91,7 +91,7 @@ def test_resource_wait_deadline_does_not_cancel_the_local_job(tmp_path: Path) ->
         running.status = status.STATUS_RUNNING
         handle = p.Query(db, running)
         try:
-            with patch("premixdb._resources.time.sleep", side_effect=AssertionError("polled")):
+            with patch("premixdb.api.base.time.sleep", side_effect=AssertionError("polled")):
                 with pytest.raises(TimeoutError, match="timed out waiting for query"):
                     handle.wait(timeout=0.001)
             assert not future.cancelled() and not future.done()
@@ -99,7 +99,7 @@ def test_resource_wait_deadline_does_not_cancel_the_local_job(tmp_path: Path) ->
             release.set()
             future.result(timeout=5)
         with patch(
-            "premixdb._resources.time.sleep", side_effect=AssertionError("stale running state")
+            "premixdb.api.base.time.sleep", side_effect=AssertionError("stale running state")
         ):
             assert handle.wait().profile().output_documents == 1
 

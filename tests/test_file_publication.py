@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from premixdb import _files
-from premixdb.execution.storage import ObjectStore
+from premixdb.storage import publication as _files
+from premixdb.storage.objects import ObjectStore
 
 
 def test_publication_leaves_existing_bytes_untouched(tmp_path: Path) -> None:

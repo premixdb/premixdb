@@ -77,7 +77,7 @@ class BlockBuildTools(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockBuildTools())
 sys.path.insert(0, {str(path)!r})
 import premixdb
-from premixdb._cli import _demo_sources
+from premixdb.cli.main import _demo_sources
 from premixdb.v1 import corpus_pb2
 from premixdb.internal import derivation_pb2
 assert Path(premixdb.__file__).is_relative_to({str(path)!r})
@@ -148,7 +148,7 @@ with tempfile.TemporaryDirectory() as storage:
             entry_points.read_string(
                 archive.read("premixdb-0.1.2.dist-info/entry_points.txt").decode()
             )
-            self.assertEqual(entry_points["console_scripts"]["premixdb"], "premixdb._cli:main")
+            self.assertEqual(entry_points["console_scripts"]["premixdb"], "premixdb.cli.main:main")
             installed = root / "installed"
             archive.extractall(installed)
         self.assert_importable(installed, training=training)

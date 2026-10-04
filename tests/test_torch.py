@@ -45,8 +45,8 @@ class TorchTests(unittest.TestCase):
             data.reader.close()
 
     def test_attention_and_loss_masks_are_independent(self) -> None:
-        from premixdb._torch import TorchDataset
-        from premixdb.execution.storage import ObjectStore
+        from premixdb.storage.objects import ObjectStore
+        from premixdb.training.torch import TorchDataset
         from premixdb.v1 import data_mixture_pb2 as d
 
         with tempfile.TemporaryDirectory() as directory:

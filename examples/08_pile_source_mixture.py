@@ -1,4 +1,4 @@
-"""Split a token budget across web pages, papers, and literature."""
+"""Split a toy token budget; contrast proposals with published model mixtures."""
 
 from __future__ import annotations
 
@@ -25,6 +25,12 @@ def main() -> None:
             literature.corpus_id: "literature/Tiny-Shakespeare",
         }
         population = web.union(science, literature).query(steps=[p.where(p.text.characters > 0)])
+        # This three-source proposal is not a reconstruction of The Pile or any
+        # model's training mixture. LLaMA 1 included CC 67% + C4 15% (§2.1/Table 1,
+        # https://arxiv.org/abs/2302.13971); Gopher chose source weights by held-out
+        # loss (App. A.3.1, https://arxiv.org/abs/2112.11446); Falcon used 84% web
+        # without upsampling (§5.1/Table 15, https://arxiv.org/abs/2311.16867).
+        # To use their fixed weights on your own prepared sources, run recipes/mix.py.
         mixture = population.mix(
             weights=p.RegMix(),
             tokens=1024,

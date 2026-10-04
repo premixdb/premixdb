@@ -13,13 +13,13 @@ thresholds. Mixture examples use `WEB`, `PAPERS`, and `LITERATURE`. No CLI argum
 | Example | Shows |
 | --- | --- |
 | [01 · Snapshots](01_tiny_shakespeare_snapshots.py) | Capture and reopen the same text |
-| [02 · Filtering](02_c4_filtering.py) | Compare length thresholds |
-| [03 · Dedupe](03_c4_deduplication.py) | Remove a copied page |
+| [02 · Filtering](02_c4_filtering.py) | Compare lengths and Gopher word-count limits on C4 |
+| [03 · Dedupe](03_c4_deduplication.py) | Remove a copied page; explain T5/Falcon dedupe differences |
 | [04 · Distributions](04_s2orc_distributions.py) | Inspect word counts |
 | [05 · Packing](05_tiny_shakespeare_packing.py) | Read a PyTorch batch |
 | [06 · Decontamination](06_tiny_shakespeare_decontamination.py) | Remove evaluation overlap |
-| [07 · Quality](07_c4_quality_scores.py) | Cache scores and change a cutoff |
-| [08 · Source mixtures](08_pile_source_mixture.py) | Allocate a token budget |
+| [07 · Quality](07_c4_quality_scores.py) | Cache scores; distinguish GPT-3/LLaMA classifiers |
+| [08 · Source mixtures](08_pile_source_mixture.py) | Allocate a toy budget; reference published model mixtures |
 | [09 · Candidates](09_regmix_candidates.py) | Compare seeded recipes |
 | [10 · Resume](10_tiny_shakespeare_resume.py) | Restore a consumed sequence position |
 
@@ -41,6 +41,23 @@ replace them: C4 needs `text`; papers need `id` and `text`.
 
 The quality example downloads QuRater on first use and starts with eight pages.
 Change `MINIMUM` to reuse the scores with a different cutoff.
+
+## Published model recipes on your own data
+
+[recipes/](recipes/README.md) contains predefined preprocessing/query functions
+and source mixtures for **T5/C4, Falcon/RefinedWeb, Gopher, LLaMA 1, and GPT-3**.
+Each includes paper references and states which original stages need upstream
+processing or classifier assets.
+
+Edit the settings to apply the Falcon adaptation to extracted crawl JSONL:
+
+```bash
+uv run python -m examples.recipes.apply
+```
+
+Use `examples.recipes.mix` for the published source weights on prepared corpora.
+The numbered lessons remain bounded demonstrations; they do not reconstruct the
+original training datasets or mixtures.
 
 ## Tests
 

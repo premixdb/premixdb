@@ -71,10 +71,14 @@ CLI tests use a two-document corpus. README examples run with offline Hub/model
 fixtures; packaging tests exercise an installed wheel. Generated protobuf bindings
 are ignored build outputs; edit schemas and regenerate as described [here](../proto/README.md).
 
-`intrinsic.proto` also generates the tracked `_field_catalog.py` source, including
+`intrinsic.proto` also generates the tracked `fields/catalog.py` source, including
 statically typed language attributes and compatibility enum names. Regenerate it
 with `scripts/generate_protos.py`; `make protos` checks both the catalog and local
 protobuf bindings. Numeric field IDs remain explicit in the schema.
 
 The independent engine reference harness lives in `tests/_reference.py`. It is
 excluded from wheels; application workflows use the main `PremixDB` API.
+
+See [architecture](architecture.md) for package responsibilities and import
+boundaries. Implementation modules use descriptive filenames inside those
+packages; retain the top-level public exports when reorganizing internals.

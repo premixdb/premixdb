@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 import premixdb
-from premixdb.execution.storage import ObjectStore
+from premixdb.storage.objects import ObjectStore
 
 
 def test_object_reads_bound_growth_and_keep_missing_errors(tmp_path: Path) -> None:
@@ -137,7 +137,7 @@ def test_close_waits_for_in_flight_verified_reads(tmp_path: Path) -> None:
 
 
 def test_coordinator_releases_storage_when_shutdown_fails(tmp_path: Path) -> None:
-    from premixdb.execution import Coordinator
+    from premixdb.runtime import Coordinator
 
     service = Coordinator(tmp_path, process_workers=1)
     assert service.pipeline is not None

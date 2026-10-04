@@ -15,17 +15,17 @@ import pytest
 from _type_support import coordinator
 
 import premixdb as p
-from premixdb._ids import _decode_id
-from premixdb._reader import permutation
-from premixdb._typing import FieldValue
+from premixdb.contracts import FieldValue
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.plans import Step
 from premixdb.engine.queries import CorpusIndex, Query
 from premixdb.engine.snapshots import StoredDocument
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
-from premixdb.execution import enrichment
 from premixdb.internal import derivation_pb2 as e
+from premixdb.runtime import enrichment
+from premixdb.schemas.ids import _decode_id
+from premixdb.training.reader import permutation
 from premixdb.v1 import data_mixture_pb2 as dataset_pb
 from premixdb.v1 import snapshot_pb2 as s
 from premixdb.v1 import storage_pb2 as storage
@@ -79,9 +79,7 @@ class ExtendedResourceTests(unittest.TestCase):
             return compute(worker, documents)
 
         with (
-            patch(
-                "premixdb.execution.enrichment.producer", side_effect=InspectionFields
-            ) as producer,
+            patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields) as producer,
             patch.object(InspectionFields, "compute", blocked),
             ThreadPoolExecutor() as pool,
         ):
@@ -98,9 +96,7 @@ class ExtendedResourceTests(unittest.TestCase):
             ready = future.result()
             self.assertEqual(ready.profile().output_documents, 3)
             self.assertEqual(len(ready._proto.field_snapshot_ids), 2)
-        with patch(
-            "premixdb.execution.enrichment.producer", side_effect=AssertionError("inference")
-        ):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=AssertionError("inference")):
             self.assertEqual(ready.profile().output_documents, 3)
             reordered = (
                 snapshot.query()
@@ -118,15 +114,13 @@ class ExtendedResourceTests(unittest.TestCase):
     def test_mixture_domains_derive_and_reuse_fields(self) -> None:
         query = self.population().query()
         with patch(
-            "premixdb.execution.enrichment.producer", side_effect=InspectionFields
+            "premixdb.runtime.enrichment.producer", side_effect=InspectionFields
         ) as producer:
             mix = query.mix(tokenizer=p.ByteTokenizer(), domains=p.topic, tokens=4)
             self.assertEqual(producer.call_count, 0)
             self.assertEqual(mix[0].profile().planned_content_tokens, 4)
             self.assertEqual(producer.call_count, 1)
-        with patch(
-            "premixdb.execution.enrichment.producer", side_effect=AssertionError("inference")
-        ):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=AssertionError("inference")):
             self.assertEqual(
                 query.mix(tokenizer=p.ByteTokenizer(), domains=p.topic, tokens=4).id, mix.id
             )
@@ -151,7 +145,7 @@ class ExtendedResourceTests(unittest.TestCase):
         )
 
     def test_quality_ordering_nulls_and_derived_strata(self) -> None:
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):
             snapshot = self.population()
             query = snapshot.query(
                 steps=[p.dedupe(order_by=[p.quality.educational_value.desc()])]
@@ -183,7 +177,7 @@ class ExtendedResourceTests(unittest.TestCase):
             self.assertEqual(mix[0].wait().profile().planned_content_tokens, 4)
 
     def test_cosine_and_lsh_selection(self) -> None:
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):
             semantic = (
                 self.population()
                 .query(steps=[p.similarity_dedupe(embedding=p.embedding.harrier, threshold=1.0)])
@@ -253,7 +247,7 @@ class ExtendedResourceTests(unittest.TestCase):
         for embedding in (None, p.embedding.harrier):
             with self.subTest(embedding=embedding):
                 with patch(
-                    "premixdb.execution.enrichment.producer", side_effect=InspectionFields
+                    "premixdb.runtime.enrichment.producer", side_effect=InspectionFields
                 ) as producer:
                     query = snapshot.query(
                         steps=[
@@ -278,7 +272,7 @@ class ExtendedResourceTests(unittest.TestCase):
                     {"https://test/b", "https://test/null"},
                 )
                 with patch(
-                    "premixdb.execution.enrichment.producer",
+                    "premixdb.runtime.enrichment.producer",
                     side_effect=AssertionError("recomputed a completed build"),
                 ):
                     self.assertEqual(self.client._query(query.id).wait().id, query.id)
@@ -394,7 +388,7 @@ class ExtendedResourceTests(unittest.TestCase):
         self.assertTrue(self.client._execution_events())
 
     def test_published_fields_reuse_pinned_values(self) -> None:
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):
             query = (
                 self.population()
                 .query()
@@ -402,7 +396,7 @@ class ExtendedResourceTests(unittest.TestCase):
                 .wait()
             )
         with patch(
-            "premixdb.execution.enrichment.projections",
+            "premixdb.runtime.enrichment.projections",
             side_effect=AssertionError("recomputed pinned fields"),
         ):
             self.assertEqual(query.profile().output_documents, 3)
@@ -410,7 +404,7 @@ class ExtendedResourceTests(unittest.TestCase):
 
     def test_filtered_preview_and_lineage_agree(self) -> None:
         snapshot = self.population()
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):
             query = snapshot.query(steps=[p.where(p.quality.educational_value >= 0.5)]).wait()
         self.assertEqual((snapshot.profile().documents, query.profile().output_documents), (3, 1))
         self.assertEqual(query.preview()[0]["source_key"], "https://test/b")
@@ -434,7 +428,7 @@ class ExtendedResourceTests(unittest.TestCase):
             (p.quality.educational_value.is_null(), {"null"}),
             (p.embedding.harrier.component(0) == 1.0, {"a", "b"}),
         ]
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):
             snapshot.query()._with_fields(
                 [p.topic.label, p.quality.educational_value, p.embedding.harrier.component(0)]
             ).wait()
@@ -455,9 +449,10 @@ class ExtendedResourceTests(unittest.TestCase):
                 )
 
     def test_sampled_profiles_decode_and_project_each_selected_document_once(self) -> None:
-        from premixdb.execution import enrichment, profiles
+        from premixdb.runtime import enrichment
+        from premixdb.storage import profiles
 
-        with patch("premixdb.execution.enrichment.producer", side_effect=InspectionFields):
+        with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):
             query = (
                 self.population()
                 .query(sampling=p.sample(seed=7, documents=200, replacement=True))
@@ -471,7 +466,9 @@ class ExtendedResourceTests(unittest.TestCase):
             patch.object(enrichment, "decode_value", wraps=enrichment.decode_value) as decode,
             patch.object(profiles, "probabilities", wraps=profiles.probabilities) as project,
         ):
-            fields = profiles.output_profiles(service, query._proto, handle)
+            from premixdb.runtime.profiles import output_profiles
+
+            fields = output_profiles(service, query._proto, handle)
         self.assertEqual(decode.call_count, 6)
         self.assertEqual(project.call_count, 2)
         self.assertEqual(fields, list(query._proto.profile.fields))
@@ -562,8 +559,8 @@ class ExtendedResourceTests(unittest.TestCase):
         self.assertTrue(fields.profile().fields)
 
     def test_lazy_snapshots_keep_frames_instead_of_captured_text(self) -> None:
-        from premixdb import _runtime
         from premixdb.engine.snapshots import Store, StoredDocument
+        from premixdb.runtime import environment as _runtime
 
         store = Store(self.root / "captured")
         text = "pré 🌍\n" * 2

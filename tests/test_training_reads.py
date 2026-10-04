@@ -17,10 +17,10 @@ from blake3 import blake3
 
 import premixdb as p
 from premixdb import RangeReader
-from premixdb._reader import permutation
-from premixdb._sequences import read_page
-from premixdb._typing import Scalar
-from premixdb.execution.storage import ObjectStore
+from premixdb.contracts import Scalar
+from premixdb.storage.objects import ObjectStore
+from premixdb.training.reader import permutation
+from premixdb.training.sequences import read_page
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import status_pb2 as status
 from premixdb.v1.storage_pb2 import ObjectRef, SpanRef
@@ -136,7 +136,7 @@ def test_duplicate_spans_share_bounded_bytes_and_keep_digest_checks(tmp_path: Pa
 
 
 def test_batch_loading_matches_individual_reads_and_coalesces_file_reads(tmp_path: Path) -> None:
-    from premixdb._torch import TorchDataset
+    from premixdb.training.torch import TorchDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store)
@@ -163,7 +163,7 @@ def test_batch_loading_matches_individual_reads_and_coalesces_file_reads(tmp_pat
 def test_tensor_mutations_do_not_change_duplicate_rows_labels_or_future_reads(
     tmp_path: Path,
 ) -> None:
-    from premixdb._torch import TorchDataset
+    from premixdb.training.torch import TorchDataset
 
     with ObjectStore(tmp_path) as store, RangeReader(local_root=tmp_path) as reader:
         data = TorchDataset(stored_dataset(store, count=2), reader)
@@ -197,7 +197,7 @@ def test_whole_object_reads_verify_the_object_digest(tmp_path: Path, batched: bo
 
 
 def test_streaming_ranks_and_workers_cover_every_sequence_once(tmp_path: Path) -> None:
-    from premixdb._torch import StreamingDataset
+    from premixdb.training.torch import StreamingDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=385)
@@ -206,7 +206,7 @@ def test_streaming_ranks_and_workers_cover_every_sequence_once(tmp_path: Path) -
     def read(rank: int, worker: int = 0, workers: int = 1, epoch: int = 0) -> list[int]:
         data = StreamingDataset(resource, reader, rank=rank, world_size=2, seed=42, epoch=epoch)
         with patch(
-            "premixdb._torch.get_worker_info",
+            "premixdb.training.torch.get_worker_info",
             return_value=SimpleNamespace(id=worker, num_workers=workers),
         ):
             return [int(item["input_ids"][0].item()) for item in data]
@@ -225,7 +225,7 @@ def test_streaming_ranks_and_workers_cover_every_sequence_once(tmp_path: Path) -
 def test_streaming_dataset_survives_spawn_and_session_close(tmp_path: Path) -> None:
     from torch.utils.data import DataLoader
 
-    from premixdb._torch import StreamingDataset
+    from premixdb.training.torch import StreamingDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=129)
@@ -241,26 +241,26 @@ def test_streaming_dataset_survives_spawn_and_session_close(tmp_path: Path) -> N
     "kwargs", [dict(rank=0), dict(rank=2, world_size=2), dict(seed=True), dict(epoch=-1)]
 )
 def test_streaming_rejects_invalid_topology_and_seeds(kwargs: dict[str, Scalar]) -> None:
-    from premixdb._torch import StreamingDataset
+    from premixdb.training.torch import StreamingDataset
 
     with pytest.raises(ValueError):
         invalid_call(StreamingDataset, d.Dataset(), None, **kwargs)
 
 
 def test_local_reader_survives_fork(tmp_path: Path) -> None:
-    from premixdb._torch import TorchDataset
+    from premixdb.training.torch import TorchDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=2)
     reader = RangeReader(local_root=tmp_path)
     data = TorchDataset(resource, reader)
-    with patch("premixdb._storage.os.getpid", return_value=reader._pid + 1):
+    with patch("premixdb.storage.ranges.os.getpid", return_value=reader._pid + 1):
         assert data.__getitems__([0, 1])[1]["input_ids"][0].item() == 1
     reader.close()
 
 
 def test_single_index_fetches_only_requested_tokens_and_coalesces_masks(tmp_path: Path) -> None:
-    from premixdb._torch import TorchDataset
+    from premixdb.training.torch import TorchDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store)
@@ -376,7 +376,7 @@ def test_public_torch_reopens_read_only_and_matches_all_sequence_fields(
 def test_all_readers_reject_corrupt_sequence_pages(
     tmp_path: Path, mode: str, corruption: str
 ) -> None:
-    from premixdb._torch import StreamingDataset, TorchDataset
+    from premixdb.training.torch import StreamingDataset, TorchDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=2)
@@ -417,7 +417,7 @@ def test_all_readers_reject_corrupt_sequence_pages(
 def test_all_readers_reject_invalid_token_lengths_alignment_and_masks(
     tmp_path: Path, mode: str, field: str, value: bytes, start: int, message: str
 ) -> None:
-    from premixdb._torch import StreamingDataset, TorchDataset
+    from premixdb.training.torch import StreamingDataset, TorchDataset
 
     with ObjectStore(tmp_path) as store:
         resource = stored_dataset(store, count=1)

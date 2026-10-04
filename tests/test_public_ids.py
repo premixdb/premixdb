@@ -12,8 +12,8 @@ from typing import Literal
 import pytest
 
 import premixdb as p
-from premixdb._ids import _decode_id, _encode_id
-from premixdb._requests import _id
+from premixdb.schemas.ids import _decode_id, _encode_id
+from premixdb.schemas.requests import _id
 
 
 @pytest.mark.parametrize("size", [16, 32])
@@ -140,7 +140,7 @@ def test_read_only_lineage_needs_no_selection_or_query_execution_modules(tmp_pat
 import json
 import sys
 
-sys.modules["premixdb.execution.selections"] = None
+sys.modules["premixdb.storage.selections"] = None
 sys.modules["premixdb.engine.queries"] = None
 import premixdb as p
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import base64
 
-from .contracts import EncodedTokens
-from .datasets import ByteRanges, ByteTokens, TokenList
+from premixdb.engine.contracts import EncodedTokens
+from premixdb.engine.datasets import ByteRanges, ByteTokens, TokenList
 
 
 def byte_interval(pair: list[int]) -> tuple[int, int]:

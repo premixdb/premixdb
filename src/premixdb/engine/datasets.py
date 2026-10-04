@@ -15,20 +15,26 @@ from pathlib import Path
 from sys import byteorder
 from typing import TYPE_CHECKING, Generator, Iterable, Iterator, Literal, SupportsIndex, overload
 
-from .._reader import Reader, Topology
-from .._types import Checkpoint
-from .._typing import Interval
-from .contracts import Counts, Occurrence, PackingSummary, SourceRange, Span, TokenRange
+from premixdb.contracts import Checkpoint, Interval
+from premixdb.engine.contracts import (
+    Counts,
+    Occurrence,
+    PackingSummary,
+    SourceRange,
+    Span,
+    TokenRange,
+)
+from premixdb.training.reader import Reader, Topology
 
 if TYPE_CHECKING:
-    from .queries import Query, Row
-    from .token_cache import TokenCache
+    from premixdb.engine.queries import Query, Row
+    from premixdb.engine.token_cache import TokenCache
 
 from blake3 import blake3
 
-from .dataset_plan import BYTE_DEFINITION as BYTE_DEFINITION
-from .dataset_plan import DatasetPlan, PackingPlan
-from .identity import Canonical, digest, unsigned
+from premixdb.engine.dataset_plan import BYTE_DEFINITION as BYTE_DEFINITION
+from premixdb.engine.dataset_plan import DatasetPlan, PackingPlan
+from premixdb.engine.identity import Canonical, digest, unsigned
 
 TOKEN_SHARD_BYTES = 8 * 1024 * 1024
 
@@ -217,7 +223,7 @@ def encoded_tokens(
     row: Row, tokenizer: HuggingFaceTokenizer | None = None
 ) -> ByteTokens | TokenList:
     text = row.text
-    from .curation import RetainedDocument
+    from premixdb.engine.curation import RetainedDocument
 
     if not tokenizer:
         data = text.encode()
@@ -318,7 +324,7 @@ class Dataset:
         pool = None
         with ExitStack() as startup:
             if tokenizer:
-                from .token_cache import token_pool
+                from premixdb.engine.token_cache import token_pool
 
                 pool = token_pool(query, tokenizer)
                 startup.callback(pool.close)
@@ -456,7 +462,7 @@ class Dataset:
         checkpoint: Checkpoint | None = None,
         seed: int | None = None,
     ) -> Reader[Sequence]:
-        from .._reader import Reader, Topology
+        from premixdb.training.reader import Reader, Topology
 
         return Reader(
             self,

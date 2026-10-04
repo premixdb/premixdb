@@ -19,8 +19,7 @@ import pytest
 from _type_support import invalid_call
 from blake3 import blake3
 
-from premixdb import _files
-from premixdb.execution.partitions import (
+from premixdb.runtime.partitions import (
     CHUNK_SIZE,
     CONTROL_LIMIT,
     Artifact,
@@ -32,12 +31,13 @@ from premixdb.execution.partitions import (
     Receipt,
     checked_receipt,
 )
-from premixdb.execution.pipeline import PartitionPipeline
+from premixdb.runtime.pipeline import PartitionPipeline
+from premixdb.storage import publication as _files
 
 
 class PartitionTests(unittest.TestCase):
     def test_submission_window_is_bounded_ordered_and_cancels_pending_on_failure(self) -> None:
-        from premixdb.execution.pipeline import execute_tasks
+        from premixdb.runtime.pipeline import execute_tasks
 
         tasks = [replace(self.task, key=i.to_bytes(32, "big")) for i in range(5)]
         submitted = []
