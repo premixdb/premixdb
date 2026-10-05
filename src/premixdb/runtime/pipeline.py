@@ -477,7 +477,11 @@ class PartitionPipeline:
 
         return lengths, encoded()
 
-    def pack(self, handle: Dataset) -> PackedPartitions:
+    def pack(self, handle: Dataset) -> Dataset:
+        from premixdb.engine.concatenated import ConcatenatedDataset
+
+        if isinstance(handle, ConcatenatedDataset):
+            return handle.packed(self.pack)
         packing = handle.plan.packing
         blocks: list[Artifact] = []
         prefixes: list[int] = []
@@ -504,7 +508,7 @@ class PartitionPipeline:
                 dict(
                     ordinal=ordinal,
                     document=row.id,
-                    source=handle._query._provenance[row.id],
+                    source=handle._query.provenance_for(row),
                     tokens=len(tokens),
                 )
             )

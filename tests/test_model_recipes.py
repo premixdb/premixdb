@@ -148,6 +148,7 @@ def test_published_weights_allocate_a_custom_source_token_budget(
             .query()
             .mix(
                 weights=weights,
+                splits=p.Splits(train=1, validation=0, test=0),
                 tokens=100,
                 tokenizer=p.ByteTokenizer(),
                 sequence_length=10,

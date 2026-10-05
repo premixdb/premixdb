@@ -455,7 +455,13 @@ assert "grpc" not in sys.modules
         from _reference import Topology as NativeTopology
 
         dataset = (
-            self.snapshot().query().mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=1)[0]
+            self.snapshot()
+            .query()
+            .mix(
+                tokenizer=premixdb.ByteTokenizer(),
+                sequence_length=1,
+                splits=premixdb.Splits(train=1, validation=0, test=0),
+            )[0]
         )
         native = coordinator(self.client)._query(dataset._proto.query_id).dataset(1, 256, 257)
         all_ordinals = []
@@ -515,10 +521,11 @@ assert "grpc" not in sys.modules
         service = coordinator(self.client)
         resolved = compile_query(premixdb.query(self.snapshot().id))
         with (
-            patch.object(execution, "CorpusIndex") as index,
+            patch(
+                "premixdb.runtime.analytics.execute", side_effect=RuntimeError("input span failed")
+            ),
             patch.object(service._storage, "save", wraps=service._storage.save) as save,
         ):
-            index.return_value.execute.side_effect = RuntimeError("input span failed")
             with self.assertRaisesRegex(RuntimeError, "input span failed"):
                 service.run_query(resolved)
             save.assert_not_called()

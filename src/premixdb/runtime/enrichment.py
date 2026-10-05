@@ -528,6 +528,13 @@ def build(service: Coordinator, request: e.DerivationPlan) -> e.Materialization:
             result.indexes.append(item)
         else:
             result.fields.append(item)
+    if result.fields:
+        from premixdb.runtime.analytical_preparation import prepare_field, prepare_population
+
+        indexed_population = prepare_population(service, request.snapshot_ids)
+        for item in result.fields:
+            _, manifest = load_build(service, "field", item.snapshot.id, request.snapshot_ids)
+            prepare_field(service, indexed_population, item, manifest)
     service._storage.save("derivation", request.id, result)
     return result
 

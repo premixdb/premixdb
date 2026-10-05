@@ -57,13 +57,30 @@ def test_completed_selection_reopens_without_running_kernels(tmp_path: Path, mod
             assert [(s.tokens, s.mask, s.spans) for s in db._dataset(dataset.id)] == packed
 
 
-def test_missing_selection_shard_is_an_error_not_a_reexecution(tmp_path: Path) -> None:
+@pytest.mark.parametrize("indexed", [True, False])
+def test_missing_selection_shard_is_an_error_not_a_reexecution(
+    tmp_path: Path, indexed: bool
+) -> None:
     with p.PremixDB(storage=tmp_path) as db:
-        query = db.Corpus("missing", [p.Source("a", "hello")]).query().wait()
+        snapshot = db.Corpus("missing", [p.Source("a", "hello")])
+        query = snapshot.query(steps=[] if indexed else [p.dedupe()]).wait()
         id = _decode_id(query.id)
-        manifest = coordinator(db)._storage.load("query", id, d.QuerySelection, suffix=".selection")
-        ref = manifest.shards[0]
-        (tmp_path / "query/objects" / ref.blake3_digest.hex()).unlink()
+        if indexed:
+            from premixdb.internal import analytics_pb2 as a
+            from premixdb.storage.analytics import POPULATION_SUFFIX, SELECTION_SUFFIX
+
+            store = coordinator(db)._storage
+            selection = store.load("query", id, a.IndexedSelection, suffix=SELECTION_SUFFIX)
+            population = store.load(
+                "index", selection.population_id, a.PopulationIndex, suffix=POPULATION_SUFFIX
+            )
+            ref, namespace = population.descriptors[0], "index"
+        else:
+            manifest = coordinator(db)._storage.load(
+                "query", id, d.QuerySelection, suffix=".selection"
+            )
+            ref, namespace = manifest.shards[0], "query"
+        (tmp_path / f"{namespace}/objects" / ref.blake3_digest.hex()).unlink()
     with p.PremixDB(storage=tmp_path, cache_bytes=0) as db:
         with patch.object(
             coordinator(db), "_execute_query", side_effect=AssertionError("reexecuted")

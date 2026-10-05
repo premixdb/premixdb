@@ -7,8 +7,8 @@ from torch.utils.data import DataLoader
 
 with p.PremixDB(storage=".premixdb") as db:
     dataset = db.Corpus("training").query().mix(sequence_length=2048)[0]
-    dataset.preview()
-    loader = DataLoader(dataset.torch(), batch_size=32)
+    dataset.train.preview()
+    loader = DataLoader(dataset.train.torch(), batch_size=32)
     for batch in loader:
         # input_ids, attention_mask, labels
         ...
@@ -21,9 +21,41 @@ open; use `with p.RangeReader(...) as reader` or call `reader.close()` when done
 
 ## Define mixtures
 
-`query.mix()` returns a `DataMixture`. By default it contains one dataset that
-packs every query occurrence in its existing order. A token budget without
-weights samples according to the population's token proportions.
+`query.mix()` returns a `DataMixture`. By default it contains one dataset with
+80% training, 10% validation, and 10% test document membership. The proportions
+are approximate: a seeded hash assigns whole captured-content groups, keeping
+identical content together across source IDs and corpora. Small populations can
+have empty splits. Token and packed-sequence proportions can differ.
+
+Configure a different policy with the generated `Splits` protobuf message:
+
+```python
+dataset = query.mix(
+    splits=p.Splits(train=0.90, validation=0.05, test=0.05, seed=42),
+)[0]
+train = dataset.train.torch()
+validation = dataset.validation.torch()
+test = dataset.test.torch()
+```
+
+All three finite, nonnegative proportions must be supplied and sum to one.
+`splits=` accepts `p.Splits`, rather than a dictionary or tuple. Omission saves an
+explicit 80/10/10 policy with split seed zero. Use
+`p.Splits(train=1, validation=0, test=0)` for inputs already split elsewhere.
+
+Weights, token budgets, and replacement apply to the training population.
+Validation and test retain the same documents and packing across candidates and
+sampling seeds. The split seed controls membership independently of RegMix,
+mixture sampling, and reader seeds. A budget without weights uses the training
+population's token proportions. Without weights or a budget, every query
+occurrence is retained in its original order within its assigned split.
+
+Each split is packed independently; padding or dropped tails are handled at each
+boundary. Split views share the parent's stored tokens through half-open sequence
+ranges. They support indexing, iteration, profiles, previews, and PyTorch adapters.
+`dataset.profile()` describes all splits; `dataset.train.profile()` describes
+training alone. `dataset.torch()` reads the combined dataset, so use
+`dataset.train.torch()` for training.
 
 ```python
 fixed = query.mix(
@@ -67,7 +99,7 @@ of that output, rather than packing on demand.
 ## Shuffle and distribute
 
 ```python
-data = dataset.torch(streaming=True, seed=42, epoch=0)
+data = dataset.train.torch(streaming=True, seed=42, epoch=0)
 loader = DataLoader(data, batch_size=32, num_workers=4)
 ```
 
@@ -81,10 +113,10 @@ In scripts that spawn workers, create the loader inside the main guard.
 
 ## Resume training
 
-Save the dataset ID, model, optimizer, random state, and the number of consumed
+Save the parent dataset ID and split name, model, optimizer, random state, and the number of consumed
 batches. Restore the same dataset and reading order. With a map-style adapter,
 a PyTorch sampler can begin at the next sequence index. DataLoader prefetching
 means the number of fetched batches can exceed the number actually processed.
 
 Checkpointed framework-independent iteration remains an internal implementation
-facility. The public training interface is `dataset.torch()`.
+facility. The public training interface is `dataset.train.torch()`.

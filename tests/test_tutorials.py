@@ -224,7 +224,7 @@ def test_snapshot_and_query_inline_previews_preserve_fields_and_truncation(tmp_p
 
 def test_numbered_lessons_use_editable_values_without_argument_parsers() -> None:
     scripts = sorted(EXAMPLES.glob("[0-9][0-9]_*.py"))
-    assert [name.name[:2] for name in scripts] == [f"{i:02d}" for i in range(1, 11)]
+    assert [name.name[:2] for name in scripts] == [f"{i:02d}" for i in range(1, 12)]
     for script in scripts:
         tree = ast.parse(script.read_text())
         description = ast.get_docstring(tree)
@@ -238,8 +238,21 @@ def test_numbered_lessons_use_editable_values_without_argument_parsers() -> None
             for target in node.targets
             if isinstance(target, ast.Name)
         }
-        assert {"STORAGE", "LIMIT"} <= assignments
-        assert "INPUT" in assignments or {"WEB", "PAPERS", "LITERATURE"} <= assignments
+        if "DATA" in assignments:
+            data_settings = next(
+                node
+                for node in tree.body
+                if isinstance(node, ast.ClassDef) and node.name in {"DataConfig", "DataSettings"}
+            )
+            fields = {
+                node.target.id
+                for node in data_settings.body
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+            }
+            assert {"input", "storage", "limit"} <= fields
+        else:
+            assert {"STORAGE", "LIMIT"} <= assignments
+            assert "INPUT" in assignments or {"WEB", "PAPERS", "LITERATURE"} <= assignments
 
 
 @pytest.mark.integration

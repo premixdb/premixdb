@@ -263,7 +263,12 @@ class MixTests(unittest.TestCase):
         self.assertFalse(dataset._recipe.HasField("sampling"))
         self.assertIs(self.query.status, premixdb.ExecutionStatus.PENDING)
         direct = coordinator(self.client)._plan_dataset(
-            _requests.dataset(self.query.id, tokenizer=premixdb.ByteTokenizer(), sequence_length=4)
+            _requests.dataset(
+                self.query.id,
+                tokenizer=premixdb.ByteTokenizer(),
+                sequence_length=4,
+                splits=premixdb.Splits(train=0.8, validation=0.1, test=0.1),
+            )
         )
         self.assertEqual(dataset.id, _encode_id(direct.id))
         self.assertEqual(dataset.profile().content_tokens, 7)

@@ -75,6 +75,7 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
                 )
             ),
             public=True,
+            catalog=self._db._executor,
         )
 
     @property
@@ -88,6 +89,7 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         *,
         domains: DomainInput | None = None,
         weights: Mapping[str, float] | RegMix | None = None,
+        splits: mix_pb.Splits | None = None,
         size: Tokens | None = None,
         tokens: int | None = None,
         tokenizer: mix_pb.Tokenizer | BytePolicy | None = None,
@@ -98,12 +100,13 @@ class Query(_Execution[queries.Query, queries.CreateQueryRequest]):
         replacement: bool = False,
         seed: int = 0,
     ) -> DataMixture:
-        """Register a lazy mixture recipe; defaults pack the query unchanged."""
+        """Register lazy 80/10/10 split recipes; weights and budgets apply to training."""
         self._db._require_writable("plan mixtures")
         request = _requests.mix(
             self._resource.id,
             domains=domains,
             weights=weights,
+            splits=splits,
             size=size,
             tokens=tokens,
             tokenizer=tokenizer,

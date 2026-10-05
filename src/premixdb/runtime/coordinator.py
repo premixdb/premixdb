@@ -419,6 +419,9 @@ class Coordinator(Catalog):
                 corpus.latest_snapshot_id = id
                 self._storage.save("corpus", corpus.id, corpus, suffix=".latest")
                 self._corpora[corpus.id] = corpus
+            from premixdb.runtime.analytical_preparation import prepare_population
+
+            prepare_population(self, (id,))
             return snapshots.CreateSnapshotResponse(snapshot=resource)
 
         return self._once(request, run)
@@ -477,12 +480,18 @@ class Coordinator(Catalog):
         return result
 
     def _preview_dataset(
-        self, resource: datasets.Dataset, *, limit: int, offset: int, max_characters: int
+        self,
+        resource: datasets.Dataset,
+        *,
+        limit: int,
+        offset: int,
+        max_characters: int,
+        split: str | None = None,
     ) -> list[PreviewSequence]:
         from premixdb.runtime.preview_execution import dataset_preview
 
         return dataset_preview(
-            self, resource, limit=limit, offset=offset, max_characters=max_characters
+            self, resource, limit=limit, offset=offset, max_characters=max_characters, split=split
         )
 
     def run_query(self, query: queries.Query) -> queries.Query:
@@ -496,6 +505,11 @@ class Coordinator(Catalog):
         expected = compile_query(query)
         if query != expected:
             raise ValueError("query identity, execution revision, or inputs were modified")
+        from premixdb.runtime.analytics import execute as execute_indexed
+
+        indexed = execute_indexed(self, query, publish=publish)
+        if indexed is not None:
+            return indexed
         with ExitStack() as resources:
             if (
                 query.field_snapshot_ids
@@ -777,7 +791,12 @@ class Coordinator(Catalog):
             else:
                 from premixdb.storage.selections import restore
 
-                if self._storage.metadata.contains("query", id, suffix=".selection"):
+                if self._storage.metadata.contains("query", id, suffix=".indexed-selection-v1"):
+                    from premixdb.storage.analytics import restore as restore_indexed
+
+                    handle = restore_indexed(self, resource)
+                    handle._encoding_provider = self._encodings
+                elif self._storage.metadata.contains("query", id, suffix=".selection"):
                     handle = restore(self._storage, resource)
                     handle._encoding_provider = self._encodings
                 else:

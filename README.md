@@ -22,7 +22,7 @@ You can also use the tiny_shakespeare demo corpus of his plays:
 ```python
 from torch.utils.data import DataLoader
 
-dataset = db.Corpus('demo').query().mix()[0].torch()
+dataset = db.Corpus('demo').query().mix()[0].train.torch()
 next(iter(DataLoader(dataset, batch_size=1)))
 ```
 
@@ -62,7 +62,7 @@ mixtures = query.mix(tokens=256, replacement=True, sequence_length=64)
 
 dataset = mixtures[0]
 print(dataset.preview())
-batch = next(iter(DataLoader(dataset.torch(), batch_size=1)))
+batch = next(iter(DataLoader(dataset.train.torch(), batch_size=1)))
 ```
 
 ## Installation
@@ -74,6 +74,7 @@ uv add premixdb
 ```
 
 - [Runnable examples](examples/README.md)
+- [RegMix training search](examples/11_c4_pretraining_ablation.py): train C4 topic/content-type mixtures and select weights by validation loss
 - [Model data recipes](examples/recipes/README.md): T5/C4, Falcon, Gopher, LLaMA 1, GPT-3 on custom corpora
 - [Curation](docs/curation.md) · [Fields](docs/enrichment.md) · [Training](docs/training.md)
 - [Storage](docs/persistence.md) · [Internals](docs/architecture.md) · [Development](docs/development.md)

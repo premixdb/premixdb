@@ -402,7 +402,7 @@ class Dataset:
                     dict(
                         ordinal=ordinal,
                         document=row.id,
-                        source=self._query._provenance[row.id],
+                        source=self._query.provenance_for(row),
                         tokens=len(tokens),
                     )
                 )
@@ -500,13 +500,17 @@ class Dataset:
 
 
 def pack_sequences(
-    encoded: Iterable[tuple[Row, list[int] | ByteTokens | TokenList]], packing: PackingPlan
+    encoded: Iterable[tuple[Row, list[int] | ByteTokens | TokenList]],
+    packing: PackingPlan,
+    *,
+    ordinal_start: int = 0,
+    occurrence_start: int = 0,
 ) -> Generator[Sequence, None, None]:
     """Pack incrementally; closing the iterator stops consuming source occurrences."""
     pending: list[int] = []
     spans: list[Span] = []
     alignment: list[TokenRange] = []
-    sequence_ordinal = 0
+    sequence_ordinal = ordinal_start
 
     def append(
         tokens: list[int] | ByteTokens | TokenList,
@@ -540,7 +544,7 @@ def pack_sequences(
                 spans.clear()
                 alignment.clear()
 
-    for ordinal, (_, tokens) in enumerate(encoded):
+    for ordinal, (_, tokens) in enumerate(encoded, start=occurrence_start):
         yield from append(tokens, "content", ordinal)
         if packing.separator is not None:
             yield from append([packing.separator], "separator", ordinal)

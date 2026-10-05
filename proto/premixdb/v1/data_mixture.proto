@@ -85,6 +85,32 @@ message DatasetPreview {
   }
   repeated Sequence sequences = 1; // Inline data, using the dataset tokenizer.
 }
+// Seeded captured-content hash partitioning (v1), before mixture sampling.
+// Explicit policies require all three finite, nonnegative proportions summing to one.
+message Splits {
+  optional double train = 1;
+  optional double validation = 2;
+  optional double test = 3;
+  uint64 seed = 4; // Independent of proposal, sampling, and reader seeds.
+}
+message SequenceRange {
+  uint64 start = 1;
+  uint64 stop = 2; // Exclusive parent sequence ordinal.
+}
+message DatasetSplitRanges {
+  SequenceRange train = 1;
+  SequenceRange validation = 2;
+  SequenceRange test = 3;
+}
+message DatasetSplitProfiles {
+  DatasetProfile train = 1;
+  DatasetProfile validation = 2;
+  DatasetProfile test = 3;
+}
+message DatasetSplitMetadata {
+  DatasetSplitRanges ranges = 1;
+  DatasetSplitProfiles profiles = 2;
+}
 message Dataset {
   bytes id = 1;
   bytes query_id = 2;
@@ -99,6 +125,9 @@ message Dataset {
   Tokenizer tokenizer = 11;
   repeated SpanRef tokens = 12; // Ordered spans covering every packed token.
   string error = 13; // Materialization failure, if any; completion remains unpublished.
+  Splits splits = 14;
+  DatasetSplitRanges split_ranges = 15;
+  DatasetSplitProfiles split_profiles = 16;
 }
 message CreateDatasetRequest {
   string request_id = 100; // Optional durable idempotency key; excluded from resource identity.
@@ -108,6 +137,7 @@ message CreateDatasetRequest {
   Sampling sampling = 4;
   uint32 sequence_length = 5;
   Tokenizer tokenizer = 6;
+  Splits splits = 7; // Absent on legacy unsplit dataset recipes.
 }
 message CreateDatasetResponse { bytes id = 1; }
 message GetDatasetRequest { bytes id = 1; }
@@ -183,6 +213,7 @@ message Mix {
   optional bool pass_through = 16; // Preserve the query's order and occurrences.
   bytes execution_fingerprint = 18; // Recipe creation environment; absent on legacy resolved mixes.
   MixProfile profile = 17; // Mixture inventory and composition, never packed sequence totals.
+  Splits splits = 19;
 }
 
 // Register a pinned mixture recipe without selection, tokenization, or packing.
@@ -201,6 +232,7 @@ message CreateMixRequest {
   Tokenizer tokenizer = 11;
   uint64 tokens = 12;
   map<string, double> weights = 13; // Mutually exclusive with algorithm.
+  Splits splits = 14; // Defaults to explicit 80/10/10 when registering new mixtures.
 }
 message CreateMixResponse { bytes id = 1; }
 message GetMixRequest { bytes id = 1; }

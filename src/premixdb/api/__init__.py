@@ -3,6 +3,7 @@
 from .corpus import Corpus as Corpus
 from .database import PremixDB as PremixDB
 from .dataset import Dataset as Dataset
+from .dataset import DatasetSplit as DatasetSplit
 from .mixture import DataMixture as DataMixture
 from .query import Query as Query
 from .snapshot import Snapshot as Snapshot

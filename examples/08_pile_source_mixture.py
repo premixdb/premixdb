@@ -44,7 +44,7 @@ def main() -> None:
             "Proposed token fractions:",
             dict(sorted((names[k], v) for k, v in mixture.weights[0].items())),
         )
-        profile = mixture[0].profile()
+        profile = mixture[0].train.profile()
         print("Planned content tokens:", profile.planned_content_tokens)
         print(
             "Tokens per source:",

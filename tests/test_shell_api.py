@@ -47,7 +47,7 @@ from premixdb.training.sequences import Sequence
             "id status preview profile mix wait",
         ),
         (p.DataMixture, "id datasets weights profile preview"),
-        (p.Dataset, "id status wait profile preview torch"),
+        (p.Dataset, "id status wait profile preview torch train validation test"),
         (Reader, "checkpoint"),
         (Sequence, "ordinal tokens mask attention_mask spans document_ids"),
         (CorpusCollection, "list"),

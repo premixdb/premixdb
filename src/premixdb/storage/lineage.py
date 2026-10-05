@@ -2,14 +2,39 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from premixdb.contracts import checked_record, json_integer, json_list, json_object, load_json
 from premixdb.engine.contracts import Provenance
 from premixdb.schemas.ids import _encode_id
 
+if TYPE_CHECKING:
+    from premixdb.storage.catalog import Catalog
 
-def decode_lineage(data: bytes, *, public: bool = False) -> dict[str, Provenance]:
+
+def decode_lineage(
+    data: bytes, *, public: bool = False, catalog: Catalog | None = None
+) -> dict[str, Provenance]:
     """Read stored lineage once, normalizing ranges and optionally exposing public IDs."""
     result: dict[str, Provenance] = {}
+    if data.startswith(b"premixdb/indexed-lineage/v1\0"):
+        if catalog is None:
+            raise ValueError("indexed lineage requires its catalog")
+        from premixdb.engine.indexed import LINEAGE_MAGIC
+        from premixdb.internal import analytics_pb2 as a
+        from premixdb.schemas.protobuf import parse
+        from premixdb.storage.analytics import restore
+        from premixdb.v1 import query_pb2 as q
+
+        receipt = parse(a.IndexedSelection, data[len(LINEAGE_MAGIC) :])
+        resource = catalog._storage.load("query", receipt.query_id, q.Query)
+        origins = restore(catalog, resource).provenance()
+        if not public:
+            return origins
+        for identity, record in origins.items():
+            _public_record(record)
+            result[_public_id(identity)] = record
+        return result
     for identity, raw in json_object(load_json(data)).items():
         origin = json_object(raw)
         normalized: dict[str, object] = dict(origin)

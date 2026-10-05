@@ -109,7 +109,7 @@ class ExtendedResourceTests(unittest.TestCase):
             mixed = self.client._query(ready.id).mix(
                 tokenizer=p.ByteTokenizer(), domains=p.topic.label, tokens=4
             )
-            self.assertEqual(mixed[0].wait().profile().planned_content_tokens, 4)
+            self.assertEqual(mixed[0].train.wait().profile().planned_content_tokens, 4)
 
     def test_mixture_domains_derive_and_reuse_fields(self) -> None:
         query = self.population().query()
@@ -118,7 +118,7 @@ class ExtendedResourceTests(unittest.TestCase):
         ) as producer:
             mix = query.mix(tokenizer=p.ByteTokenizer(), domains=p.topic, tokens=4)
             self.assertEqual(producer.call_count, 0)
-            self.assertEqual(mix[0].profile().planned_content_tokens, 4)
+            self.assertEqual(mix[0].train.profile().planned_content_tokens, 4)
             self.assertEqual(producer.call_count, 1)
         with patch("premixdb.runtime.enrichment.producer", side_effect=AssertionError("inference")):
             self.assertEqual(
@@ -174,7 +174,7 @@ class ExtendedResourceTests(unittest.TestCase):
                 )
             )
             self.assertEqual(len(mix), 1)
-            self.assertEqual(mix[0].wait().profile().planned_content_tokens, 4)
+            self.assertEqual(mix[0].train.wait().profile().planned_content_tokens, 4)
 
     def test_cosine_and_lsh_selection(self) -> None:
         with patch("premixdb.runtime.enrichment.producer", side_effect=InspectionFields):

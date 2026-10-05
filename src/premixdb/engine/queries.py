@@ -181,7 +181,7 @@ class Query:
             self._id = index.id
             self.inputs = index.inputs
             self.field_snapshot_ids = index.field_snapshot_ids
-            self._rows = list(index.rows)
+            self._rows: Sequence[Row] = list(index.rows)
             self._provenance = deepcopy(index.provenance)
             self._summary = deepcopy(index.summary)
             self.elapsed_seconds = 0.0
@@ -379,6 +379,9 @@ class Query:
 
     def provenance(self) -> dict[str, Provenance]:
         return deepcopy(self._provenance)
+
+    def provenance_for(self, row: Row) -> Provenance:
+        return self._provenance[row.id]
 
     def __iter__(self) -> Iterator[Row]:
         return iter(self._rows)

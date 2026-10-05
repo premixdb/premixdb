@@ -14,6 +14,7 @@ from premixdb.contracts import (
     ExecutionError,
     PreviewSequence,
 )
+from premixdb.schemas.enums import ExecutionStatus
 from premixdb.schemas.ids import _public_dataset_profile
 from premixdb.schemas.protobuf import copy_message
 from premixdb.training.reader import Reader, Topology
@@ -29,6 +30,27 @@ from premixdb.api.base import _Execution
 
 
 class Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
+    _split_name: str | None = None
+
+    @property
+    def train(self) -> DatasetSplit:
+        """Return the training split without materializing its parent."""
+        return DatasetSplit(self, "train")
+
+    @property
+    def validation(self) -> DatasetSplit:
+        """Return the fixed validation split without materializing its parent."""
+        return DatasetSplit(self, "validation")
+
+    @property
+    def test(self) -> DatasetSplit:
+        """Return the fixed test split without materializing its parent."""
+        return DatasetSplit(self, "test")
+
+    @property
+    def _window(self) -> tuple[int, int] | None:
+        return None
+
     @report_progress("Previewing dataset {id}")
     def preview(
         self, *, limit: int = 3, offset: int = 0, max_characters: int = 1024
@@ -137,12 +159,13 @@ class Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
             return _torch.StreamingDataset(
                 self._proto,
                 self._db._object_reader,
+                window=self._window,
                 seed=seed,
                 epoch=epoch,
                 rank=rank,
                 world_size=world_size,
             )
-        return _torch.TorchDataset(self._proto, self._db._object_reader)
+        return _torch.TorchDataset(self._proto, self._db._object_reader, window=self._window)
 
     def __len__(self) -> int:
         return self.wait()._resource.profile.sequences
@@ -176,3 +199,87 @@ class Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
         with the same seed and topology to resume from the next sequence.
         """
         return Reader(self, Topology() if topology is None else topology, checkpoint, seed)
+
+
+class DatasetSplit(Dataset):
+    """A named immutable sequence view; storage and materialization belong to its parent."""
+
+    def __init__(self, parent: Dataset, name: str) -> None:
+        if name not in ("train", "validation", "test"):
+            raise ValueError("split name must be train, validation, or test")
+        if isinstance(parent, DatasetSplit):
+            raise ValueError("a split view cannot be split again")
+        if name != "train" and not parent._resource.HasField("splits"):
+            raise ValueError(f"dataset has no {name} split; create it with mix(splits=Splits(...))")
+        super().__init__(parent._db, parent._resource, parent._creation_request)
+        self._parent = parent
+        self._split_name = name
+
+    def __repr__(self) -> str:
+        return f"DatasetSplit(name={self._split_name!r}, parent={self._parent.id!r})"
+
+    @property
+    def status(self) -> ExecutionStatus:
+        """Return the shared parent materialization status."""
+        return self._parent.status
+
+    @property
+    def id(self) -> str:
+        """Return a stable identity specific to this parent and split."""
+        from blake3 import blake3
+
+        from premixdb.schemas.ids import _encode_id
+
+        assert self._split_name is not None
+        return _encode_id(
+            blake3(
+                b"premixdb-dataset-view/v1\0" + self._resource.id + self._split_name.encode()
+            ).digest()
+        )
+
+    def wait(self, *, timeout: float | None = None) -> DatasetSplit:
+        """Materialize the parent once and refresh this split's saved ranges."""
+        self._parent.wait(timeout=timeout)
+        self._resource = self._parent._resource
+        return self
+
+    @property
+    def _window(self) -> tuple[int, int]:
+        if not self._resource.HasField("splits"):
+            return 0, self._resource.profile.sequences
+        assert self._split_name is not None
+        window = getattr(self._resource.split_ranges, self._split_name)
+        assert isinstance(window, mix_pb.SequenceRange)
+        return window.start, window.stop
+
+    def profile(self) -> mix_pb.DatasetProfile:
+        """Return exact packing totals for this split without packing tokens."""
+        self._parent.profile()
+        self._parent._resource = self._db._get("Dataset", self._resource.id)
+        self._resource = self._parent._resource
+        if not self._resource.HasField("splits"):
+            return self._parent.profile()
+        assert self._split_name is not None
+        return _public_dataset_profile(
+            copy_message(getattr(self._resource.split_profiles, self._split_name)),
+            corpus_strata=self._resource.sampling.domains.field == queries.FIELD_SOURCE_CORPUS_ID,
+        )
+
+    def __len__(self) -> int:
+        self.wait()
+        start, stop = self._window
+        return stop - start
+
+    def _page(self, ordinal: int, size: int | None = None) -> list[Sequence]:
+        self.wait()
+        start, stop = self._window
+        if not 0 <= ordinal < stop - start:
+            raise IndexError("sequence index out of range")
+        values = read_page(self._resource, self._db._object_reader, start + ordinal, size)
+        result = []
+        for sequence in values:
+            if start <= sequence.ordinal < stop:
+                value = copy_message(sequence._value)
+                value.ordinal -= start
+                result.append(Sequence(value, sequence._reader))
+        return result

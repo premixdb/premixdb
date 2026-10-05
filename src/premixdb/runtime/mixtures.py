@@ -37,6 +37,9 @@ def create(
             copy_fields(request, datasets.CreateDatasetRequest()), _lazy=True
         )
         spec = copy_fields(request, datasets.CreateMixRequest())
+        from premixdb.schemas.splits import split_policy
+
+        spec.splits.CopyFrom(split_policy(spec.splits if spec.HasField("splits") else None))
         for name in ("tokenizer", "packing"):
             getattr(spec, name).CopyFrom(getattr(template, name))
         spec.git_commit = template.git_commit

@@ -38,9 +38,9 @@ def main() -> None:
         )
         for index, weights in enumerate(candidates.weights):
             print(f"Candidate {index}:", dict(sorted((names[k], v) for k, v in weights.items())))
-            assert candidates[index].profile().planned_content_tokens == 1024
+            assert candidates[index].train.profile().planned_content_tokens == 1024
         selected = candidates[::2]
-        first = selected[0][0]  # Pack one sequence from the first choice.
+        first = selected[0].train[0]  # Pack one sequence from the first choice.
         print("First chosen sequence:", first.ordinal, first.tokens[:16])
         print("Record candidate IDs:", [dataset.id for dataset in candidates])
         print(

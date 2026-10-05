@@ -95,6 +95,7 @@ def dataset_preview(
     limit: int,
     offset: int,
     max_characters: int,
+    split: str | None = None,
 ) -> list[PreviewSequence]:
     """Consume a packing prefix without publishing a completed dataset/profile."""
     from itertools import islice
@@ -105,10 +106,61 @@ def dataset_preview(
 
     recipe = copy_fields(resource, datasets.CreateDatasetRequest())
     tokenizer = service._tokenizer(recipe)
-    if recipe.HasField("sampling"):
-        pool, args = service._sampling(recipe)
-        handle = pool.dataset(*args, *service._packing(recipe), stream=True)
+    native_handle: execution.Dataset | None = None
+    if recipe.HasField("sampling") and split not in ("validation", "test"):
+        if recipe.HasField("splits") and split is None:
+            from premixdb.runtime.split_datasets import build
+
+            handle = build(service, recipe)
+        else:
+            pool, args = service._sampling(recipe)
+            handle = pool.dataset(*args, *service._packing(recipe), stream=True)
         stream = cast(Generator[execution.Sequence, None, None], handle.iter_sequences())
+        regions_handle = handle
+        native_handle = handle
+    elif recipe.HasField("splits"):
+        from contextlib import closing
+
+        from premixdb.schemas.splits import SPLIT_NAMES, content_split
+
+        query = Catalog.GetQuery(service, queries.GetQueryRequest(id=recipe.query_id)).query
+        occurrences: list[execution.Row] = []
+
+        class SplitOccurrences:
+            def occurrence_document(self, ordinal: int) -> str:
+                return occurrences[ordinal].id
+
+        regions_handle = SplitOccurrences()
+
+        def split_stream() -> Generator[execution.Sequence, None, None]:
+            ordinal = 0
+            for name in (split,) if split else SPLIT_NAMES:
+                with closing(service._preview_rows(query)) as selected_rows:
+
+                    def encoded_split() -> Iterator[tuple[execution.Row, ByteTokens | TokenList]]:
+                        for row in selected_rows:
+                            if content_split(row.document.content, recipe.splits) != name:
+                                continue
+                            tokens = (
+                                service._encodings(row, tokenizer)
+                                if tokenizer
+                                else encoded_tokens(row)
+                            )
+                            occurrences.append(row)
+                            yield row, tokens
+
+                    packed = pack_sequences(
+                        encoded_split(),
+                        PackingPlan(*service._packing(recipe)),
+                        ordinal_start=ordinal,
+                        occurrence_start=len(occurrences),
+                    )
+                    with closing(packed):
+                        for sequence in packed:
+                            yield sequence
+                            ordinal += 1
+
+        stream = split_stream()
     else:
         query = Catalog.GetQuery(service, queries.GetQueryRequest(id=recipe.query_id)).query
         rows = service._preview_rows(query)
@@ -118,7 +170,7 @@ def dataset_preview(
             def occurrence_document(self, ordinal: int) -> str:
                 return occurrences[ordinal].id
 
-        handle = Occurrences()
+        regions_handle = Occurrences()
 
         def encoded() -> Iterator[tuple[execution.Row, ByteTokens | TokenList]]:
             for row in rows:
@@ -131,7 +183,7 @@ def dataset_preview(
     try:
         for sequence in islice(stream, offset, offset + limit):
             tokens, mask = sequence._preview(256)
-            regions = list(_regions(handle, sequence))
+            regions = list(_regions(regions_handle, sequence))
             text = (
                 decode_preview(tokens, regions, tokenizer.decode if tokenizer else None)
                 if max_characters
@@ -159,10 +211,9 @@ def dataset_preview(
             )
     finally:
         stream.close()
-        if recipe.HasField("sampling"):
-            assert isinstance(handle, execution.Dataset)
-            handle.close()
-        else:
+        if native_handle is not None:
+            native_handle.close()
+        elif not recipe.HasField("splits"):
             rows.close()
     return result
 

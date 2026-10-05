@@ -39,16 +39,20 @@ def preview(
 
         assert isinstance(dataset._db._executor, Coordinator)
         return dataset._db._executor._preview_dataset(
-            ready, limit=limit, offset=offset, max_characters=width
+            ready, limit=limit, offset=offset, max_characters=width, split=dataset._split_name
         )
     dataset._resource = ready
-    end = min(offset + limit, ready.profile.sequences)
+    start, stop = 0, ready.profile.sequences
+    if dataset._split_name is not None and ready.HasField("splits"):
+        window = getattr(ready.split_ranges, dataset._split_name)
+        start, stop = window.start, window.stop
+    end = min(offset + limit, stop - start)
     result = []
     page = {}
     decoder: Callable[[list[int]], str] | None = None
     for ordinal in range(offset, end):
-        if ordinal < len(ready.preview.sequences):
-            example = ready.preview.sequences[ordinal]
+        if start + ordinal < len(ready.preview.sequences):
+            example = ready.preview.sequences[start + ordinal]
             tokens = list(example.tokens)
             mask = [bool(value) for value in example.loss_mask]
             attention = [bool(value) for value in example.attention_mask]

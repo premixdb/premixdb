@@ -113,6 +113,16 @@ class Catalog:
                 pass
             else:
                 resource.profile.CopyFrom(profile)
+        if resource.HasField("splits") and not resource.HasField("split_ranges"):
+            try:
+                metadata = self._storage.load(
+                    "dataset", resource.id, datasets.DatasetSplitMetadata, suffix=".split-metadata"
+                )
+            except KeyError:
+                pass
+            else:
+                resource.split_ranges.CopyFrom(metadata.ranges)
+                resource.split_profiles.CopyFrom(metadata.profiles)
         return resource
 
     @_read

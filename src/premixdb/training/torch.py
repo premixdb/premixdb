@@ -20,16 +20,23 @@ class _TorchState(TypedDict):
     resource: d.Dataset
     reader: RangeReader
     _pages: OrderedDict[int, tuple[d.Sequence, ...]]
+    _start: int
+    _stop: int
 
 
 class TorchDataset(Dataset[dict[str, torch.Tensor]]):
-    def __init__(self, resource: d.Dataset, reader: RangeReader) -> None:
+    def __init__(
+        self, resource: d.Dataset, reader: RangeReader, *, window: tuple[int, int] | None = None
+    ) -> None:
+        self._start, self._stop = (0, resource.profile.sequences) if window is None else window
+        if not 0 <= self._start <= self._stop <= resource.profile.sequences:
+            raise ValueError("sequence window is outside the dataset")
         self.resource = resource
         self.reader = reader
         self._pages: OrderedDict[int, tuple[d.Sequence, ...]] = OrderedDict()
 
     def __len__(self) -> int:
-        return self.resource.profile.sequences
+        return self._stop - self._start
 
     def _index(self, index: int) -> int:
         if type(index) is not int:
@@ -37,7 +44,7 @@ class TorchDataset(Dataset[dict[str, torch.Tensor]]):
         index = index + len(self) if index < 0 else index
         if not 0 <= index < len(self):
             raise IndexError("sequence index out of range")
-        return index
+        return self._start + index
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         return self.__getitems__([index])[0]
@@ -104,7 +111,13 @@ class TorchDataset(Dataset[dict[str, torch.Tensor]]):
         ]
 
     def __getstate__(self) -> _TorchState:
-        return _TorchState(resource=self.resource, reader=self.reader, _pages=OrderedDict())
+        return _TorchState(
+            resource=self.resource,
+            reader=self.reader,
+            _pages=OrderedDict(),
+            _start=self._start,
+            _stop=self._stop,
+        )
 
 
 def streaming_topology(
@@ -132,6 +145,7 @@ class StreamingDataset(IterableDataset[dict[str, torch.Tensor]]):
         resource: d.Dataset,
         reader: RangeReader,
         *,
+        window: tuple[int, int] | None = None,
         seed: int = 0,
         epoch: int = 0,
         rank: int | None = None,
@@ -140,7 +154,7 @@ class StreamingDataset(IterableDataset[dict[str, torch.Tensor]]):
         rank, world_size = streaming_topology(
             seed=seed, epoch=epoch, rank=rank, world_size=world_size
         )
-        self.data = TorchDataset(resource, reader)
+        self.data = TorchDataset(resource, reader, window=window)
         self.rank, self.world_size, self.seed, self.epoch = rank, world_size, seed, epoch
         self._seed = int.from_bytes(
             blake3(seed.to_bytes(8, "big") + epoch.to_bytes(8, "big")).digest()[:8], "big"
@@ -149,11 +163,16 @@ class StreamingDataset(IterableDataset[dict[str, torch.Tensor]]):
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         worker = get_worker_info()
         number, workers = (0, 1) if worker is None else (worker.id, worker.num_workers)
-        count = (len(self.data) + INDEX_PAGE_SIZE - 1) // INDEX_PAGE_SIZE
+        first_page = self.data._start // INDEX_PAGE_SIZE
+        count = (self.data._stop - 1) // INDEX_PAGE_SIZE - first_page + 1 if len(self.data) else 0
         first = self.rank + self.world_size * number
         for position in range(first, count, self.world_size * workers):
-            page = permutation(position, count, self._seed)
-            sequences = self.data._load_pages([page])[page]
+            page = first_page + permutation(position, count, self._seed)
+            sequences = tuple(
+                s
+                for s in self.data._load_pages([page])[page]
+                if self.data._start <= s.ordinal < self.data._stop
+            )
             order_seed = int.from_bytes(
                 blake3(self._seed.to_bytes(8, "big") + page.to_bytes(8, "big")).digest()[:8], "big"
             )

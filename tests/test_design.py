@@ -84,9 +84,13 @@ class CoreDesignTests(unittest.TestCase):
                     tokenizer=direct.ByteTokenizer(), sequence_length=7, packing=packing
                 )
                 dataset = query.mix(
-                    tokenizer=direct.ByteTokenizer(), sequence_length=7, packing=packing
+                    tokenizer=direct.ByteTokenizer(),
+                    sequence_length=7,
+                    packing=packing,
+                    splits=premixdb.Splits(train=1, validation=0, test=0),
                 )[0]
-                self.assertEqual(_decode_id(dataset.id).hex(), local_dataset.id)
+                # The persisted split policy participates in the SDK dataset identity.
+                self.assertNotEqual(_decode_id(dataset.id).hex(), local_dataset.id)
                 self.assertEqual([s.tokens for s in dataset], [s.tokens for s in local_dataset])
                 self.assertEqual([s.mask for s in dataset], [s.mask for s in local_dataset])
                 self.assertEqual(

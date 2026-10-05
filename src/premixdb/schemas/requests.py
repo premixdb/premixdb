@@ -305,10 +305,14 @@ def dataset(
     sequence_length: int = 2048,
     packing: datasets.Packing | Concat | None = None,
     sampling: datasets.Sampling | None = None,
+    splits: datasets.Splits | None = None,
     git_commit: bytes | str | None = None,
     request_id: str = "",
 ) -> datasets.CreateDatasetRequest:
     """Default to offline GPT-2 BPE, 2,048-token sequences, and a padded final sequence."""
+    from premixdb.schemas.splits import split_policy
+
+    splits = split_policy(splits) if splits is not None else None
     query_id = _id(query.id if isinstance(query, queries.Query) else query, 32)
     tokenizer = gpt2_tokenizer() if tokenizer is None else tokenizer
     from premixdb.engine.policies import ByteTokenizer, Concat
@@ -359,6 +363,7 @@ def dataset(
         packing=packing,
         sequence_length=_uint(sequence_length, 32, "sequence_length", positive=True),
         sampling=sampling,
+        splits=splits,
         git_commit=_commit(git_commit),
     )
 
@@ -368,6 +373,7 @@ def mix(
     *,
     domains: DomainInput | None = None,
     weights: Mapping[str, float] | RegMix | None = None,
+    splits: datasets.Splits | None = None,
     size: Tokens | None = None,
     tokens: int | None = None,
     tokenizer: datasets.Tokenizer | ByteTokenizer | None = None,
@@ -380,14 +386,16 @@ def mix(
     git_commit: bytes | str | None = None,
     request_id: str = "",
 ) -> datasets.CreateMixRequest:
-    """Describe lazy training compositions; defaults preserve every query occurrence.
+    """Describe lazy training compositions with default 80/10/10 content holdouts.
 
     weights accepts fixed proportions or a RegMix proposal policy. A token budget
     without weights samples at natural token proportions. No weights or budget
     preserves the query's existing order, without resampling.
     """
     from premixdb.engine.mixing import Bounds, RegMix, Tokens, _weights_message
+    from premixdb.schemas.splits import split_policy
 
+    splits = split_policy(splits)
     if size is not None:
         if not isinstance(size, Tokens):
             raise TypeError("size must be Tokens(count, tokenizer=...)")
@@ -455,6 +463,7 @@ def mix(
     return datasets.CreateMixRequest(
         request_id=request_id,
         query_id=template.query_id,
+        splits=splits,
         tokenizer=template.tokenizer,
         sequence_length=template.sequence_length,
         packing=template.packing,

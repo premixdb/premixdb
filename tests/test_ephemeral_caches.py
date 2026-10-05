@@ -373,7 +373,7 @@ def test_failed_projection_closes_the_partially_loaded_column(
         snapshot = db.Corpus("projection", [p.Source("a", "one"), p.Source("b", "two")])
         with patch.object(enrichment, "producer", ControlledFields):
             snapshot.query()._with_fields([p.quality.educational_value]).wait()
-        assert_closed(opened)
+        assert not opened  # Indexed profiling needs no temporary projected-value database.
         opened.clear()
         query = snapshot.query(
             sampling=p.sample(seed=3, documents=1, domains=p.quality.educational_value)

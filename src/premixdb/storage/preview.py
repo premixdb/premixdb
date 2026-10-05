@@ -167,6 +167,31 @@ def preview(catalog: Catalog, request: q.PreviewRequest) -> q.PreviewResponse:
         return result
     namespace = kind.removesuffix("_id")
     store = catalog._storage
+    if namespace == "query" and store.metadata.contains(
+        "query", identity, suffix=".indexed-selection-v1"
+    ):
+        from premixdb.storage.analytics import restore
+
+        assert isinstance(resource, q.Query)
+        handle = restore(catalog, resource)
+        payload_bytes = 0
+        for ordinal in range(offset, end):
+            row = handle.row(ordinal)
+            text, truncated = bounded_text(store, row, width)
+            item = result.preview.documents.add(
+                id=bytes.fromhex(row.id),
+                corpus_id=bytes.fromhex(row.corpus_id),
+                source_key=row.source_key,
+                ordinal=ordinal,
+                text=text,
+                truncated=truncated,
+            )
+            payload_bytes += item.ByteSize() + 6
+            if payload_bytes > 3 * 1024 * 1024:
+                raise ValueError(
+                    "preview exceeds the response limit; reduce limit or max_characters"
+                )
+        return result
     index = store.load(namespace, identity, d.DocumentIndex, suffix=".preview-index")
     if index.resource_id != identity or index.documents != count:
         raise ValueError("preview index belongs to a different resource")

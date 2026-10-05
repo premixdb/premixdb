@@ -244,8 +244,17 @@ class EnrichmentServiceTests(unittest.TestCase):
             query._proto.field_snapshot_ids[0],
             query._proto.snapshot_ids,
         )
-        path = Path(self.temp.name) / "field/objects" / manifest.shards[0].blake3_digest.hex()
+        from premixdb.internal import analytics_pb2 as a
+        from premixdb.storage.analytics import FIELD_SUFFIX
+
+        service = coordinator(self.client)
+        indexed = service._storage.load(
+            "field", build.snapshot.id, a.FieldIndex, suffix=FIELD_SUFFIX
+        )
+        ref = indexed.projections[0].blocks[0].values
+        path = Path(self.temp.name) / "index/objects" / ref.blake3_digest.hex()
         path.write_bytes(b"corrupt")
+        service._cache.namespace("analytical_columns").clear()
         with self.assertRaisesRegex(premixdb.ExecutionError, "integrity"):
             self.snapshot.query(steps=[where(language.en > 0.7)]).wait()
 

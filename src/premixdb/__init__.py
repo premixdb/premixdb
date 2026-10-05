@@ -8,6 +8,7 @@ from premixdb.api import (
     Corpus,
     DataMixture,
     Dataset,
+    DatasetSplit,
     PremixDB,
     Query,
     Snapshot,
@@ -71,6 +72,7 @@ from premixdb.v1.data_mixture_pb2 import (
     MixPreview,
     MixProfile,
     Sampling,
+    Splits,
     Tokenizer,
 )
 from premixdb.v1.field_pb2 import Field, FieldSnapshot
@@ -100,6 +102,8 @@ from premixdb.v1.storage_pb2 import Source as SourceSpec
 from premixdb.version import __version__
 
 __all__ = [
+    "DatasetSplit",
+    "Splits",
     "DecontaminateDefault",
     "SamplerDefault",
     "__version__",

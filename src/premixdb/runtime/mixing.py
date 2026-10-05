@@ -113,6 +113,10 @@ def validate_sampling(spec: datasets.Sampling) -> None:
 def validate_mix(spec: datasets.CreateMixRequest) -> None:
     reject_unknown(spec)
     validate_strata(spec.domains)
+    if spec.HasField("splits"):
+        from premixdb.schemas.splits import split_policy
+
+        split_policy(spec.splits)
     if not spec.HasField("seed") or not spec.HasField("replacement"):
         raise ValueError("mix requires seed and replacement")
     if not 1 <= spec.n_candidates <= MAX_CANDIDATES:

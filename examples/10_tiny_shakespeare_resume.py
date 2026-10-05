@@ -18,7 +18,7 @@ def main() -> None:
     with p.PremixDB(storage=STORAGE) as db:
         snapshot = db.Corpus("tutorial/tiny-shakespeare", tiny_sources(INPUT, LIMIT))
         dataset = snapshot.query().mix(sequence_length=64)[0]
-        data = dataset.torch()
+        data = dataset.train.torch()
         if not len(data):
             print("No sequences: provide nonempty text.")
             return
@@ -26,7 +26,7 @@ def main() -> None:
         print("Processed sequence:", 0, delivered["input_ids"][:8].tolist())
         # Save only after the trainer has consumed this sequence. Save model,
         # optimizer and RNG state alongside it in an actual training checkpoint.
-        saved = {"dataset": dataset.id, "next_index": 1}
+        saved = {"dataset": dataset.id, "split": "train", "next_index": 1}
         path = STORAGE / "tutorial-10-checkpoint.json"
         path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
         expected = data[1] if len(data) > 1 else None
@@ -35,7 +35,8 @@ def main() -> None:
         saved = json.loads(path.read_text(encoding="utf-8"))
         reopened = db.Corpus("tutorial/tiny-shakespeare").query().mix(sequence_length=64)[0]
         assert reopened.id == saved["dataset"]
-        data = reopened.torch()
+        assert saved["split"] == "train"
+        data = reopened.train.torch()
         ordinal = saved["next_index"]
         resumed = data[ordinal] if ordinal < len(data) else None
         if expected is None:

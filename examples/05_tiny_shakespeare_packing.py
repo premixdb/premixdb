@@ -22,7 +22,7 @@ def main() -> None:
             # Bytes use 0..255. Use 256 for boundaries and 257 for padding.
             packing=p.Concat(separator=256, drop_remainder=False, pad_token=257),
         )[0]
-        profile = dataset.profile()
+        profile = dataset.train.profile()
         print(
             "Content / separators / padding:",
             profile.content_tokens,
@@ -32,9 +32,9 @@ def main() -> None:
         if not profile.sequences:
             print("No sequences: provide nonempty text.")
             return
-        batch = next(iter(DataLoader(dataset.torch(), batch_size=2)))
+        batch = next(iter(DataLoader(dataset.train.torch(), batch_size=2)))
         print("Batch shapes:", {name: tuple(tensor.shape) for name, tensor in batch.items()})
-        tail = dataset.torch()[-1]
+        tail = dataset.train.torch()[-1]
         assert (tail["labels"][tail["attention_mask"] == 0] == -100).all()
         print("Padding labels are -100. Configure the model for this 258-token vocabulary.")
 

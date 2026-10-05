@@ -4,6 +4,7 @@ include src/_premixdb_build.py
 recursive-include src/premixdb/data *.txt *.json *.md
 recursive-include proto *.proto *.md
 include scripts/generate_protos.py
+include scripts/benchmark_query_profiles.py
 recursive-include tests *.py *.json
 recursive-include examples *.py *.md
 recursive-include docs *.md

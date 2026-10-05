@@ -46,6 +46,7 @@ def resolve_recipe(
         sequence_length=request.sequence_length or 2048,
         packing=request.packing if request.HasField("packing") else None,
         sampling=request.sampling if request.HasField("sampling") else None,
+        splits=request.splits if request.HasField("splits") else None,
         git_commit=code.commit,
     )
     if _lazy and spec.tokenizer.HasField("hugging_face"):
@@ -134,10 +135,15 @@ def mixture_pool(
             if selector.field_snapshot_id and selector.field_snapshot_id != pin:
                 raise ValueError("domain pin differs from its built-in recipe")
             selector.field_snapshot_id = pin
+    strata_digest = mixing.canonical_digest("mixture-strata", strata)
+    if spec.HasField("splits"):
+        strata_digest = blake3(
+            strata_digest + mixing.canonical_digest("splits", spec.splits)
+        ).digest()
     key = (
         spec.query_id,
         spec.tokenizer.definition_digest,
-        mixing.canonical_digest("mixture-strata", strata),
+        strata_digest,
         _runtime.current_code().canonical_digest(),
     )
     with coordinator._mix_pool_lock:
@@ -159,9 +165,27 @@ def mixture_pool(
                     )
                     for r in query
                 }
-            pool = MixturePool(
-                query, mixing.domains_name(strata), assignments, coordinator._tokenizer(spec)
-            )
+            field = mixing.domains_name(strata)
+            if spec.HasField("splits"):
+                from premixdb.runtime.split_datasets import partition
+
+                original = query
+                if not field and set(assignments) != {r.id for r in original}:
+                    raise ValueError("assignments must cover the query exactly")
+                labels = {
+                    r.id: r.corpus_id
+                    if field == "source.corpus_id"
+                    else r.source_key
+                    if field == "object.uri"
+                    else assignments[r.id]
+                    for r in original
+                }
+                query = partition(query, spec.splits, "train")
+                assignments = {r.id: labels[r.id] for r in query} if not field else {}
+            pool = MixturePool(query, field, assignments, coordinator._tokenizer(spec))
+            if spec.HasField("splits"):
+                for label in labels.values():
+                    pool._inventory.setdefault(label, 0)
             coordinator._owned_mix_pools.add(pool)
             coordinator._mix_pools[key] = pool
         return pool
@@ -198,6 +222,12 @@ def plan(coordinator: Coordinator, spec: datasets.CreateDatasetRequest) -> Datas
     if spec.HasField("sampling"):
         pool, args = coordinator._sampling(spec)
         identity = pool.identity(*args)
+    if spec.HasField("splits"):
+        identity = blake3(
+            b"premixdb-split-dataset/v1\0"
+            + bytes.fromhex(identity)
+            + mixing.canonical_digest("splits", spec.splits)
+        ).hexdigest()
     return DatasetPlan(
         identity,
         spec.tokenizer.definition_digest.hex(),
@@ -227,6 +257,10 @@ def packing_query(
 
 
 def build(coordinator: Coordinator, spec: datasets.CreateDatasetRequest) -> execution.Dataset:
+    if spec.HasField("splits"):
+        from premixdb.runtime import split_datasets
+
+        return split_datasets.build(coordinator, spec)
     if spec.HasField("sampling"):
         pool, args = coordinator._sampling(spec)
         return pool.dataset(*args, *coordinator._packing(spec), stream=True)
@@ -271,6 +305,16 @@ def profile(
         except KeyError:
             pass
         else:
+            coordinator._dataset_profiles[key] = profile
+            return copy_message(profile)
+        if spec.HasField("splits"):
+            from premixdb.runtime import split_datasets
+
+            profile, metadata = split_datasets.profiles(coordinator, spec)
+            coordinator._storage.save(
+                "dataset", coordinator._dataset_id(spec), metadata, suffix=".split-metadata"
+            )
+            coordinator._storage.save("dataset", key, profile, suffix=".profile")
             coordinator._dataset_profiles[key] = profile
             return copy_message(profile)
         planned = {}
@@ -349,6 +393,9 @@ def create(
                     profile=coordinator._profile_dataset(spec),
                 ),
             )
+            from premixdb.runtime.split_datasets import attach
+
+            attach(coordinator, result)
             spans, batches, preview = tokens.publish(
                 coordinator._storage,
                 handle,
