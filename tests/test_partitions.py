@@ -19,6 +19,7 @@ import pytest
 from _type_support import invalid_call
 from blake3 import blake3
 
+from premixdb.internal import transport_pb2 as t
 from premixdb.runtime.partitions import (
     CHUNK_SIZE,
     CONTROL_LIMIT,
@@ -32,6 +33,8 @@ from premixdb.runtime.partitions import (
     checked_receipt,
 )
 from premixdb.runtime.pipeline import PartitionPipeline
+from premixdb.schemas.binary import CODEC_VERSION, encode_value
+from premixdb.schemas.protobuf import wire
 from premixdb.storage import publication as _files
 
 
@@ -230,14 +233,16 @@ class PartitionTests(unittest.TestCase):
     def test_partition_rows_are_verified_before_being_exposed(self) -> None:
         pipeline = PartitionPipeline(self.store)
         self.addCleanup(pipeline.close)
-        data = json.dumps({"version": 1, "rows": [{"id": "original"}]}).encode()
+        result = t.WorkerResult(version=CODEC_VERSION)
+        result.features.rows.add().values["id"].CopyFrom(encode_value("original"))
+        data = wire(result)
         artifact = self.store.publish_bytes(self.task.output_uri, data)
-        self.assertEqual(list(pipeline.rows((artifact,))), [{"id": "original"}])
+        self.assertEqual(list(pipeline.results((artifact,), "features")), [result])
         self.output_path.write_bytes(
             json.dumps({"version": 1, "rows": [{"id": "changed"}]}).encode()
         )
         with self.assertRaisesRegex(IntegrityError, "checksum"):
-            next(pipeline.rows((artifact,)))
+            next(pipeline.results((artifact,), "features"))
 
     def test_reconciliation_failure_cancels_pending_tasks_with_a_live_traceback(self) -> None:
         pipeline = PartitionPipeline(self.store)

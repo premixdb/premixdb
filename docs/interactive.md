@@ -36,6 +36,10 @@ resources use saved preview indexes and bounded text reads.
 Long operations print status; pass `progress=False` to `PremixDB` to turn it off.
 For capture statistics alone, use `snapshot.profile()`.
 
+Press Ctrl-C to cancel a Hub snapshot capture and return to the prompt. Capture
+fails if the Hub reader produces no data for 60 seconds. A cancelled or failed
+capture keeps the corpus's last successful snapshot; rerun the capture to retry.
+
 ```bash
 premixdb --storage .premixdb corpora
 premixdb --storage .premixdb profile query QUERY_ID

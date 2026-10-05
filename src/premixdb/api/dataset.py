@@ -29,23 +29,10 @@ if TYPE_CHECKING:
 from premixdb.api.base import _Execution
 
 
-class Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
+class _Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
+    """Reading and training operations shared by full datasets and split views."""
+
     _split_name: str | None = None
-
-    @property
-    def train(self) -> DatasetSplit:
-        """Return the training split without materializing its parent."""
-        return DatasetSplit(self, "train")
-
-    @property
-    def validation(self) -> DatasetSplit:
-        """Return the fixed validation split without materializing its parent."""
-        return DatasetSplit(self, "validation")
-
-    @property
-    def test(self) -> DatasetSplit:
-        """Return the fixed test split without materializing its parent."""
-        return DatasetSplit(self, "test")
 
     @property
     def _window(self) -> tuple[int, int] | None:
@@ -201,7 +188,26 @@ class Dataset(_Execution[mix_pb.Dataset, mix_pb.CreateDatasetRequest]):
         return Reader(self, Topology() if topology is None else topology, checkpoint, seed)
 
 
-class DatasetSplit(Dataset):
+class Dataset(_Dataset):
+    """A packed dataset with optional training, validation, and test splits."""
+
+    @property
+    def train(self) -> DatasetSplit:
+        """Return the training split without materializing its parent."""
+        return DatasetSplit(self, "train")
+
+    @property
+    def validation(self) -> DatasetSplit:
+        """Return the fixed validation split without materializing its parent."""
+        return DatasetSplit(self, "validation")
+
+    @property
+    def test(self) -> DatasetSplit:
+        """Return the fixed test split without materializing its parent."""
+        return DatasetSplit(self, "test")
+
+
+class DatasetSplit(_Dataset):
     """A named immutable sequence view; storage and materialization belong to its parent."""
 
     def __init__(self, parent: Dataset, name: str) -> None:

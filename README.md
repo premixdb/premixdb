@@ -27,9 +27,9 @@ next(iter(DataLoader(dataset, batch_size=1)))
 ```
 
 ```
-{'input_ids': tensor([[45472, 10426,  1677,  ...,   475,   326,   314]]),
+{'input_ids': tensor([[45472, 10426,  1677,  ...,   475,   286,   477]]),
  'attention_mask': tensor([[1, 1, 1,  ..., 1, 1, 1]]),
- 'labels': tensor([[45472, 10426,  1677,  ...,   475,   326,   314]])}
+ 'labels': tensor([[45472, 10426,  1677,  ...,   475,   286,   477]])}
 ```
 
 ## Full example

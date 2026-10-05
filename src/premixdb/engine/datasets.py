@@ -13,7 +13,16 @@ from copy import deepcopy
 from itertools import accumulate, chain, islice, repeat
 from pathlib import Path
 from sys import byteorder
-from typing import TYPE_CHECKING, Generator, Iterable, Iterator, Literal, SupportsIndex, overload
+from typing import (
+    TYPE_CHECKING,
+    Generator,
+    Iterable,
+    Iterator,
+    Literal,
+    SupportsIndex,
+    cast,
+    overload,
+)
 
 from premixdb.contracts import Checkpoint, Interval
 from premixdb.engine.contracts import (
@@ -103,7 +112,7 @@ class HuggingFaceTokenizer:
     def encode(self, text: str) -> list[int]:
         if len(text.encode()) > self.max_document_bytes:
             raise NotImplementedError("tokenizer input exceeds whole-document limit")
-        return self._inner.encode(text, add_special_tokens=False).ids
+        return cast(list[int], self._inner.encode(text, add_special_tokens=False).ids)
 
     def encode_with_offsets(self, text: str) -> tuple[list[int], list[Interval]]:
         if len(text.encode()) > self.max_document_bytes:
@@ -113,13 +122,15 @@ class HuggingFaceTokenizer:
         for character in text:
             cursor += len(character.encode())
             boundaries.append(cursor)
-        return encoded.ids, [(boundaries[a], boundaries[b]) for a, b in encoded.offsets]
+        return cast(list[int], encoded.ids), [
+            (boundaries[a], boundaries[b]) for a, b in encoded.offsets
+        ]
 
     def token_to_id(self, token: str) -> int | None:
-        return self._inner.token_to_id(token)
+        return cast(int | None, self._inner.token_to_id(token))
 
     def decode(self, tokens: list[int]) -> str:
-        return self._inner.decode(tokens, skip_special_tokens=False)
+        return cast(str, self._inner.decode(tokens, skip_special_tokens=False))
 
 
 class TokenList(list[int]):

@@ -13,7 +13,8 @@ dependencies = [
     "blake3>=1.0.10",
     "packaging>=24",
     "ipython>=9.17.1,<10",
-    "tokenizers>=0.23.1,<0.24",
+    "tokenizers>=0.22,<0.23.1; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "tokenizers>=0.23.1,<0.24; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # Stats and language detection use these parts of DataTrove. Its full
     # processing extra also installs NLTK, which has an unpatched advisory.
     "datatrove==0.3.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
@@ -29,7 +30,10 @@ dependencies = [
     "marin-dupekit==0.1.1",
     "pyarrow>=18,<24",
     "pyroaring>=1.2,<2",
-    "transformers>=5.10,<6",
+    # Intel macOS has no PyTorch wheels newer than 2.2.2. Transformers 5
+    # disables that backend, so keep this platform on the compatible 4.x line.
+    "transformers==4.57.6; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "transformers>=5.10,<6; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "sentence-transformers>=5.7,<6",
     "torch>=2.2,<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "torch>=2.5,<3; sys_platform != 'darwin' or platform_machine != 'x86_64'",

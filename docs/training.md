@@ -57,6 +57,9 @@ ranges. They support indexing, iteration, profiles, previews, and PyTorch adapte
 training alone. `dataset.torch()` reads the combined dataset, so use
 `dataset.train.torch()` for training.
 
+Split selectors belong to the full dataset. If `dd = dataset.validation`, use
+`dd.torch()` for validation batches and `dataset.train.torch()` for training batches.
+
 ```python
 fixed = query.mix(
     domains=p.object.uri,

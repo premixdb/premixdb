@@ -16,25 +16,8 @@ def capture(
         for key, reference in sorted(source.manifest.objects.items()):
             yield key, read(reference, local_root=local_root).decode("utf-8")
     elif source.HasField("hugging_face"):
-        from datasets import load_dataset
+        from premixdb.runtime.hub_capture import capture as hub_capture
 
-        policy = source.hugging_face
-        dataset = load_dataset(
-            policy.repository,
-            policy.configuration or None,
-            split=policy.split,
-            revision=policy.revision,
-            streaming=True,
-        )
-        seen = set()
-        for ordinal, row in enumerate(dataset):
-            text = row.get(policy.text_column or "text")
-            if not isinstance(text, str):
-                raise ValueError("dataset text column must contain strings")
-            key = str(row[policy.key_column]) if policy.key_column else str(ordinal)
-            if key in seen:
-                raise ValueError("duplicate dataset row key")
-            seen.add(key)
-            yield f"hf://{policy.repository}/{policy.configuration}/{policy.split}/{key}", text
+        yield from hub_capture(source)
     else:
         raise ValueError("unsupported source")

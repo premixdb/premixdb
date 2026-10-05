@@ -149,9 +149,11 @@ def _operation[Request: _CreateRequest, Response: _CreateResponse, **P](
                 event, resource_id=resource_id, cache_hit=cache_hit
             )
             return result
-        except Exception as error:
+        except BaseException as error:
             if event is not None:
-                self._storage.metadata.end_execution(event, error=str(error))
+                self._storage.metadata.end_execution(
+                    event, error=str(error) or type(error).__name__
+                )
             raise
 
     return call
@@ -389,15 +391,18 @@ class Coordinator(Catalog):
                 self._snapshot(request.parent_snapshot_id) if request.parent_snapshot_id else None
             )
             texts, files = self._sources(request.source)
-            if request.source.HasField("limit"):
-                from itertools import islice
+            with ExitStack() as sources:
+                if isinstance(texts, Generator):
+                    sources.callback(texts.close)
+                if request.source.HasField("limit"):
+                    from itertools import islice
 
-                limit = request.source.limit
-                texts = list(islice(texts, limit))
-                files = files[: max(0, limit - len(texts))]
-            handle = self._store.capture_inputs(
-                request.corpus_id.hex(), texts, files, code, base, stream=True
-            )
+                    limit = request.source.limit
+                    texts = list(islice(texts, limit))
+                    files = files[: max(0, limit - len(texts))]
+                handle = self._store.capture_inputs(
+                    request.corpus_id.hex(), texts, files, code, base, stream=True
+                )
             id = bytes.fromhex(handle.id)
             with self._lock:
                 self._snapshot_handles[id] = handle

@@ -19,7 +19,7 @@ from premixdb.contracts import JSON, FieldValue
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.internal import derivation_pb2 as d
-from premixdb.runtime import enrichment
+from premixdb.runtime import enrichment, hub_capture
 from premixdb.v1 import field_pb2 as f
 from premixdb.v1 import query_pb2 as q
 
@@ -108,6 +108,7 @@ class ReadmeWorkflows(unittest.TestCase):
         api.dataset_info.return_value = SimpleNamespace(sha="a" * 40)
         with (
             patch("huggingface_hub.HfApi", return_value=api),
+            patch.object(hub_capture, "capture", side_effect=hub_capture._rows),
             patch("datasets.load_dataset", side_effect=lambda *args, **kwargs: rows()) as load,
         ):
             snapshot = self.db.Corpus("c4", source=p.HuggingFaceSource("allenai", "c4"), limit=2)
@@ -372,6 +373,7 @@ def test_actual_readme_python_blocks_execute_in_order(
     with (
         p.PremixDB() as bootstrap,
         patch("huggingface_hub.HfApi", return_value=api),
+        patch.object(hub_capture, "capture", side_effect=hub_capture._rows),
         patch("datasets.load_dataset", side_effect=hub_rows) as load,
         patch.object(
             enrichment,

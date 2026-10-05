@@ -1,0 +1,134 @@
+syntax = "proto3";
+package premixdb.internal;
+
+import "premixdb/internal/derivation.proto";
+import "premixdb/v1/data_mixture.proto";
+
+// Private physical codecs. They do not redefine durable or logical identities.
+message NumericTokens {
+  repeated uint32 tokens = 1;
+  repeated uint32 interval_offsets = 2;
+  repeated uint64 starts = 3;
+  repeated uint64 ends = 4;
+}
+message ByteTokens {
+  bytes tokens = 1;
+  repeated uint64 starts = 2;
+  repeated uint64 ends = 3;
+}
+message PackedTokens {
+  uint32 version = 1;
+  oneof representation {
+    NumericTokens numeric = 2;
+    ByteTokens byte = 3;
+  }
+}
+
+// FieldValue supplies the common scalar and packed float64 vector cases.
+// The extensions retain unsigned/large integers and heterogeneous scalar lists.
+message TransportValue {
+  oneof value {
+    FieldValue field = 1;
+    uint64 unsigned = 2;
+    string big_integer = 3;
+    ScalarValues scalars = 4;
+  }
+}
+message ScalarValues { repeated TransportValue values = 1; }
+message InputRow {
+  string id = 1;
+  string text = 2;
+  uint64 ordinal = 3;
+  repeated ByteRange ranges = 4;
+}
+message FeatureInput {
+  string id = 1;
+  string text = 2;
+  optional string url = 3;
+}
+message FeatureRequest {
+  EnrichmentProducer producer = 1;
+  bytes definition = 2; // Existing canonical metadata JSON, not bulk rows.
+  repeated FeatureInput rows = 3;
+}
+message TokenRequest {
+  premixdb.v1.Tokenizer tokenizer = 1;
+  repeated InputRow rows = 2;
+}
+message EvidenceRequest {
+  uint32 algorithm = 1;
+  uint32 n = 2;
+  repeated InputRow rows = 3;
+}
+message PackingRequest {
+  uint64 first = 1;
+  uint32 length = 2;
+  uint64 sequences = 3;
+  uint64 total_sequences = 4;
+  optional uint32 separator = 5;
+  optional uint32 padding = 6;
+  repeated uint64 prefixes = 7;
+}
+message WorkerRequest {
+  uint32 version = 1;
+  oneof request {
+    FeatureRequest features = 2;
+    TokenRequest tokenize = 3;
+    EvidenceRequest evidence = 4;
+    PackingRequest pack = 5;
+  }
+}
+message TokenRow {
+  string id = 1;
+  uint64 ordinal = 2;
+  PackedTokens encoding = 3;
+}
+message TokenRows { repeated TokenRow rows = 1; }
+message FeatureRow { map<string, TransportValue> values = 1; }
+message FeatureRows { repeated FeatureRow rows = 1; }
+message UInt64Values { repeated uint64 values = 1; }
+message IndexRow {
+  string id = 1;
+  bytes exact_hash = 2;
+  // Message presence distinguishes null from an empty list.
+  UInt64Values minhash = 3;
+  UInt64Values lsh_buckets = 4;
+}
+message IndexRows { repeated IndexRow rows = 1; }
+message EvidenceRow {
+  string id = 1;
+  uint64 start = 2;
+  uint64 end = 3;
+  bytes value = 4;
+}
+message EvidenceRows { repeated EvidenceRow rows = 1; }
+message PackedSpan {
+  uint32 start = 1;
+  uint32 end = 2;
+  string kind = 3;
+  optional uint64 occurrence = 4;
+  optional uint64 offset = 5;
+}
+message TokenRange {
+  uint32 token = 1;
+  uint64 occurrence = 2;
+  uint64 start = 3;
+  uint64 end = 4;
+}
+message PackedRow {
+  uint64 ordinal = 1;
+  repeated uint32 tokens = 2;
+  repeated PackedSpan spans = 3;
+  repeated TokenRange alignment = 4;
+}
+message PackedRows { repeated PackedRow rows = 1; }
+message WorkerResult {
+  uint32 version = 1;
+  oneof result {
+    FeatureRows features = 2;
+    TokenRows tokenize = 3;
+    EvidenceRows evidence = 4;
+    PackedRows pack = 5;
+    IndexRows indexes = 6;
+  }
+}

@@ -1,7 +1,5 @@
 """Partition planning reads captured text once and retains only admitted artifacts."""
 
-import base64
-import json
 import tracemalloc
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
@@ -10,13 +8,16 @@ from unittest.mock import patch
 import pytest
 from blake3 import blake3
 
-from premixdb.contracts import JSON
 from premixdb.engine.identity import CodeVersion
 from premixdb.engine.snapshots import Snapshot, Store, StoredDocument
 from premixdb.enrichment.types import Document
 from premixdb.internal import derivation_pb2 as e
+from premixdb.internal import transport_pb2 as t
+from premixdb.runtime.partition_types import request as read_request
 from premixdb.runtime.partitions import Artifact, Kernel, PartitionStore, PartitionTask
 from premixdb.runtime.pipeline import PartitionPipeline
+from premixdb.schemas.binary import CODEC_VERSION
+from premixdb.schemas.protobuf import wire
 
 
 @pytest.mark.parametrize(
@@ -39,7 +40,9 @@ def test_map_reads_each_captured_frame_once(tmp_path: Path, kernel: Kernel) -> N
         tasks.extend(values)
         return ()
 
-    options: dict[str, JSON] = {"tokenizer": ""} if kernel == Kernel.TOKENIZE else {"algorithm": 1}
+    options = t.TokenRequest() if kernel == Kernel.TOKENIZE else t.EvidenceRequest(algorithm=1)
+    if isinstance(options, t.TokenRequest):
+        options.tokenizer.byte.SetInParent()
     try:
         with (
             patch.object(pipeline, "_execute", side_effect=admit),
@@ -48,8 +51,12 @@ def test_map_reads_each_captured_frame_once(tmp_path: Path, kernel: Kernel) -> N
             pipeline._map(kernel, documents, options)
         assert read.call_count == frames
         assert len(tasks) == 1
-        request = json.loads(pipeline.storage.read(tasks[0].inputs[0]))
-        assert [(row["text"], row["ranges"]) for row in request["rows"]] == [
+        request = read_request(
+            pipeline.storage.read(tasks[0].inputs[0]),
+            "tokenize" if kernel == Kernel.TOKENIZE else "evidence",
+        )
+        rows = request.tokenize.rows if kernel == Kernel.TOKENIZE else request.evidence.rows
+        assert [(row.text, [[r.start, r.end] for r in row.ranges]) for row in rows] == [
             (text, [[0, len(text.encode())]]) for _, text in sorted(sources)
         ]
     finally:
@@ -82,18 +89,15 @@ def test_feature_planning_retains_artifacts_instead_of_all_cohort_text(tmp_path:
             tracemalloc.stop()
         assert peak < 2_000_000
         assert len(tasks) == count
-        producer = base64.b64encode(policy.SerializeToString(deterministic=True)).decode()
         for i, task in enumerate(tasks):
-            request = dict(
-                version=1,
-                producer=producer,
-                definition=definition.decode(),
-                rows=[
-                    dict(id=f"{i}-{j}", text=f"{i}-{j}:" + "x" * 100_000, url=None)
-                    for j in range(i % 3)
-                ],
+            request = t.WorkerRequest(version=CODEC_VERSION)
+            request.features.producer.CopyFrom(policy)
+            request.features.definition = definition
+            request.features.rows.extend(
+                t.FeatureInput(id=f"{i}-{j}", text=f"{i}-{j}:" + "x" * 100_000)
+                for j in range(i % 3)
             )
-            data = json.dumps(request, separators=(",", ":")).encode()
+            data = wire(request)
             assert pipeline.storage.read(task.inputs[0]) == data
             expected = blake3(
                 b"premixdb-features/v1\0"

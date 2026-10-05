@@ -13,11 +13,11 @@ from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import status_pb2 as d_status
 
 if TYPE_CHECKING:
-    from premixdb.api import Dataset
+    from premixdb.api.dataset import _Dataset
 
 
 def preview(
-    dataset: Dataset, *, limit: int, offset: int, max_characters: int
+    dataset: _Dataset, *, limit: int, offset: int, max_characters: int
 ) -> list[PreviewSequence]:
     limit, offset, width = _requests._preview_options(
         limit, offset, max_characters, unit="sequences"

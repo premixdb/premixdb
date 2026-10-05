@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, cast
 from unittest.mock import patch
@@ -142,8 +144,9 @@ class ModelTests(unittest.TestCase):
     def test_quality_runs_with_installed_transformers_without_model_downloads(self) -> None:
         from transformers.utils import is_torch_available
 
-        if not is_torch_available():
-            self.skipTest("model inference requires PyTorch >=2.5")
+        self.assertTrue(
+            is_torch_available(), "installed Transformers must support installed PyTorch"
+        )
         from transformers import BertConfig, BertForSequenceClassification
 
         config = BertConfig(
@@ -194,6 +197,43 @@ class ModelTests(unittest.TestCase):
             )
             no_url.compute([Document("a", "plain text")])
             self.assertEqual(calls[-1], "plain text")
+
+    def test_content_type_query_runs_with_installed_pytorch(self) -> None:
+        import torch
+        from transformers import BertConfig, BertForSequenceClassification, PreTrainedTokenizerFast
+
+        import premixdb as p
+        from premixdb.enrichment.models import _sequence_model
+
+        classes = tuple(label.value for label in p.ContentType)
+        config = BertConfig(
+            vocab_size=5,
+            hidden_size=8,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            intermediate_size=16,
+            pad_token_id=2,
+            id2label=dict(enumerate(classes)),
+            label2id={label: i for i, label in enumerate(classes)},
+        )
+        model = BertForSequenceClassification(config).eval()
+        with torch.no_grad():
+            model.classifier.weight.zero_()
+            model.classifier.bias.zero_()
+            model.classifier.bias[classes.index(p.ContentType.LISTICLE.value)] = 10
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model.save_pretrained(root / "model", safe_serialization=True)
+            cast(PreTrainedTokenizerFast, classifier_tokenizer()).save_pretrained(root / "model")
+            pair = _sequence_model(ModelPin(str(root / "model"), REVISION), "cpu")
+            with (
+                patch("premixdb.enrichment.models._sequence_model", return_value=pair),
+                p.PremixDB(storage=root / "db") as db,
+            ):
+                db.Corpus("demo", [p.Source("a", "1 3"), p.Source("b", "3 1")])
+                query = db.Corpus("demo").query(steps=[p.where(p.content_type.listicle >= 0.5)])
+                self.assertEqual(query.profile().output_documents, 2)
+                self.assertEqual({row["source_key"] for row in query.preview()}, {"a", "b"})
 
     def test_embedding_document_and_query_prompts(self) -> None:
         calls = []

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import ExitStack
 from threading import RLock
 from typing import TYPE_CHECKING
 
-from premixdb.contracts import checked_record, load_json
-from premixdb.engine.contracts import EncodedTokens
 from premixdb.engine.spill import _database
-from premixdb.engine.token_codec import decode_tokens, encode_tokens
+from premixdb.engine.token_codec import dump_tokens, load_tokens
 
 if TYPE_CHECKING:
     from premixdb.engine.datasets import ByteTokens, HuggingFaceTokenizer, TokenList
@@ -50,7 +47,7 @@ class TokenCache:
             )
 
     def __setitem__(self, identity: str, tokens: ByteTokens | TokenList) -> None:
-        data = json.dumps(encode_tokens(tokens), separators=(",", ":")).encode()
+        data = dump_tokens(tokens)
         with self.lock:
             self.database.execute(
                 "INSERT INTO tokens VALUES (?,?,?)", (identity, len(tokens), data)
@@ -72,7 +69,7 @@ class TokenCache:
             ).fetchone()
         if row is None:
             raise KeyError(identity)
-        return decode_tokens(checked_record(load_json(row[0]), EncodedTokens))
+        return load_tokens(row[0])
 
     def close(self) -> None:
         """Release temporary storage; repeated calls are safe."""

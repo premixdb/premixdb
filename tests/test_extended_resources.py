@@ -23,7 +23,7 @@ from premixdb.engine.snapshots import StoredDocument
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.internal import derivation_pb2 as e
-from premixdb.runtime import enrichment
+from premixdb.runtime import enrichment, hub_capture
 from premixdb.schemas.ids import _decode_id
 from premixdb.training.reader import permutation
 from premixdb.v1 import data_mixture_pb2 as dataset_pb
@@ -339,10 +339,13 @@ class ExtendedResourceTests(unittest.TestCase):
             )
 
     def test_huggingface_capture_pins_revision_and_row_keys(self) -> None:
-        with patch(
-            "datasets.load_dataset",
-            return_value=[{"key": "a", "text": "one"}, {"key": "b", "text": "two"}],
-        ) as load:
+        with (
+            patch.object(hub_capture, "capture", side_effect=hub_capture._rows),
+            patch(
+                "datasets.load_dataset",
+                return_value=[{"key": "a", "text": "one"}, {"key": "b", "text": "two"}],
+            ) as load,
+        ):
             snapshot = self.client.Corpus(
                 "hub",
                 p.HuggingFaceDataset(
@@ -351,9 +354,12 @@ class ExtendedResourceTests(unittest.TestCase):
             )
             self.assertEqual(snapshot.profile().documents, 2)
             self.assertEqual(load.call_args.kwargs["revision"], "a" * 40)
-        with patch(
-            "datasets.load_dataset",
-            return_value=[{"key": "a", "text": "one"}, {"key": "a", "text": "two"}],
+        with (
+            patch.object(hub_capture, "capture", side_effect=hub_capture._rows),
+            patch(
+                "datasets.load_dataset",
+                return_value=[{"key": "a", "text": "one"}, {"key": "a", "text": "two"}],
+            ),
         ):
             with self.assertRaises(Exception):
                 self.client.Corpus(

@@ -6,7 +6,6 @@ The coordinator reconciles coverage and publishes the final public resource.
 
 from __future__ import annotations
 
-import base64
 import json
 import platform
 import time
@@ -17,14 +16,14 @@ from contextlib import closing
 from itertools import islice
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Callable, ContextManager, Generator, Iterable, Iterator, Mapping
+from typing import Callable, ContextManager, Generator, Iterable, Iterator
 from typing import Sequence as SequenceABC
 from urllib.parse import unquote, urlsplit
 
 from blake3 import blake3
 
-from premixdb.contracts import JSON, checked_record, field_value, json_list, json_object, load_json
-from premixdb.engine.contracts import Occurrence, Span
+from premixdb.contracts import checked_record
+from premixdb.engine.contracts import Occurrence
 from premixdb.engine.curation import RetainedDocument, SelectedDocument, units
 from premixdb.engine.datasets import (
     ByteTokens,
@@ -37,23 +36,16 @@ from premixdb.engine.datasets import (
 from premixdb.engine.queries import CorpusIndex, Query, Row
 from premixdb.engine.snapshots import Document
 from premixdb.engine.spill import Group, ReferenceLookup, evidence_groups
-from premixdb.engine.token_codec import byte_interval, decode_tokens, encode_tokens, token_length
+from premixdb.engine.token_codec import packed_length, packed_tokens, unpack_tokens
 from premixdb.enrichment.types import ComputedRow
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.internal import derivation_pb2 as e
+from premixdb.internal import transport_pb2 as t
 from premixdb.runtime import environment as _runtime
 from premixdb.runtime.enrichment import DedupeRow, Worker
-from premixdb.runtime.partition_types import (
-    EvidenceRequest,
-    EvidenceRow,
-    FeatureRequest,
-    IndexRow,
-    InputRow,
-    PackedRow,
-    PackingRequest,
-    TokenRequest,
-    TokenRow,
-)
+from premixdb.runtime.partition_types import alignment, spans
+from premixdb.runtime.partition_types import request as read_request
+from premixdb.runtime.partition_types import result as read_result
 from premixdb.runtime.partitions import (
     Artifact,
     Kernel,
@@ -63,6 +55,8 @@ from premixdb.runtime.partitions import (
     Receipt,
     checked_receipt,
 )
+from premixdb.schemas.binary import CODEC_VERSION, decode_value, encode_value, known
+from premixdb.schemas.protobuf import wire
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 
@@ -95,7 +89,7 @@ def execute_tasks(
 
 def engine_digest() -> bytes:
     root = Path(__file__).resolve().parents[1]
-    digest = blake3(b"premixdb-partition-engine/v1\0")
+    digest = blake3(b"premixdb-partition-engine/v1\0" + CODEC_VERSION.to_bytes(4, "big"))
     for path in sorted(root.rglob("*.py")):
         digest.update(str(path.relative_to(root)).encode())
         digest.update(path.read_bytes())
@@ -117,28 +111,30 @@ def processor(task: PartitionTask, inputs: tuple[Path, ...], output: Path) -> No
         and len(inputs) not in ((1, 2) if task.kernel == Kernel.TOKENIZE else (1,))
     ):
         raise ValueError("invalid partition inputs")
-    raw = json_object(load_json(inputs[0].read_bytes()))
-    if raw.get("version") != 1:
-        raise ValueError("unsupported partition request")
+    kind = (
+        "evidence"
+        if task.kernel in (Kernel.DEDUPE_INDEX, Kernel.DECONTAMINATION_INDEX)
+        else task.kernel.value
+    )
+    raw = read_request(inputs[0].read_bytes(), kind)
+    result = t.WorkerResult(version=CODEC_VERSION)
     if task.kernel == Kernel.FEATURES:
-        from premixdb.internal import derivation_pb2 as e
         from premixdb.runtime.enrichment import producer
 
-        feature_request = checked_record(raw, FeatureRequest)
-        encoded = base64.b64decode(feature_request["producer"])
+        feature_request = raw.features
+        encoded = wire(feature_request.producer)
         worker = _FEATURE_WORKERS.get(encoded)
         if worker is None:
-            policy = e.EnrichmentProducer()
-            policy.ParseFromString(encoded)
-            worker = producer(policy)
+            worker = producer(feature_request.producer)
             _FEATURE_WORKERS[encoded] = worker
         definition = json.dumps(
             worker.definition, sort_keys=True, separators=(",", ":"), allow_nan=False
         )
-        if definition != feature_request["definition"]:
+        if definition.encode() != feature_request.definition:
             raise ValueError("partition producer differs from its admitted definition")
         documents = [
-            FeatureDocument(r["id"], r["text"], r.get("url")) for r in feature_request["rows"]
+            FeatureDocument(r.id, r.text, r.url if r.HasField("url") else None)
+            for r in feature_request.rows
         ]
         from premixdb.enrichment.dupekit import DupekitIndex
 
@@ -146,44 +142,49 @@ def processor(task: PartitionTask, inputs: tuple[Path, ...], output: Path) -> No
             index_values = [
                 checked_record(row, DedupeRow) for row in worker.compute(documents).to_pylist()
             ]
-            wire_values: list[IndexRow] = [
-                dict(
-                    id=row["id"],
-                    exact_hash=base64.b64encode(row["exact_hash"]).decode(),
-                    minhash=row["minhash"],
-                    lsh_buckets=row["lsh_buckets"],
-                )
-                for row in index_values
-            ]
-            result = dict(version=1, rows=wire_values)
+            result.indexes.SetInParent()
+            for row in index_values:
+                target = result.indexes.rows.add(id=row["id"], exact_hash=row["exact_hash"])
+                if len(target.exact_hash) != 32:
+                    raise ValueError("invalid dedupe digest")
+                for name in ("minhash", "lsh_buckets"):
+                    values = row[name]
+                    if values is not None:
+                        column = getattr(target, name)
+                        column.SetInParent()
+                        column.values.extend(values)
         else:
-            result = dict(version=1, rows=worker.compute(documents))
+            result.features.SetInParent()
+            for row in worker.compute(documents):
+                target = result.features.rows.add()
+                for key, value in row.items():
+                    target.values[key].CopyFrom(encode_value(value))
     elif task.kernel == Kernel.PACK:
-        request = checked_record(raw, PackingRequest)
-        first, length = request["first"], request["length"]
-        low, high = first * length, (first + request["sequences"]) * length
-        packed: dict[int, PackedRow] = {}
+        request = raw.pack
+        first, length = request.first, request.length
+        low, high = first * length, (first + request.sequences) * length
+        packed: dict[int, t.PackedRow] = {}
 
-        def packed_sequence(ordinal: int) -> PackedRow:
+        def packed_sequence(ordinal: int) -> t.PackedRow:
             sequence = packed.get(ordinal)
             if sequence is None:
-                sequence = packed[ordinal] = PackedRow(
-                    ordinal=ordinal, tokens=[], spans=[], alignment=[]
-                )
+                sequence = packed[ordinal] = t.PackedRow(ordinal=ordinal)
             return sequence
 
-        for path, prefix in zip(inputs[1:], request["prefixes"], strict=True):
-            content = json_object(load_json(path.read_bytes()))
+        for path, prefix in zip(inputs[1:], request.prefixes, strict=True):
+            content = read_result(path.read_bytes(), "tokenize")
             cursor = prefix
-            for raw_row in json_list(content["rows"]):
-                row = checked_record(raw_row, TokenRow)
-                decoded = decode_tokens(row)
+            for row in content.tokenize.rows:
+                known(row)
+                if not row.id:
+                    raise ValueError("missing token document identity")
+                decoded = unpack_tokens(row.encoding)
                 token_count = len(decoded)
                 for start, end, kind in (
                     (cursor, cursor + token_count, "content"),
                     (
                         cursor + token_count,
-                        cursor + token_count + (request["separator"] is not None),
+                        cursor + token_count + request.HasField("separator"),
                         "separator",
                     ),
                 ):
@@ -196,43 +197,44 @@ def processor(task: PartitionTask, inputs: tuple[Path, ...], output: Path) -> No
                         offset = left - start
                         if kind == "content":
                             tokens = decoded[offset : offset + take]
-                            sequence["alignment"].extend(
-                                dict(token=begin + i, occurrence=row["ordinal"], start=a, end=b)
+                            sequence.alignment.extend(
+                                t.TokenRange(
+                                    token=begin + i, occurrence=row.ordinal, start=a, end=b
+                                )
                                 for i, ranges in enumerate(tokens.ranges)
                                 for a, b in ranges
                             )
                         else:
-                            separator = request["separator"]
-                            assert separator is not None
+                            separator = request.separator
                             tokens = [separator]
-                        span: Span = Span(
+                        span = t.PackedSpan(
                             start=begin,
                             end=begin + take,
                             kind="content" if kind == "content" else "separator",
-                            occurrence=row["ordinal"],
+                            occurrence=row.ordinal,
                         )
                         if kind == "content":
-                            span["offset"] = offset
-                        sequence["spans"].append(span)
-                        sequence["tokens"].extend(tokens)
+                            span.offset = offset
+                        sequence.spans.append(span)
+                        sequence.tokens.extend(tokens)
                         left += take
-                cursor += token_count + (request["separator"] is not None)
-        for ordinal in range(first, first + request["sequences"]):
+                cursor += token_count + request.HasField("separator")
+        for ordinal in range(first, first + request.sequences):
             sequence = packed_sequence(ordinal)
-            missing = length - len(sequence["tokens"])
+            missing = length - len(sequence.tokens)
             if missing:
-                if request["padding"] is None or ordinal != request["total_sequences"] - 1:
+                if not request.HasField("padding") or ordinal != request.total_sequences - 1:
                     raise ValueError("packing partition omitted tokens")
-                sequence["spans"].append(
-                    dict(start=len(sequence["tokens"]), end=length, kind="padding")
+                sequence.spans.append(
+                    t.PackedSpan(start=len(sequence.tokens), end=length, kind="padding")
                 )
-                sequence["tokens"].extend([request["padding"]] * missing)
-        result = dict(version=1, rows=[packed[i] for i in sorted(packed)])
+                sequence.tokens.extend([request.padding] * missing)
+        result.pack.SetInParent()
+        result.pack.rows.extend(packed[i] for i in sorted(packed))
     elif task.kernel == Kernel.TOKENIZE:
-        token_request = checked_record(raw, TokenRequest)
+        token_request = raw.tokenize
         tokenizer = None
-        policy = d.Tokenizer()
-        policy.ParseFromString(base64.b64decode(token_request["tokenizer"]))
+        policy = token_request.tokenizer
         if policy.HasField("hugging_face"):
             from premixdb.engine.datasets import HuggingFaceTokenizer
             from premixdb.runtime.assets import read
@@ -245,37 +247,29 @@ def processor(task: PartitionTask, inputs: tuple[Path, ...], output: Path) -> No
             tokenizer = HuggingFaceTokenizer.from_bytes(
                 data, asset.asset.blake3_digest.hex(), asset.max_document_bytes
             )
-        token_rows: list[TokenRow] = []
-        for row in token_request["rows"]:
-            document = Document("0" * 32, row["id"], row["text"])
-            ranges = tuple(byte_interval(pair) for pair in row["ranges"])
-            retained = RetainedDocument(document, row["text"], ranges)
-            tokens = encoded_tokens(Row(row["ordinal"], retained), tokenizer)
-            token_rows.append(dict(id=row["id"], ordinal=row["ordinal"], **encode_tokens(tokens)))
-        result = dict(version=1, rows=token_rows)
+        result.tokenize.SetInParent()
+        for row in token_request.rows:
+            document = Document("0" * 32, row.id, row.text)
+            ranges = tuple((r.start, r.end) for r in row.ranges)
+            retained = RetainedDocument(document, row.text, ranges)
+            tokens = encoded_tokens(Row(row.ordinal, retained), tokenizer)
+            target = result.tokenize.rows.add(id=row.id, ordinal=row.ordinal)
+            target.encoding.CopyFrom(packed_tokens(tokens))
     elif task.kernel in (Kernel.DEDUPE_INDEX, Kernel.DECONTAMINATION_INDEX):
         from premixdb.engine.spill import unit_key
 
-        evidence_request = checked_record(raw, EvidenceRequest)
-        evidence_rows: list[EvidenceRow] = []
-        for row in evidence_request["rows"]:
+        evidence_request = raw.evidence
+        result.evidence.SetInParent()
+        for row in evidence_request.rows:
             for value, start, end in units(
-                Document("0" * 32, row["id"], row["text"]),
-                evidence_request["algorithm"],
-                evidence_request.get("n", 0),
+                Document("0" * 32, row.id, row.text),
+                evidence_request.algorithm,
+                evidence_request.n,
             ):
-                evidence_rows.append(
-                    dict(
-                        id=row["id"],
-                        start=start,
-                        end=end,
-                        value=base64.b64encode(unit_key(value)).decode(),
-                    )
-                )
-        result = dict(version=1, rows=evidence_rows)
+                result.evidence.rows.add(id=row.id, start=start, end=end, value=unit_key(value))
     else:
         raise ValueError("kernel is not admitted by this worker")
-    output.write_text(json.dumps(result, separators=(",", ":")))
+    output.write_bytes(wire(result))
 
 
 _PROCESS_WORKER: PartitionWorker | None = None
@@ -333,18 +327,28 @@ class PartitionPipeline:
         self,
         kernel: Kernel,
         documents: Iterable[Row | SelectedDocument],
-        options: Mapping[str, JSON],
+        options: t.TokenRequest | t.EvidenceRequest,
         additional_inputs: tuple[Artifact, ...] = (),
     ) -> tuple[Artifact, ...]:
         tasks: list[tuple[bytes, Artifact]] = []
-        batch: list[InputRow] = []
-        size = 0
+        batch: list[t.InputRow] = []
+        overhead = options.ByteSize() + 16
+        size = overhead
 
         def flush() -> None:
             nonlocal size
-            payload: dict[str, object] = dict(version=1, rows=batch)
-            payload.update(options)
-            data = json.dumps(payload, separators=(",", ":")).encode()
+            payload = t.WorkerRequest(version=CODEC_VERSION)
+            if kernel == Kernel.TOKENIZE and isinstance(options, t.TokenRequest):
+                payload.tokenize.CopyFrom(options)
+                payload.tokenize.rows.extend(batch)
+            elif kernel in (Kernel.DEDUPE_INDEX, Kernel.DECONTAMINATION_INDEX) and isinstance(
+                options, t.EvidenceRequest
+            ):
+                payload.evidence.CopyFrom(options)
+                payload.evidence.rows.extend(batch)
+            else:
+                raise ValueError("invalid partition policy")
+            data = wire(payload)
             artifact = self._input(data)
             key = blake3(
                 b"premixdb-map/v1\0"
@@ -355,7 +359,7 @@ class PartitionPipeline:
             ).digest()
             tasks.append((key, artifact))
             batch.clear()
-            size = 0
+            size = overhead
 
         for document in documents:
             original = document.document if isinstance(document, Row) else document
@@ -365,13 +369,13 @@ class PartitionPipeline:
                 if isinstance(original, RetainedDocument)
                 else ((0, len(text.encode())),)
             )
-            row: InputRow = InputRow(
+            row = t.InputRow(
                 id=document.id,
                 text=text,
                 ordinal=document.ordinal if isinstance(document, Row) else 0,
-                ranges=[[a, b] for a, b in ranges],
+                ranges=[e.ByteRange(start=a, end=b) for a, b in ranges],
             )
-            amount = len(json.dumps(row).encode())
+            amount = row.ByteSize() + 10
             if batch and size + amount > PARTITION_BYTES:
                 flush()
             batch.append(row)
@@ -387,12 +391,28 @@ class PartitionPipeline:
             for i, (key, artifact) in enumerate(tasks)
         )
 
-    def rows(self, artifacts: Iterable[Artifact]) -> Iterator[dict[str, JSON]]:
+    def results(self, artifacts: Iterable[Artifact], kind: str) -> Iterator[t.WorkerResult]:
         for artifact in artifacts:
-            result = json_object(load_json(self.storage.read(artifact)))
-            if result.get("version") != 1:
-                raise ValueError("unsupported partition output")
-            yield from (json_object(row) for row in json_list(result["rows"]))
+            # PartitionStore.read verifies the digest before any rows are exposed.
+            yield read_result(self.storage.read(artifact), kind)
+
+    def token_rows(self, artifacts: Iterable[Artifact]) -> Iterator[t.TokenRow]:
+        for result in self.results(artifacts, "tokenize"):
+            known(result.tokenize)
+            for row in result.tokenize.rows:
+                known(row)
+                if not row.id:
+                    raise ValueError("missing token document identity")
+                yield row
+
+    def evidence_rows(self, artifacts: Iterable[Artifact]) -> Iterator[t.EvidenceRow]:
+        for result in self.results(artifacts, "evidence"):
+            known(result.evidence)
+            for row in result.evidence.rows:
+                known(row)
+                if not row.id or row.start > row.end or not row.value:
+                    raise ValueError("invalid partition evidence")
+                yield row
 
     def features(
         self,
@@ -401,17 +421,16 @@ class PartitionPipeline:
         cohorts: Iterable[SequenceABC[FeatureDocument]],
     ) -> Iterator[list[ComputedRow] | list[DedupeRow]]:
         """Dispatch fixed computation cohorts; physical layout never changes batching."""
-        producer = base64.b64encode(policy.SerializeToString(deterministic=True)).decode()
-        definition_text = definition.decode()
         inputs = []
         for cohort in cohorts:
-            request = dict(
-                version=1,
-                producer=producer,
-                definition=definition_text,
-                rows=[dict(id=doc.id, text=doc.text, url=doc.url) for doc in cohort],
-            )
-            inputs.append(self._input(json.dumps(request, separators=(",", ":")).encode()))
+            request = t.WorkerRequest(version=CODEC_VERSION)
+            request.features.producer.CopyFrom(policy)
+            request.features.definition = definition
+            for doc in cohort:
+                row = request.features.rows.add(id=doc.id, text=doc.text)
+                if doc.url is not None:
+                    row.url = doc.url
+            inputs.append(self._input(wire(request)))
         tasks = []
         for i, artifact in enumerate(inputs):
             key = blake3(
@@ -422,21 +441,36 @@ class PartitionPipeline:
                 + len(inputs).to_bytes(8, "big")
             ).digest()
             tasks.append(self._task(key, Kernel.FEATURES, (artifact,)))
-        for artifact in self._execute(tasks):
-            raw_rows = list(self.rows((artifact,)))
+        for result in self.results(
+            self._execute(tasks), "indexes" if policy.HasField("dupekit") else "features"
+        ):
             if policy.HasField("dupekit"):
-                indexes = [checked_record(row, IndexRow) for row in raw_rows]
-                yield [
-                    dict(
-                        id=row["id"],
-                        exact_hash=base64.b64decode(row["exact_hash"], validate=True),
-                        minhash=row["minhash"],
-                        lsh_buckets=row["lsh_buckets"],
+                known(result.indexes)
+                rows: list[DedupeRow] = []
+                for row in result.indexes.rows:
+                    known(row)
+                    if not row.id or len(row.exact_hash) != 32:
+                        raise ValueError("invalid partition dedupe evidence")
+                    known(row.minhash)
+                    known(row.lsh_buckets)
+                    rows.append(
+                        dict(
+                            id=row.id,
+                            exact_hash=row.exact_hash,
+                            minhash=list(row.minhash.values) if row.HasField("minhash") else None,
+                            lsh_buckets=list(row.lsh_buckets.values)
+                            if row.HasField("lsh_buckets")
+                            else None,
+                        )
                     )
-                    for row in indexes
-                ]
+                yield rows
             else:
-                yield [{key: field_value(value) for key, value in row.items()} for row in raw_rows]
+                known(result.features)
+                computed: list[ComputedRow] = []
+                for row in result.features.rows:
+                    known(row)
+                    computed.append({key: decode_value(value) for key, value in row.values.items()})
+                yield computed
 
     def tokenize(
         self, query: Query, tokenizer: d.Tokenizer
@@ -455,25 +489,22 @@ class PartitionPipeline:
         artifacts = self._map(
             Kernel.TOKENIZE,
             query,
-            dict(
-                tokenizer=base64.b64encode(tokenizer.SerializeToString(deterministic=True)).decode()
-            ),
+            t.TokenRequest(tokenizer=tokenizer),
             additional,
         )
         lengths: list[int] = []
         expected = iter(query)
-        for raw_row in self.rows(artifacts):
-            row = checked_record(raw_row, TokenRow)
+        for row in self.token_rows(artifacts):
             original = next(expected, None)
-            if original is None or row["ordinal"] != original.ordinal or row["id"] != original.id:
+            if original is None or row.ordinal != original.ordinal or row.id != original.id:
                 raise ValueError("token partition does not cover ordered query occurrences")
-            lengths.append(token_length(row))
+            lengths.append(packed_length(row.encoding))
         if next(expected, None) is not None:
             raise ValueError("token partition omitted query occurrences")
 
         def encoded() -> Iterator[tuple[Row, ByteTokens | TokenList]]:
-            for original, row in zip(query, self.rows(artifacts), strict=True):
-                yield original, decode_tokens(checked_record(row, TokenRow))
+            for original, row in zip(query, self.token_rows(artifacts), strict=True):
+                yield original, unpack_tokens(row.encoding)
 
         return lengths, encoded()
 
@@ -486,24 +517,27 @@ class PartitionPipeline:
         blocks: list[Artifact] = []
         prefixes: list[int] = []
         prefix, size = 0, 0
-        current: list[TokenRow] = []
+        current = t.WorkerResult(version=CODEC_VERSION)
+        current.tokenize.SetInParent()
         occurrences: list[Occurrence] = []
 
         def flush() -> None:
             nonlocal size
-            data = json.dumps(dict(version=1, rows=current), separators=(",", ":")).encode()
+            data = wire(current)
             blocks.append(self._input(data))
-            current.clear()
+            current.tokenize.ClearField("rows")
             size = 0
 
         for ordinal, (row, tokens) in enumerate(handle._encoded):
             if ordinal >= len(handle._lengths) or len(tokens) != handle._lengths[ordinal]:
                 raise ValueError("tokenization does not match packing lengths")
-            if current and size + len(tokens) * 16 > PARTITION_BYTES:
+            encoding = packed_tokens(tokens)
+            amount = encoding.ByteSize() + len(row.id.encode()) + 32
+            if current.tokenize.rows and size + amount > PARTITION_BYTES:
                 flush()
-            if not current:
+            if not current.tokenize.rows:
                 prefixes.append(prefix)
-            current.append(dict(id=row.id, ordinal=ordinal, **encode_tokens(tokens)))
+            current.tokenize.rows.add(id=row.id, ordinal=ordinal, encoding=encoding)
             occurrences.append(
                 dict(
                     ordinal=ordinal,
@@ -513,8 +547,8 @@ class PartitionPipeline:
                 )
             )
             prefix += len(tokens) + (packing.separator is not None)
-            size += len(tokens) * 16
-        if current:
+            size += amount
+        if current.tokenize.rows:
             flush()
         if len(occurrences) != len(handle._lengths):
             raise ValueError("incomplete tokenization coverage")
@@ -524,19 +558,21 @@ class PartitionPipeline:
             sequences = min(self.packing_shard_sequences, totals.sequences - first)
             low, high = first * packing.length, (first + sequences) * packing.length
             selected = _packing_blocks(prefixes, prefix, low, high)
-            data = json.dumps(
-                dict(
-                    version=1,
+            request = t.WorkerRequest(version=CODEC_VERSION)
+            request.pack.CopyFrom(
+                t.PackingRequest(
                     first=first,
                     sequences=sequences,
                     total_sequences=totals.sequences,
                     length=packing.length,
-                    separator=packing.separator,
-                    padding=packing.padding,
                     prefixes=[prefixes[j] for j in selected],
-                ),
-                separators=(",", ":"),
-            ).encode()
+                )
+            )
+            if packing.separator is not None:
+                request.pack.separator = packing.separator
+            if packing.padding is not None:
+                request.pack.padding = packing.padding
+            data = wire(request)
             control = self._input(data)
             inputs = (control, *(blocks[j] for j in selected))
             key = blake3(
@@ -549,12 +585,10 @@ class PartitionPipeline:
         artifacts = self._map(
             Kernel.DEDUPE_INDEX,
             index.documents.values(),
-            dict(algorithm=1 if unit == "Document" else 2),
+            t.EvidenceRequest(algorithm=1 if unit == "Document" else 2),
         )
         yield from evidence_groups(
-            (base64.b64decode(row["value"]), row["id"], row["start"], row["end"])
-            for raw_row in self.rows(artifacts)
-            for row in [checked_record(raw_row, EvidenceRow)]
+            (row.value, row.id, row.start, row.end) for row in self.evidence_rows(artifacts)
         )
 
     def references(
@@ -563,12 +597,12 @@ class PartitionPipeline:
         from premixdb.engine.spill import reference_rows
 
         artifacts = self._map(
-            Kernel.DECONTAMINATION_INDEX, documents, dict(algorithm=policy.algorithm, n=policy.n)
+            Kernel.DECONTAMINATION_INDEX,
+            documents,
+            t.EvidenceRequest(algorithm=policy.algorithm, n=policy.n),
         )
         return reference_rows(
-            (base64.b64decode(row["value"]), row["id"], row["start"], row["end"])
-            for raw_row in self.rows(artifacts)
-            for row in [checked_record(raw_row, EvidenceRow)]
+            (row.value, row.id, row.start, row.end) for row in self.evidence_rows(artifacts)
         )
 
 
@@ -599,11 +633,20 @@ class PackedPartitions(Dataset):
             raise RuntimeError("packing stream has already been consumed")
         self._consumed = True
         expected = 0
-        for raw_row in self.pipeline.rows(self.outputs):
-            row = checked_record(raw_row, PackedRow)
-            if row["ordinal"] != expected or len(row["tokens"]) != self.plan.packing.length:
-                raise ValueError("packing output does not cover sequence ordinals")
-            yield Sequence(expected, row["tokens"], row["spans"], compact_ranges(row["alignment"]))
-            expected += 1
+        for result in self.pipeline.results(self.outputs, "pack"):
+            known(result.pack)
+            for row in result.pack.rows:
+                known(row)
+                if row.ordinal != expected or len(row.tokens) != self.plan.packing.length:
+                    raise ValueError("packing output does not cover sequence ordinals")
+                source_spans = spans(row)
+                if any(
+                    span.get("occurrence", 0) >= len(self._occurrences) for span in source_spans
+                ):
+                    raise ValueError("packing output has unknown occurrence")
+                yield Sequence(
+                    expected, list(row.tokens), source_spans, compact_ranges(alignment(row))
+                )
+                expected += 1
         if expected != len(self):
             raise ValueError("incomplete packed output")

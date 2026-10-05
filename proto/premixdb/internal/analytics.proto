@@ -1,0 +1,67 @@
+syntax = "proto3";
+package premixdb.internal;
+
+import "premixdb/v1/storage.proto";
+import "premixdb/v1/profile.proto";
+
+// Private execution artifacts. Public recipes and profile messages are unchanged.
+// Ordinals are canonical document-ID order within the pinned snapshot union.
+message PopulationIndex {
+  bytes id = 1;
+  repeated bytes snapshot_ids = 2;
+  uint64 documents = 3;
+  repeated premixdb.v1.ObjectRef columns = 4;
+  repeated premixdb.v1.ObjectRef descriptors = 5;
+  repeated premixdb.v1.FieldProfile profiles = 6;
+  repeated FieldIndex intrinsic = 7;
+}
+
+message BitmapBlock {
+  bytes present = 1;
+  repeated bytes planes = 2; // Lossless dictionary rank, least significant bit first.
+  repeated bytes buckets = 3;
+}
+
+message ColumnBlock {
+  uint64 first = 1;
+  uint64 documents = 2;
+  string kind = 3;
+  premixdb.v1.ObjectRef values = 4; // Arrow IPC: typed values, rank, and bucket ordinal.
+  premixdb.v1.ObjectRef dictionary = 5; // Arrow IPC: ordered distinct non-null values.
+  premixdb.v1.ObjectRef bitmaps = 6;
+  premixdb.v1.FieldDistribution full = 7;
+  double origin = 8; // Center used by mergeable floating-point moments.
+  double mean_offset = 9;
+  double squared_deviations = 10;
+  // Integer origins retain precision above 2^53.
+  premixdb.v1.ProfileValue exact_origin = 11;
+  repeated premixdb.v1.ProfileBucket bucket_bounds = 12;
+}
+
+message ProjectionIndex {
+  uint32 projection = 1;
+  string class_name = 2;
+  optional uint32 component = 3;
+  repeated ColumnBlock blocks = 4;
+}
+
+message FieldIndex {
+  bytes id = 1;
+  bytes population_id = 2;
+  bytes field_snapshot_id = 3;
+  bytes logical_digest = 4;
+  premixdb.v1.FieldProfile full = 5;
+  repeated ProjectionIndex projections = 6;
+  bytes source_manifest_digest = 7;
+}
+
+message IndexedSelection {
+  bytes query_id = 1;
+  bytes population_id = 2;
+  repeated bytes snapshot_ids = 3;
+  bytes selected = 4;
+  repeated bytes steps = 5; // Survivors in original operation order.
+  string repository = 6;
+  string commit = 7;
+  bytes environment = 8;
+}

@@ -48,6 +48,7 @@ from premixdb.training.sequences import Sequence
         ),
         (p.DataMixture, "id datasets weights profile preview"),
         (p.Dataset, "id status wait profile preview torch train validation test"),
+        (p.DatasetSplit, "id status wait profile preview torch"),
         (Reader, "checkpoint"),
         (Sequence, "ordinal tokens mask attention_mask spans document_ids"),
         (CorpusCollection, "list"),

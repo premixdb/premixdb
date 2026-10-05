@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from functools import cached_property, partial
+from typing import cast
 
 from premixdb.contracts import ExecutionError
 from premixdb.schemas.ids import _encode_id
@@ -38,7 +39,7 @@ def preview_decoder(
         SpanRef(object=asset, end=asset.size_bytes, blake3_digest=asset.blake3_digest)
     )
     decoder = Tokenizer.from_str(data.decode())
-    return partial(decoder.decode, skip_special_tokens=False)
+    return cast(Callable[[list[int]], str], partial(decoder.decode, skip_special_tokens=False))
 
 
 def decode_preview(

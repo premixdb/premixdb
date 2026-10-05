@@ -63,6 +63,33 @@ def test_shell_closes_on_termination_signals(shell_store: Path, name: str) -> No
     assert "DATABASE_CLOSED True\n" in result.stdout
 
 
+@pytest.mark.integration
+def test_shell_returns_to_prompt_after_cancelling_hub_capture(shell_store: Path) -> None:
+    reader = [sys.executable, "-c", "import time; time.sleep(60)"]
+    result = subprocess.run(
+        [sys.executable, "-m", "premixdb", "--storage", str(shell_store), "shell"],
+        input=(
+            "import os, signal\n"
+            "from threading import Timer\n"
+            "from unittest.mock import patch\n"
+            "from premixdb.runtime import hub_capture\n"
+            f"reader = patch.object(hub_capture, '_command', return_value={reader!r}); reader.start()\n"
+            "timer = Timer(0.3, lambda: os.kill(os.getpid(), signal.SIGINT)); timer.start(); "
+            "db.Corpus('interrupted', source=p.HuggingFaceSource('test/repo', revision='a' * 40))\n"
+            "timer.join(); reader.stop(); print('CAPTURE_INTERRUPTED')\n"
+            "assert db.Corpus('demo').profile().documents > 0; print('DATABASE_USABLE')\n"
+            "exit()\n"
+        ),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "KeyboardInterrupt" in result.stdout + result.stderr
+    assert "CAPTURE_INTERRUPTED\n" in result.stdout
+    assert "DATABASE_USABLE\n" in result.stdout
+
+
 @pytest.mark.parametrize("error", [SystemExit(0), EOFError(), KeyboardInterrupt(), RuntimeError()])
 def test_shell_closes_when_the_repl_raises(shell_store: Path, error: BaseException) -> None:
     seen = []
@@ -100,6 +127,10 @@ def test_ipython_completes_only_public_names_and_saves_history(
 
     with p.PremixDB(storage=shell_store) as db:
         query = db.Corpus("completion", [p.Source("a", "hello")]).query()
+        dataset = query.mix(
+            splits=p.Splits(train=0.8, validation=0.1, test=0.1), tokenizer=p.ByteTokenizer()
+        )[0]
+        split = dataset.validation
         history = tmp_path / "history"
 
         def interact(shell: _Shell) -> None:
@@ -117,6 +148,19 @@ def test_ipython_completes_only_public_names_and_saves_history(
 
             assert matches("db.") == {"version", "close", "Corpus"}
             assert matches("q.") == {"id", "status", "preview", "profile", "mix", "wait"}
+            assert matches("dataset.") == {
+                "id",
+                "status",
+                "preview",
+                "profile",
+                "torch",
+                "wait",
+                "train",
+                "validation",
+                "test",
+            }
+            assert matches("dd.") == {"id", "status", "preview", "profile", "torch", "wait"}
+            assert matches("dd.tr") == set()
             assert matches("db._") == matches("q._") == set()
             assert matches("%") == matches("%%") == matches("%ti") == set()
             assert "print" in matches("pri")
@@ -124,7 +168,11 @@ def test_ipython_completes_only_public_names_and_saves_history(
             shell.run_cell("answer = 42", store_history=True)
 
         with patch.object(_Shell, "mainloop", new=interact):
-            _interact(dict(db=db, p=p, q=query), banner="test shell", history=history)
+            _interact(
+                dict(db=db, p=p, q=query, dataset=dataset, dd=split),
+                banner="test shell",
+                history=history,
+            )
         with closing(sqlite3.connect(str(history) + ".sqlite3")) as connection:
             assert connection.execute("SELECT source FROM history").fetchall() == [("answer = 42",)]
 

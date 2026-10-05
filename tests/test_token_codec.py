@@ -133,13 +133,13 @@ def test_incomplete_or_malformed_stored_alignment_is_rejected(
         {"tokens": [1], "ranges": [["01"]]},
     ],
 )
-def test_pool_reads_reject_malformed_token_records(record: JSON) -> None:
+def test_pool_reads_reject_legacy_json_token_records(record: JSON) -> None:
     import json
 
     with closing(TokenCache()) as cache:
         cache["model"] = TokenList([1], [[(0, 1)]])
         cache.database.execute("UPDATE tokens SET data=?", (json.dumps(record).encode(),))
-        with pytest.raises(ValueError, match="invalid EncodedTokens record"):
+        with pytest.raises(ValueError, match="malformed protobuf payload"):
             cache["model"]
 
 
