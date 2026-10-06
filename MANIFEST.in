@@ -7,7 +7,7 @@ include scripts/generate_protos.py
 include scripts/benchmark_query_profiles.py
 include scripts/benchmark_serialization.py
 recursive-include tests *.py *.json
-recursive-include examples *.py *.md
+recursive-include examples *.py *.md *.json *.jsonl
 recursive-include docs *.md
 include scripts/prepare_c4.py
 include scripts/prepare_s2orc.py

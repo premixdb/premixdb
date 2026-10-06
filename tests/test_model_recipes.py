@@ -209,3 +209,27 @@ def test_published_mixture_runner_uses_custom_prepared_sources(
     monkeypatch.setattr(mix, "TOKENIZER", p.ByteTokenizer())
     mix.main()
     assert "Model recipe: gpt3" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("model", ["falcon", "gopher", "t5"])
+def test_recipe_runner_uses_checked_in_c4_by_default(
+    model: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    offline_assets: None,
+) -> None:
+    monkeypatch.setattr(apply, "MODEL", model)
+    monkeypatch.setattr(apply, "STORAGE", tmp_path / "store")
+    apply.main()
+    assert f"Recipe adaptation: {model}" in capsys.readouterr().out
+    with p.PremixDB(storage=tmp_path / "store") as db:
+        assert db.Corpus(f"recipes/{model}/web").profile().documents > 0
+
+
+def test_mixture_runner_uses_checked_in_categories_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(mix, "STORAGE", tmp_path / "store")
+    mix.main()
+    assert "Model recipe: llama" in capsys.readouterr().out

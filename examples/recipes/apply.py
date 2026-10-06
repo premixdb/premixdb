@@ -1,4 +1,4 @@
-"""Edit the values below to apply a prepared web recipe to a custom JSONL crawl.
+"""Apply a prepared web recipe to the checked-in C4 sample.
 
 Run from the repository root: uv run python -m examples.recipes.apply
 For LLaMA/GPT-3, use their sources() functions with your own classifiers as
@@ -13,8 +13,8 @@ import premixdb as p
 
 from . import falcon, gopher, t5
 
-INPUT = Path("crawl.jsonl")
-STORAGE = Path(".cache/model-recipes")
+INPUT = Path(__file__).resolve().parents[1] / "data/c4.jsonl"
+STORAGE = Path(__file__).resolve().parents[2] / ".cache/tutorials/model-recipes"
 MODEL = "falcon"  # falcon, t5, or gopher
 LIMIT = 100  # None reads the entire file; begin with a bounded sample.
 

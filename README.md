@@ -34,22 +34,23 @@ next(iter(DataLoader(dataset, batch_size=1)))
 
 ## Full example
 
-Capture a corpus snapshot. Filter the snapshot with a query. Mix query results into datasets. Train with Pytorch.
+Run from the repository root using the small checked-in C4 and S2ORC-derived
+samples. Capture snapshots, filter them, and mix the results for PyTorch training.
+Language and quality models download on first use.
 
 ```python
+from pathlib import Path
 from torch.utils.data import DataLoader
 
 c4 = db.Corpus(
     "c4",
-    p.HuggingFaceSource("datablations/c4-filter-small"),
-    limit=8,
+    p.Source.read_jsonl(Path("examples/data/c4.jsonl"), limit=8),
 )
-oscar = db.Corpus(
-    "oscar",
-    p.HuggingFaceSource("datablations/oscar-filter-small"),
-    limit=8,
+papers = db.Corpus(
+    "papers",
+    p.Source.read_jsonl(Path("examples/data/s2orc-train.jsonl"), key_column="id"),
 )
-query = c4.union(oscar).query(
+query = c4.union(papers).query(
     steps=[
         p.where(p.text.characters >= 200),
         p.dedupe(),
@@ -75,6 +76,6 @@ uv add premixdb
 
 - [Runnable examples](examples/README.md)
 - [RegMix training search](examples/11_c4_pretraining_ablation.py): train C4 topic/content-type mixtures and select weights by validation loss
-- [Model data recipes](examples/recipes/README.md): T5/C4, Falcon, Gopher, LLaMA 1, GPT-3 on custom corpora
+- [Model data recipes](examples/recipes/README.md): T5/C4, Falcon, Gopher, LLaMA 1, GPT-3 with local sample inputs
 - [Curation](docs/curation.md) · [Fields](docs/enrichment.md) · [Training](docs/training.md)
 - [Storage](docs/persistence.md) · [Internals](docs/architecture.md) · [Development](docs/development.md)

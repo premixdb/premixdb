@@ -9,9 +9,10 @@ from premixdb import PremixDB, Snapshot, Source
 
 ROOT = Path(__file__).resolve().parents[1]
 TINY = Path(str(files("premixdb").joinpath("data/tiny_shakespeare_excerpt.txt")))
-C4 = ROOT / ".cache/c4/c4-train.00000-of-01024.json.gz"
-PAPERS = ROOT / ".cache/s2orc/papers.jsonl"
-TRAIN_PAPERS = ROOT / ".cache/s2orc/train.jsonl"
+DATA = ROOT / "examples/data"
+C4 = DATA / "c4.jsonl"
+PAPERS = DATA / "s2orc-validation.jsonl"
+TRAIN_PAPERS = DATA / "s2orc-train.jsonl"
 DEFAULT_STORAGE = ROOT / ".cache/tutorials"
 
 
@@ -22,7 +23,7 @@ def check_inputs(*paths: Path, limit: int) -> None:
     for path in paths:
         if not path.is_file():
             raise FileNotFoundError(
-                f"Missing {path}. See examples/README.md for download commands."
+                f"Missing {path}. See examples/README.md for the checked-in sample paths."
             )
 
 

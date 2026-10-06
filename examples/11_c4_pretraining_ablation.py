@@ -1,6 +1,6 @@
 """Search topic or content-type weights with RegMix and select by held-out loss.
 
-Prepare C4 first (see examples/README.md). Classifiers download on first use.
+Uses the checked-in C4 sample. Classifiers download on first use.
 The training loop comes first; the small causal transformer is defined below.
 """
 
@@ -26,7 +26,7 @@ import premixdb as p
 class DataConfig:
     input: Path = C4
     storage: Path = DEFAULT_STORAGE / "pretraining-ablation"
-    limit: int = 1000
+    limit: int = 64
 
 
 @dataclass(frozen=True)

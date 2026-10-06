@@ -1,12 +1,17 @@
 # Training
 
+Run the examples from the repository root using the checked-in C4 sample.
+
 ```python
+from pathlib import Path
+
 import premixdb as p
 
 from torch.utils.data import DataLoader
 
 with p.PremixDB(storage=".premixdb") as db:
-    dataset = db.Corpus("training").query().mix(sequence_length=2048)[0]
+    training = db.Corpus("training", p.Source.read_jsonl(Path("examples/data/c4.jsonl")))
+    dataset = training.query().mix(sequence_length=64)[0]
     dataset.train.preview()
     loader = DataLoader(dataset.train.torch(), batch_size=32)
     for batch in loader:

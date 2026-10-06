@@ -6,19 +6,17 @@ for custom data, not reproductions of the original training datasets. Each
 module separates text preprocessing (`sources`) from a lazy saved query (`query`)
 and provides published source fractions (`WEIGHTS`).
 
-## Apply Falcon filtering to a custom crawl
+## Apply Falcon filtering to the local C4 sample
 
-Start with UTF-8 JSONL (or `.jsonl.gz`) containing extracted `text`, one page per
-row. Extract main text from HTML and apply your crawl's URL filtering first.
-Edit `INPUT`, `STORAGE`, `LIMIT`, and `MODEL` in [apply.py](apply.py), then run from
-the repository root:
+[apply.py](apply.py) defaults to the checked-in 64-page C4 sample. Run from
+the repository root without preparing a dataset:
 
 ```bash
 uv sync --locked
 uv run python -m examples.recipes.apply
 ```
 
-The default is an English Falcon adaptation on the first 100 input rows. Set
+The default is an English Falcon adaptation on the local C4 pages. Set
 `LIMIT = None` to read the entire file. Capture currently materializes sources in
 memory; begin with a bounded sample. The first language query downloads fastText.
 T5 additionally downloads the C4 English blocked-word list. DataTrove's spaCy
@@ -27,17 +25,17 @@ tokenizer handles word/sentence splitting without a separate model download.
 You can also apply the predefined query in Python:
 
 ```python
-from pathlib import Path
+from examples._tutorial import C4
 import premixdb as p
 from examples.recipes import falcon
 
 with p.PremixDB(storage=".cache/my-crawl") as db:
-    crawl = p.Source.read_jsonl(Path("crawl.jsonl"), limit=100)
+    crawl = p.Source.read_jsonl(C4, limit=100)
     prepared = db.Corpus("custom/falcon-web", falcon.sources(crawl))
     selected = falcon.query(prepared)
     print(selected.profile())
     print(selected.preview())
-    dataset = selected.mix(sequence_length=2048)[0]
+    dataset = selected.mix(sequence_length=64)[0]
 ```
 
 `sources()` runs before capture so line edits become captured text. `query()`
@@ -73,28 +71,32 @@ create a fresh iterator for each preparation/capture.
 
 ## Apply a published mixture
 
-Edit [mix.py](mix.py): choose `MODEL` and provide a prepared JSONL for **every**
-category in that module's `WEIGHTS`. Then run:
+[mix.py](mix.py) defaults to LLaMA 1 fractions with checked-in toy inputs for
+all seven categories. C4 stands in for Common Crawl and C4; training peS2o papers
+stand in for arXiv; the other categories use original toy text. These demonstrate
+allocation and have not undergone the original source-specific pipelines. See
+[the data notes](../data/README.md). Run:
 
 ```bash
 uv run python -m examples.recipes.mix
 ```
 
-The default is LLaMA 1. The runner validates source categories instead of silently
+To try another model, edit `MODEL` and map every category in its `WEIGHTS` to
+a checked-in sample file. The runner validates source categories instead of silently
 renormalizing an incomplete selection. It captures each category separately,
 unions them, and binds fixed weights to corpus IDs using `source_weights`:
 
 ```python
 from examples.recipes import llama, source_weights
 
-# snapshots maps every label in llama.WEIGHTS to a distinct prepared corpus.
+# snapshots maps every label in llama.WEIGHTS to a distinct local sample corpus.
 first, *rest = snapshots.values()
 population = first.union(*rest).query()
 mixture = population.mix(
     weights=source_weights(llama.WEIGHTS, snapshots),
-    tokens=4096,
+    tokens=256,
     replacement=False,
-    sequence_length=2048,
+    sequence_length=64,
 )
 ```
 

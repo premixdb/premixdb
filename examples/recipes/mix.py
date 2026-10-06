@@ -1,7 +1,7 @@
 """Mix prepared source categories with a published model's fractions.
 
 Edit the settings and run: uv run python -m examples.recipes.mix
-Each JSONL must have already undergone its source-specific preprocessing.
+Checked-in toy categories demonstrate allocation, not original training corpora.
 """
 
 from __future__ import annotations
@@ -12,20 +12,25 @@ import premixdb as p
 
 from . import falcon, gopher, gpt3, llama, source_weights, t5
 
+DATA = Path(__file__).resolve().parents[1] / "data"
+C4 = DATA / "c4.jsonl"
+TRAIN_PAPERS = DATA / "s2orc-train.jsonl"
+
 MODEL = "llama"  # llama means LLaMA 1; also falcon, gopher, gpt3, t5
+# Local stand-ins for each category; see ../data/README.md for provenance.
 INPUTS = {
-    "common_crawl": Path(".cache/recipes/common_crawl.jsonl"),
-    "c4": Path(".cache/recipes/c4.jsonl"),
-    "code": Path(".cache/recipes/code.jsonl"),
-    "wiki": Path(".cache/recipes/wiki.jsonl"),
-    "books": Path(".cache/recipes/books.jsonl"),
-    "arxiv": Path(".cache/recipes/arxiv.jsonl"),
-    "stack_exchange": Path(".cache/recipes/stack_exchange.jsonl"),
+    "common_crawl": C4,
+    "c4": C4,
+    "code": DATA / "code.jsonl",
+    "wiki": DATA / "reference.jsonl",
+    "books": DATA / "literature.jsonl",
+    "arxiv": TRAIN_PAPERS,
+    "stack_exchange": DATA / "questions.jsonl",
 }
-STORAGE = Path(".cache/model-recipes")
+STORAGE = Path(__file__).resolve().parents[2] / ".cache/tutorials/model-recipes"
 LIMIT = 100
-TOKENS = 4096
-SEQUENCE_LENGTH = 2048
+TOKENS = 256
+SEQUENCE_LENGTH = 64
 TOKENIZER = p.GPT2Tokenizer()  # Replace with the target model's tokenizer asset.
 REPLACEMENT = False  # Falcon avoids upsampling; inspect capacity before permitting repeats.
 

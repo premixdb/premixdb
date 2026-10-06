@@ -72,15 +72,25 @@ class Classifier:
     def compute(self, documents: Sequence[FeatureDocument]) -> list[ComputedRow]:
         result: list[ComputedRow] = []
         for doc in documents:
+            # Give the natural C4 sample two controlled labels as well as the
+            # explicit labels in the generated fixture. No model download.
+            local_label = (
+                not doc.text.startswith(
+                    ("Science document", "Tutorial document", "Travel document")
+                )
+                and len(doc.text) % 2 == 0
+            )
             if self.topic:
                 label = (
-                    p.Topic.SCIENCE_AND_TECH if doc.text.startswith("Science") else p.Topic.TRAVEL
+                    p.Topic.SCIENCE_AND_TECH
+                    if doc.text.startswith("Science") or local_label
+                    else p.Topic.TRAVEL
                 )
                 labels = p.Topic
             else:
                 label = (
                     p.ContentType.TUTORIAL
-                    if doc.text.startswith("Tutorial")
+                    if doc.text.startswith("Tutorial") or local_label
                     else p.ContentType.NEWS_ARTICLE
                 )
                 labels = p.ContentType
@@ -95,11 +105,13 @@ class Classifier:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("domains", (p.Topic, p.ContentType))
+@pytest.mark.parametrize("local_sample", (False, True))
 def test_regmix_search_trains_every_candidate_and_selects_reusable_weights(
     lesson: dict[str, object],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     domains: type[p.Topic] | type[p.ContentType],
+    local_sample: bool,
 ) -> None:
     source = tmp_path / "web.jsonl"
     source.write_text(
@@ -110,6 +122,8 @@ def test_regmix_search_trains_every_candidate_and_selects_reusable_weights(
         ),
         encoding="utf-8",
     )
+    if local_sample:
+        source = EXAMPLES / "data/c4.jsonl"
     main = lesson["main"]
     assert isinstance(main, FunctionType)
     configure(

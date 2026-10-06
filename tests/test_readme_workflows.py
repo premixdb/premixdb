@@ -1,4 +1,4 @@
-"""The README's public workflows, using bounded Hub and model fixtures offline."""
+"""The README's public workflows, using local data and controlled model fixtures."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pytest
 from _type_support import SHELL_SOURCES, invalid_call
 
 import premixdb as p
-from premixdb.contracts import JSON, FieldValue
+from premixdb.contracts import FieldValue
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
 from premixdb.internal import derivation_pb2 as d
@@ -49,7 +49,7 @@ class TutorialModels:
     def compute(self, documents: Sequence[FeatureDocument]) -> list[ComputedRow]:
         result: list[ComputedRow] = []
         for doc in documents:
-            scientific = doc.text.startswith("Science")
+            scientific = doc.text.startswith("Science") or "research" in doc.text.lower()
             values: dict[str, FieldValue] = {
                 "language.en": 0.95 if doc.text else None,
                 "language.fr": 0.05 if doc.text else None,
@@ -339,42 +339,11 @@ def test_actual_readme_python_blocks_execute_in_order(
     monkeypatch.setenv("PREMIXDB_STORAGE", str(tmp_path / ".premixdb"))
     with p.PremixDB() as shell_db:
         shell_db.Corpus("demo", SHELL_SOURCES)
-    api = Mock()
-    revisions = {
-        "datablations/c4-filter-small": "f975fa88ccfea268f412be33ed62cd3644d9d140",
-        "datablations/oscar-filter-small": "f4d35f7523c2156660fa2a06b0a1b35cb4b9308e",
-    }
-
-    def dataset_info(repository: str, *, revision: str) -> SimpleNamespace:
-        assert revision == "main"
-        return SimpleNamespace(sha=revisions[repository])
-
-    api.dataset_info.side_effect = dataset_info
-    consumed = []
-
-    def hub_rows(*args: str | None, **kwargs: str | int | bool) -> Iterator[dict[str, JSON]]:
-        repository = args[0]
-        captured = []
-        consumed.append(captured)
-        for index in range(1000):
-            captured.append(index)
-            text = (
-                "Science explains how stars form and planets move. "
-                if index % 2 == 0
-                else "Learning works best when students discuss ideas and practise new skills. "
-            )
-            if repository == "datablations/oscar-filter-small":
-                yield {"id": index, "text": "OSCAR archive: " + text * 5, "meta": {}}
-            else:
-                # Include extra columns and null URLs, as in c4-filter-small's schema.
-                yield {"text": text * 5, "url": None, "perplexity": 300.0}
-
+    monkeypatch.chdir(Path(__file__).parents[1])
     real_producer = enrichment.producer
     with (
         p.PremixDB() as bootstrap,
-        patch("huggingface_hub.HfApi", return_value=api),
-        patch.object(hub_capture, "capture", side_effect=hub_capture._rows),
-        patch("datasets.load_dataset", side_effect=hub_rows) as load,
+        patch("datasets.load_dataset", side_effect=AssertionError("README fetched remote data")),
         patch.object(
             enrichment,
             "producer",
@@ -396,8 +365,9 @@ def test_actual_readme_python_blocks_execute_in_order(
         finally:
             if shell_db is not None:
                 shell_db.close()
-    assert [len(rows) for rows in consumed] == [8, 8]
-    assert api.dataset_info.call_count == load.call_count == 2
+    c4, papers = namespace["c4"], namespace["papers"]
+    assert isinstance(c4, p.Snapshot) and c4.profile().documents == 8
+    assert isinstance(papers, p.Snapshot) and papers.profile().documents == 4
     mixtures = namespace["mixtures"]
     assert isinstance(mixtures, p.DataMixture) and len(mixtures) == 1
     batch = namespace["batch"]
@@ -406,11 +376,3 @@ def test_actual_readme_python_blocks_execute_in_order(
 
     tokens: object = batch["input_ids"]
     assert isinstance(tokens, Tensor) and tuple(tokens.shape) == (1, 64)
-    expected = list(revisions.items())
-    for call, (repository, revision) in zip(load.call_args_list, expected, strict=True):
-        assert call.args == (repository, None)
-        assert call.kwargs == {
-            "split": "train",
-            "revision": revision,
-            "streaming": True,
-        }

@@ -1,0 +1,32 @@
+{
+  "c4.jsonl": {
+    "dataset": "allenai/c4",
+    "revision": "1588ec454efa1a09f29cd18ddd04fe05fc8653a2",
+    "shard": "en/c4-train.00000-of-01024.json.gz",
+    "split": "train",
+    "rows": 64,
+    "selection": "first rows; text unchanged",
+    "url": "https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/en/c4-train.00000-of-01024.json.gz",
+    "sha256": "ef57466ed429cafb42029daa4f40213c1da5e4ed7a5df841b4032fce7010c5ef"
+  },
+  "s2orc-validation.jsonl": {
+    "dataset": "allenai/peS2o",
+    "revision": "636a503e44a3ca1b58e01fb61eab0825cd574de0",
+    "shard": "data/v2/validation-00001-of-00002.json.gz",
+    "split": "validation",
+    "rows": 4,
+    "selection": "first rows; text unchanged",
+    "url": "https://huggingface.co/datasets/allenai/peS2o/resolve/636a503e44a3ca1b58e01fb61eab0825cd574de0/data/v2/validation-00001-of-00002.json.gz",
+    "sha256": "f5273a74efbf3dbd9074f1f558780efead005ffea5d494b4de9a3b2cdf63a035"
+  },
+  "s2orc-train.jsonl": {
+    "dataset": "allenai/peS2o",
+    "revision": "636a503e44a3ca1b58e01fb61eab0825cd574de0",
+    "shard": "data/v2/train-00010-of-00020.json.gz",
+    "split": "train",
+    "rows": 4,
+    "selection": "first rows; text unchanged",
+    "url": "https://huggingface.co/datasets/allenai/peS2o/resolve/636a503e44a3ca1b58e01fb61eab0825cd574de0/data/v2/train-00010-of-00020.json.gz",
+    "sha256": "32b66c17605a56694573cada5d57caff97a1f6bcf1850dca972bbaa964de4f50"
+  }
+}

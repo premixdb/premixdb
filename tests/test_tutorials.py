@@ -1,4 +1,4 @@
-"""Run the numbered lessons against bounded inputs without model downloads."""
+"""Run the numbered lessons against local sample defaults and bounded inputs without model downloads."""
 
 from __future__ import annotations
 
@@ -111,13 +111,18 @@ def test_lesson_entry_point_runs_in_a_fresh_process(tmp_path: Path) -> None:
     ("name", "expected"),
     [
         ("01_tiny_shakespeare_snapshots.py", "Snapshot unchanged: True"),
+        ("02_c4_filtering.py", "Captured documents: 64"),
+        ("03_c4_deduplication.py", "Removed copies: 1"),
+        ("04_s2orc_distributions.py", "Papers inspected: 4"),
+        ("08_pile_source_mixture.py", "Planned content tokens: 1024"),
+        ("09_regmix_candidates.py", "Candidate 3"),
         ("05_tiny_shakespeare_packing.py", "'input_ids': (2, 64)"),
         ("06_tiny_shakespeare_decontamination.py", "After excluding held-out text: 8"),
         ("10_tiny_shakespeare_resume.py", "next sequence 1 with identical tokens"),
     ],
 )
 @pytest.mark.integration
-def test_bundled_shakespeare_lessons_run_without_preparation(
+def test_local_sample_lessons_run_without_preparation(
     tmp_path: Path, name: str, expected: str
 ) -> None:
     output = run_lesson(name, tmp_path / "store")
@@ -271,3 +276,18 @@ def test_lesson_missing_input_explains_preparation(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "Missing" in result.stderr and "examples/README.md" in result.stderr
     assert not (tmp_path / "store").exists()
+
+
+def test_quality_lesson_uses_checked_in_c4_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Scores:
+        definition = {"provider": "local-sample-quality-test", "version": 1}
+        fields = (field("quality.educational_value"),)
+
+        def compute(self, documents: Sequence[FeatureDocument]) -> list[ComputedRow]:
+            return [{"id": doc.id, "quality.educational_value": 2.0} for doc in documents]
+
+    monkeypatch.setattr(enrichment, "producer", lambda policy: Scores())
+    output = run_lesson("07_c4_quality_scores.py", tmp_path / "store")
+    assert "Captured → selected documents: 8 → 8" in output

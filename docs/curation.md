@@ -1,8 +1,16 @@
 # Curation
 
-These examples use an open `db` and captured `training` and `evaluation` corpora.
+Run from the repository root with an open `db` and `import premixdb as p`.
+Capture the checked-in training and evaluation samples:
 
 ```python
+from pathlib import Path
+
+training = db.Corpus("training", p.Source.read_jsonl(Path("examples/data/c4.jsonl")))
+evaluation = db.Corpus(
+    "evaluation",
+    p.Source.read_jsonl(Path("examples/data/s2orc-validation.jsonl"), key_column="id"),
+)
 query = training.query(
     steps=[
         p.where(p.text.characters > 0),
@@ -62,10 +70,12 @@ Replacement is enabled by default. Train and evaluate candidates to choose one.
 ## Tokenizers and packing
 
 ```python
+from importlib.resources import files
 from pathlib import Path
+
 from blake3 import blake3
 
-asset = Path("tokenizer.json")
+asset = Path(str(files("premixdb").joinpath("data/gpt2-tokenizer.json")))
 tokenizer = p.hugging_face_tokenizer(asset, digest=blake3(asset.read_bytes()).hexdigest())
 dataset = query.mix(tokenizer=tokenizer, sequence_length=2048)[0]
 ```

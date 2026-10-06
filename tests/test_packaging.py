@@ -41,6 +41,7 @@ class PackagingTests(unittest.TestCase):
         shutil.copy2(ROOT / "examples/04_s2orc_distributions.py", self.root / "examples")
         shutil.copy2(ROOT / "examples/_tutorial.py", self.root / "examples")
         shutil.copy2(ROOT / "examples/README.md", self.root / "examples")
+        shutil.copytree(ROOT / "examples/data", self.root / "examples/data")
 
     def run_python(
         self, code: str, *, root: Path | None = None, success: bool = True
@@ -164,6 +165,8 @@ sys.path.insert(0, {str(root / "examples")!r})
 from _tutorial import TINY, tiny_sources
 assert TINY.is_relative_to({str(installed)!r})
 assert len(tiny_sources()) == 9
+from _tutorial import C4, PAPERS, TRAIN_PAPERS
+assert all(path.is_file() for path in (C4, PAPERS, TRAIN_PAPERS))
 lesson = runpy.run_path({str(root / "examples/01_tiny_shakespeare_snapshots.py")!r})
 with tempfile.TemporaryDirectory() as storage:
     lesson['main'].__globals__['STORAGE'] = Path(storage)
@@ -192,6 +195,10 @@ with tempfile.TemporaryDirectory() as storage:
                 "examples/04_s2orc_distributions.py",
                 "examples/_tutorial.py",
                 "examples/README.md",
+                "examples/data/c4.jsonl",
+                "examples/data/s2orc-train.jsonl",
+                "examples/data/s2orc-validation.jsonl",
+                "examples/data/sources.json",
             ):
                 self.assertIn(prefix + name, names)
             archive.extractall(self.root / "unpacked", filter="data")

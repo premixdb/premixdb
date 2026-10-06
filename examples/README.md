@@ -29,47 +29,51 @@ The Shakespeare lessons use the nine-block excerpt bundled in the installed
 `premixdb` package and work offline.
 It comes from [char-rnn's Tiny Shakespeare](https://github.com/karpathy/char-rnn).
 
-## Data for the other examples
+## Checked-in data
 
-```bash
-uv run python scripts/prepare_c4.py
-uv run python scripts/prepare_s2orc.py --limit 100
-uv run python scripts/prepare_s2orc.py --split train --limit 100
-```
+All examples read local files checked into this repository. No corpus download
+or preparation command is required. [data/README.md](data/README.md) documents
+provenance, upstream revisions, licenses, and the toy category stand-ins.
 
-These write a C4 training shard, a peS2o validation sample, and a peS2o training
-sample under `.cache/`. Use training papers for mixtures. Your own JSONL can
-replace them: C4 needs `text`; papers need `id` and `text`.
+- C4: 64 unmodified English training pages in `data/c4.jsonl`.
+- S2ORC-derived peS2o: four training papers and four validation papers in
+  separate JSONL files. Mixtures use the training sample.
+- Shakespeare: the checked-in excerpt bundled in `premixdb`.
+- Model mixture categories: small original code, reference, fiction, and
+  question/answer fixtures, plus the C4 and peS2o samples.
+
+Outputs and enrichment caches go under `.cache/tutorials/`. The samples are
+teaching inputs and are not representative of the original datasets.
 
 The quality example downloads QuRater on first use and starts with eight pages.
 Change `MINIMUM` to reuse the scores with a different cutoff.
 
-## Published model recipes on your own data
+## Published model recipes with local samples
 
 [recipes/](recipes/README.md) contains predefined preprocessing/query functions
 and source mixtures for **T5/C4, Falcon/RefinedWeb, Gopher, LLaMA 1, and GPT-3**.
 Each includes paper references and states which original stages need upstream
 processing or classifier assets.
 
-Edit the settings to apply the Falcon adaptation to extracted crawl JSONL:
+Run the Falcon adaptation on the checked-in C4 sample:
 
 ```bash
 uv run python -m examples.recipes.apply
 ```
 
-Use `examples.recipes.mix` for the published source weights on prepared corpora.
+Use `examples.recipes.mix` to demonstrate published source weights with local
+toy category inputs.
 The numbered lessons remain bounded demonstrations; they do not reconstruct the
 original training datasets or mixtures.
 
 ## Find mixture weights with RegMix and real training
 
 ```bash
-uv run python scripts/prepare_c4.py
 uv run --locked python examples/11_c4_pretraining_ablation.py
 ```
 
 The training loop is the first function. `MIX = MixConfig(domains=p.Topic)` groups
-nonempty, deduplicated C4 documents by their predicted topic. Change it to
+the 64 local C4 pages after removing empty and duplicate documents by their predicted topic. Change it to
 `MixConfig(domains=p.ContentType)` to search content-type proportions instead.
 
 The script trains six mixtures proposed by `p.RegMix()`. Every candidate gets a
@@ -159,8 +163,8 @@ budget. The full RegMix paper's loss-prediction stage is a further extension.
 uv run --locked pytest tests/test_readme_workflows.py tests/test_tutorials.py tests/test_pretraining_ablation.py -m 'not performance'
 ```
 
-These execute the README's Python blocks and all eleven lessons with offline
-inputs. Classifier outputs are controlled; the final ablation trains real transformers
+These execute the README's Python blocks and all eleven lessons with local
+inputs, including the checked-in sample defaults. Classifier outputs are controlled; the final ablation trains real transformers
 with a reduced budget and checks every candidate, automatic selection, reusable
 weights, default-seed reproducibility, causal masking, and disjoint splits.
 Package tests also run the snapshot lesson
