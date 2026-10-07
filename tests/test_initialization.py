@@ -96,15 +96,18 @@ def test_failed_startup_closes_owned_metadata_and_workers(tmp_path: Path, failur
     ):
         with pytest.raises(OSError, match="startup failed"):
             Coordinator(tmp_path, process_workers=1)
-    assert len(opened) == len(pools) == 1
+    assert len(opened) == 1
+    assert len(pools) == 2
     try:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             opened[0].metadata.contains("corpus", b"c" * 16)
-        with pytest.raises(RuntimeError, match="cannot schedule"):
-            pools[0].submit(lambda: None)
+        for pool in pools:
+            with pytest.raises(RuntimeError, match="cannot schedule"):
+                pool.submit(lambda: None)
     finally:
         opened[0].close()
-        pools[0].shutdown(wait=True)
+        for pool in pools:
+            pool.shutdown(wait=True)
 
 
 INVALID_DURATIONS = (

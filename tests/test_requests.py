@@ -127,9 +127,9 @@ class RequestTests(unittest.TestCase):
         first = premixdb.where(premixdb.language.en >= 0.75)
         cases = [
             (
-                premixdb.decontaminate(b"r" * 32),
-                "steps[1] contains p.decontaminate(...); pass it as "
-                "query(decontaminate=p.decontaminate(...)) instead of inside steps",
+                premixdb.Decontaminate(b"r" * 32),
+                "steps[1] contains p.Decontaminate(...); pass it as "
+                "query(decontaminate=p.Decontaminate(...)) instead of inside steps",
             ),
             (
                 premixdb.sample(documents=5),
@@ -154,7 +154,7 @@ class RequestTests(unittest.TestCase):
 
     def test_decontamination_is_passed_separately_from_ordered_steps(self) -> None:
         operation = premixdb.where(premixdb.language.en >= 0.75)
-        policy = premixdb.decontaminate(b"r" * 32)
+        policy = premixdb.Decontaminate(b"r" * 32)
         request = premixdb.query(b"s" * 32, steps=[operation], decontaminate=policy)
         self.assertEqual(list(request.operations), [operation])
         self.assertEqual(request.decontaminate, policy)

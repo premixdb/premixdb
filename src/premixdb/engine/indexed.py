@@ -41,8 +41,7 @@ class IndexedRows(Sequence[Row]):
         return self.population.row(self.selected[index], index)
 
     def __iter__(self) -> Iterator[Row]:
-        for index, ordinal in enumerate(self.selected):
-            yield self.population.row(ordinal, index)
+        yield from self.population.rows(self.selected)
 
 
 def total(population: Population, field: q.IntrinsicField, selected: BitMap) -> int:
@@ -128,8 +127,8 @@ class IndexedQuery(Query):
 
     def provenance(self) -> dict[str, Provenance]:
         result: dict[str, Provenance] = {}
-        for ordinal in range(self.population.manifest.documents):
-            row = self.population.row(ordinal, ordinal)
+        for row in self.population.rows(range(self.population.manifest.documents)):
+            ordinal = row.ordinal
             decision: Selection
             if ordinal in self.selected:
                 decision = dict(kind="retained", ordinal=self.selected.rank(ordinal) - 1)

@@ -7,7 +7,7 @@ from concurrent.futures import Future, wait
 from contextlib import ExitStack
 from functools import wraps
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from types import TracebackType
 from typing import (
     Callable,
@@ -200,6 +200,9 @@ class Coordinator(Catalog):
             "indexes"
         )
         self._mixes: _Namespace[bytes, datasets.Mix] = self._cache.namespace("mixes")
+        self._tokenizers: _Namespace[tuple[bytes, int], execution.HuggingFaceTokenizer] = (
+            self._cache.namespace("tokenizers")
+        )
         self._mix_pools: _Namespace[tuple[bytes, bytes, bytes, bytes], execution.MixturePool] = (
             self._cache.namespace("mix_pools")
         )
@@ -208,7 +211,7 @@ class Coordinator(Catalog):
         self._index_lock = Lock()
         self._mix_pool_lock = Lock()
         self._submissions = SingleFlight()
-        self._lock = Lock()
+        self._lock = RLock()
         self.pipeline = None
         with ExitStack() as startup:
             if isinstance(storage_path, ObjectStore):
@@ -218,6 +221,11 @@ class Coordinator(Catalog):
                 startup.callback(self._storage.close)
             self._jobs = Materializer[queries.Query | datasets.Dataset](workers)
             startup.callback(self._jobs.close)
+            # Admission can wait on materialization, so it needs a separate pool.
+            self._admissions = Materializer[
+                queries.CreateQueryResponse | datasets.CreateDatasetResponse
+            ](workers)
+            startup.callback(self._admissions.close)
             self._store = execution.Store(self._storage.root / "snapshot")
             from premixdb.runtime.encodings import Encodings
 
@@ -250,6 +258,21 @@ class Coordinator(Catalog):
                 closing.callback(self.pipeline.close)
             closing.callback(self._close_mix_pools)
             closing.callback(self._jobs.close)
+            closing.callback(self._admissions.close)
+
+    def _submit_async(
+        self, request: queries.CreateQueryRequest | datasets.CreateDatasetRequest
+    ) -> Future[queries.CreateQueryResponse | datasets.CreateDatasetResponse]:
+        """Deduplicate admission while callers enforce their own wait deadlines."""
+        request = copy_message(request)
+        digest = blake3(request.SerializeToString(deterministic=True)).digest()
+
+        def submit() -> queries.CreateQueryResponse | datasets.CreateDatasetResponse:
+            if isinstance(request, queries.CreateQueryRequest):
+                return self.CreateQuery(request)
+            return self.CreateDataset(request)
+
+        return self._admissions.ensure(descriptor_name(request), digest, submit)
 
     def _close_mix_pools(self) -> None:
         with self._mix_pool_lock:

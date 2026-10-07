@@ -20,7 +20,7 @@ def main() -> None:
         # Intentionally leave the final held-out block in the training input.
         train = db.Corpus("tutorial/tiny-leaky-train", sources)
         held_out = db.Corpus("tutorial/tiny-held-out", [sources[-1]])
-        clean = train.query(decontaminate=p.decontaminate(held_out, algorithm="document"))
+        clean = train.query(decontaminate=p.Decontaminate(held_out, algorithm="document"))
         print("Leaky training documents:", train.profile().documents)
         print("After excluding held-out text:", clean.profile().output_documents)
         assert clean.profile().output_documents < train.profile().documents

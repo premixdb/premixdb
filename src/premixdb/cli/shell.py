@@ -68,9 +68,8 @@ def _interact(namespace: dict[str, object], *, banner: str, history: Path) -> No
     ipython_dir = history.parent / ".ipython"
     ipython_dir.mkdir(exist_ok=True)
     shell = _Shell.instance(config=config, user_ns=namespace, ipython_dir=str(ipython_dir))
-    shell.banner1 = banner + "\nIPython: use object? for help, Ctrl-D to exit.\n"
     try:
-        shell.show_banner()
+        shell.show_banner(banner + "\n" if banner else "")
         shell.mainloop()
     finally:
         shell._atexit_once()

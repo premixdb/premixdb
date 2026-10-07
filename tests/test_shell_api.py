@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,7 +16,7 @@ from blake3 import blake3
 import premixdb as p
 from premixdb.api.collections import CorpusCollection
 from premixdb.api.unions import SnapshotUnion
-from premixdb.cli.main import _demo_sources, _shell_banner
+from premixdb.cli.main import _benchmark_sources, _demo_sources, _full_demo_sources, _shell_banner
 from premixdb.enrichment import (
     DataTroveFields,
     DupekitIndex,
@@ -152,8 +154,8 @@ def test_execution_history_has_readable_identifiers_and_second_timestamps(tmp_pa
         db.close()
 
 
-def test_demo_is_the_complete_bundled_dataset() -> None:
-    sources = _demo_sources()
+def test_full_shakespeare_remains_available_for_builtin_migration() -> None:
+    sources = _full_demo_sources()
     text = "".join(source.text for source in sources).encode()
     assert len(sources) == 7222
     assert len(text) == 1115394
@@ -161,6 +163,55 @@ def test_demo_is_the_complete_bundled_dataset() -> None:
         blake3(text).hexdigest()
         == "5bd8f6749d3cda816828aabf1aebdc595f673de8102e521bbd8369ad4b7917e9"
     )
+
+
+def test_demo_contains_eight_original_speeches() -> None:
+    sources = _demo_sources()
+    original = {source.key: source.text for source in _full_demo_sources()}
+    assert len(sources) == 8
+    assert len({source.key for source in sources}) == 8
+    assert all(len(source.text) >= 100 for source in sources)
+    assert all(source.text == original[source.key] for source in sources)
+
+
+def test_benchmark_fixture_retains_original_examples_and_provenance() -> None:
+    data = Path(p.__file__).parent / "data"
+    content = (data / "benchmark.jsonl").read_bytes()
+    receipt = json.loads((data / "benchmark-source.json").read_text())
+    rows = [json.loads(line) for line in content.splitlines()]
+    assert len(rows) == receipt["rows"] == 1
+    assert sha256(content).hexdigest() == receipt["sha256"]
+    assert (
+        sha256((data / "tiny_shakespeare.txt").read_bytes()).hexdigest()
+        == receipt["overlap"]["training_sha256"]
+    )
+    assert rows[0]["demo_overlap"] is True
+    assert all(len(row["x"]) == 80 and len(row["y"]) == 1 for row in rows)
+    assert all(row["text"] == row["x"] + row["y"] for row in rows)
+    sources = _benchmark_sources()
+    assert len({source.key for source in sources}) == 1
+    assert [(source.key, source.text) for source in sources] == [
+        (row["id"], row["text"]) for row in rows
+    ]
+
+
+def test_packaged_benchmark_decontaminates_one_demo_speech(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path, progress=False) as db:
+        train = db.Corpus("demo", _demo_sources())
+        reference = db.Corpus("benchmark", _benchmark_sources())
+        clean = train.query(decontaminate=p.Decontaminate(reference))
+        profile = clean.profile()
+        assert train.profile().documents == 8
+        assert profile.decontamination.removed_documents == 1
+        assert profile.output_documents == 7
+        assert {row["source_key"] for row in clean.preview(limit=8)} == (
+            {source.key for source in _demo_sources()} - {"speech/5385"}
+        )
+        from torch.utils.data import DataLoader
+
+        dataset = clean.mix(splits=p.Splits(train=0.9, validation=0.05, test=0.05))[0]
+        batch = next(iter(DataLoader(dataset.train.torch(), batch_size=1)))
+        assert batch["input_ids"].shape == (1, 2048)
 
 
 def test_nine_speech_demo_upgrades_and_keeps_its_old_snapshot(tmp_path: Path) -> None:
@@ -185,6 +236,48 @@ def test_nine_speech_demo_upgrades_and_keeps_its_old_snapshot(tmp_path: Path) ->
         demo_sources.assert_called_once_with()
     finally:
         db.close()
+
+
+@pytest.mark.integration
+def test_full_builtin_demo_shrinks_and_preserves_previous_snapshot(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path, progress=False) as db:
+        full = _full_demo_sources()
+        previous = db.Corpus("demo", full)
+        _shell_banner(db)
+        current = db.Corpus("demo")
+        assert current.profile().documents == 8
+        assert current.id != previous.id
+        assert db._snapshot(previous.id).profile().documents == 7222
+        with patch("premixdb.cli.main._demo_sources") as capture:
+            _shell_banner(db)
+            capture.assert_not_called()
+        assert db.Corpus("demo").id == current.id
+        # Matching the old row count alone must not overwrite user content.
+        full[-1] = p.Source(full[-1].key, "My custom final speech.")
+        custom = db.Corpus("demo", full)
+        _shell_banner(db)
+        assert db.Corpus("demo").id == custom.id
+
+
+def test_legacy_benchmark_migration_preserves_custom_and_old_snapshots(tmp_path: Path) -> None:
+    sources = [p.Source(f"reference/{i}", f"Old reference passage {i}.") for i in range(128)]
+    digest = sha256(
+        json.dumps(
+            sorted((source.key, source.text) for source in sources), separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    with p.PremixDB(storage=tmp_path, progress=False) as db:
+        previous = db.Corpus("benchmark", sources)
+        with patch("premixdb.cli.main._LEGACY_BENCHMARK_DIGEST", digest):
+            _shell_banner(db)
+            current = db.Corpus("benchmark")
+            assert current.profile().documents == 1
+            assert current.id != previous.id
+            assert db._snapshot(previous.id).profile().documents == 128
+            sources[-1] = p.Source(sources[-1].key, "A custom reference.")
+            custom = db.Corpus("benchmark", sources)
+            _shell_banner(db)
+            assert db.Corpus("benchmark").id == custom.id
 
 
 def test_fasttext_download_is_quiet_and_reuses_the_existing_cache(
@@ -288,7 +381,7 @@ def test_default_policies_preserve_data_and_are_reproducible(tmp_path: Path) -> 
         assert query.profile().output_documents == 2
         assert p.sample() == p.sample(seed=0, fraction=1)
         reference = db.Corpus("reference", [p.Source("ref", "hello")])
-        policy = p.decontaminate(reference)
+        policy = p.Decontaminate(reference)
         assert policy.n == 13
         assert policy.algorithm == policy.ALGORITHM_EXACT_NGRAM
         assert policy.granularity == policy.DOCUMENT

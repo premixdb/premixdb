@@ -99,7 +99,7 @@ def test_saved_retained_previews_do_not_import_query_execution(
         target = db.Corpus("target", [p.Source("a", text)])
         reference = db.Corpus("reference", [p.Source("b", "秘密")])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
         ).wait()
         expected = query.preview(max_characters=2048)
         assert expected[0]["text"] == retained

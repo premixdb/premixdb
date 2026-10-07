@@ -28,7 +28,7 @@ class _SnapshotOperations:
         """Plan a lazy query; defaults retain all documents without resampling.
 
         Filters and dedupe steps infer the fields they need. Decontamination
-        requires explicit references: decontaminate=p.decontaminate(reference).
+        requires explicit references: decontaminate=p.Decontaminate(reference).
         Decontamination and sampling policies are separate from steps.
         wait(), profile(), and reading results execute the full selection.
         preview() consumes only the output window and its required dependencies.

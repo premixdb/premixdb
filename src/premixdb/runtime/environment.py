@@ -18,7 +18,11 @@ from premixdb.engine.identity import CodeVersion
 def _source_digest(package: str | PathLike[str] | None = None) -> str:
     package = Path(__file__).resolve().parents[1] if package is None else Path(package)
     digest = hashlib.sha256(b"premixdb-installed-source/v1\0")
-    for path in sorted(package.rglob("*.py")):
+    sources = list(package.rglob("*.py"))
+    demo_fixture = package / "data/demo-enrichment.json"
+    if demo_fixture.is_file():
+        sources.append(demo_fixture)
+    for path in sorted(sources):
         name = path.relative_to(package).as_posix().encode()
         content = path.read_bytes()
         digest.update(len(name).to_bytes(8, "big") + name)

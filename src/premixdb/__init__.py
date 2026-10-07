@@ -13,7 +13,7 @@ from premixdb.api import (
     Query,
     Snapshot,
 )
-from premixdb.api.curation import decontaminate, sample, similarity_dedupe
+from premixdb.api.curation import Decontaminate, sample, similarity_dedupe
 from premixdb.api.profiles import DistributionSummary, HistogramBucket, QuantileRange
 from premixdb.contracts import (
     Changes,
@@ -112,7 +112,7 @@ __all__ = [
     "QuantileRange",
     "NumericSummary",
     "HuggingFaceSource",
-    "decontaminate",
+    "Decontaminate",
     "sample",
     "similarity_dedupe",
     "ContentType",

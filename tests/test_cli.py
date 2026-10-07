@@ -188,7 +188,8 @@ def test_shell_starts_in_a_fresh_process(shell_store: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "DEMO_OK" in result.stdout
-    assert "IPython" in result.stdout
+    assert "premixdb: db is open; p is premixdb." in result.stdout
+    assert "IPython" not in result.stdout
     assert "Traceback" not in result.stdout + result.stderr
 
 
@@ -263,6 +264,7 @@ def test_shells_supply_the_existing_python_api_and_close_storage(tmp_path: Path)
         db = namespace["db"]
         assert isinstance(db, p.PremixDB)
         demo = db.Corpus("demo")
+        assert db.Corpus("benchmark").profile().documents == 1
         assert len(demo.preview()) == 2
         assert any("Citizen:" in row["text"] for row in demo.preview(limit=100))
         retained = demo.query(steps=[p.where(p.text.characters > 0), p.dedupe()]).profile()
@@ -279,6 +281,13 @@ def test_shells_supply_the_existing_python_api_and_close_storage(tmp_path: Path)
     assert len(seen) == 1 and all(db._closed for db in seen)
     with p.PremixDB(storage=tmp_path) as db:
         assert db.Corpus("demo").profile().documents == len(SHELL_SOURCES)
+        benchmark = db.Corpus("benchmark")
+        assert benchmark.profile().documents == 1
+        with patch("premixdb.cli.main._benchmark_sources") as sources:
+            with patch("premixdb.cli.shell._interact"):
+                assert main(["--storage", str(tmp_path), "shell"]) == 0
+            sources.assert_not_called()
+        assert db.Corpus("benchmark").id == benchmark.id
 
 
 def test_shell_upgrades_previous_builtin_demo(tmp_path: Path) -> None:
@@ -317,14 +326,20 @@ def test_shell_preserves_existing_demo_and_read_only_storage(
     with p.PremixDB(storage=tmp_path) as db:
         if existing:
             saved = db.Corpus("demo", [p.Source("custom", "My own demo.")])
+            saved_benchmark = db.Corpus("benchmark", [p.Source("custom", "My own benchmark.")])
 
     def interact(namespace: dict[str, object], *, banner: str, history: Path | None) -> None:
         db = namespace["db"]
         assert isinstance(db, p.PremixDB)
         if existing:
             assert db.Corpus("demo").id == saved.id
+            assert db.Corpus("benchmark").id == saved_benchmark.id
+            assert db.Corpus("benchmark").preview()[0]["text"] == "My own benchmark."
             assert db.Corpus("demo").preview()[0]["text"] == "My own demo."
-            assert "db.Corpus('demo').preview()" in banner
+            if read_only:
+                assert banner == ""
+            else:
+                assert "db.Corpus('demo').preview()" in banner
         else:
             assert db.Corpus.list() == []
             assert "db.Corpus.list()" in banner

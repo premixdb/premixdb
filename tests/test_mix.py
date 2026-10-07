@@ -288,6 +288,50 @@ class MixTests(unittest.TestCase):
         self.assertEqual(len({dataset.id for dataset in mixture}), 3)
         self.assertEqual({dataset._recipe.sampling.seed for dataset in mixture}, {0})
 
+    def test_regmix_full_population_resolves_natural_weights(self) -> None:
+        from torch.utils.data import DataLoader
+
+        for tokens in (None, 7):
+            with self.subTest(tokens=tokens):
+                mixture = self.query.mix(
+                    domains=premixdb.object.uri,
+                    weights=premixdb.RegMix(),
+                    tokens=tokens,
+                    splits=premixdb.Splits(train=1, validation=0, test=0),
+                    tokenizer=premixdb.ByteTokenizer(),
+                    sequence_length=4,
+                )
+                self.assertEqual(mixture.weights, [{"a": 4 / 7, "b": 3 / 7, "empty": 0}])
+                self.assertEqual(
+                    dict(mixture.preview().candidates[0].tokens), {"a": 4, "b": 3, "empty": 0}
+                )
+                dataset = mixture[0]
+                self.assertFalse(dataset._recipe.sampling.replacement)
+                batch = next(iter(DataLoader(dataset.train.torch(), batch_size=1)))
+                self.assertEqual(tuple(batch["input_ids"].shape), (1, 4))
+                self.assertEqual(dataset.train.profile().planned_content_tokens, 7)
+
+    def test_regmix_saturated_epoch_and_reference_budgets(self) -> None:
+        for tokens, reference in ((14, None), (4, 14)):
+            with self.subTest(tokens=tokens, reference=reference):
+                mixture = self.mix(
+                    tokens=tokens,
+                    bounds=premixdb.Bounds(max_epochs=2, reference_tokens=reference),
+                )
+                self.assertEqual(mixture.weights, [{"a": 4 / 7, "b": 3 / 7, "empty": 0}])
+                self.assertEqual(sum(mixture.preview().candidates[0].tokens.values()), tokens)
+
+    def test_regmix_full_population_requires_slack_for_distinct_candidates(self) -> None:
+        mixture = self.query.mix(
+            domains=premixdb.object.uri,
+            weights=premixdb.RegMix(),
+            n_candidates=2,
+            tokenizer=premixdb.ByteTokenizer(),
+            splits=premixdb.Splits(train=1, validation=0, test=0),
+        )
+        with self.assertRaisesRegex(ValueError, "only one feasible mixture.*enable replacement"):
+            mixture[0]
+
     def test_mixture_profile_and_preview_describe_compositions_without_draws(self) -> None:
         with (
             patch.object(MixturePool, "_draw", side_effect=AssertionError("constructed draws")),

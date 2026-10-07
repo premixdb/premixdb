@@ -428,10 +428,12 @@ class MaterializationLifecycleTests(unittest.TestCase):
             self.assertEqual(len(service._submissions), 0)
 
     def test_materialization_deadline_includes_submission_and_fetch(self) -> None:
+        from concurrent.futures import Future
         from types import SimpleNamespace
 
         from premixdb import api as _resources
         from premixdb.api import base as resource_base
+        from premixdb.runtime import Coordinator
         from premixdb.v1 import data_mixture_pb2 as pb
         from premixdb.v1 import query_pb2 as query_pb
         from premixdb.v1 import status_pb2 as status
@@ -446,17 +448,23 @@ class MaterializationLifecycleTests(unittest.TestCase):
                 client = Mock(
                     _timeout=1.0, _poll_interval=0.1, _read_only=False, _progress_enabled=False
                 )
-                client._submit.return_value = SimpleNamespace(id=pending.id)
+                executor = Mock(spec=Coordinator)
+                admission = Mock(spec=Future)
+                admission.result.return_value = SimpleNamespace(id=pending.id)
+                executor._submit_async.return_value = admission
+                client._executor = executor
                 client._get.return_value = completed
                 resource = (
                     _resources.Query(client, pending)
                     if isinstance(pending, query_pb.Query)
                     else _resources.Dataset(client, pending)
                 )
-                with patch.object(resource_base.time, "monotonic", side_effect=[0.0, 0.8]):
+                with patch.object(
+                    resource_base.time, "monotonic", side_effect=[0.0, 0.2, 0.8, 0.9]
+                ):
                     resource.wait(timeout=1.0)
-                client._submit.assert_called_once()
-                self.assertEqual(client._submit.call_args.kwargs, {})
+                executor._submit_async.assert_called_once()
+                admission.result.assert_called_once_with(timeout=0.8)
                 self.assertEqual(client._get.call_args.kwargs, {})
                 self.assertEqual(client._get.call_args.args, (kind, pending.id))
                 self.assertIs(resource.status, premixdb.ExecutionStatus.COMPLETED)
@@ -467,10 +475,19 @@ class MaterializationLifecycleTests(unittest.TestCase):
                     if isinstance(pending, query_pb.Query)
                     else _resources.Dataset(client, pending)
                 )
-                with patch.object(resource_base.time, "monotonic", side_effect=[0.0, 1.1]):
+                with patch.object(resource_base.time, "monotonic", side_effect=[0.0, 0.2, 1.1]):
                     with self.assertRaisesRegex(TimeoutError, f"waiting for {kind.lower()}"):
                         resource.wait(timeout=1.0)
                 client._get.assert_not_called()
+
+                client.reset_mock()
+                with patch.object(
+                    resource_base.time, "monotonic", side_effect=[0.0, 0.2, 0.8, 1.1]
+                ):
+                    with self.assertRaisesRegex(TimeoutError, f"waiting for {kind.lower()}"):
+                        resource.wait(timeout=1.0)
+                client._get.assert_called_once()
+                self.assertIs(resource.status, premixdb.ExecutionStatus.PENDING)
 
     def test_failed_query_survives_zero_cache_and_restart_until_explicit_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

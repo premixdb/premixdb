@@ -10,60 +10,50 @@ Run a premixdb shell without installing the library:
 uvx --python 3.12 premixdb shell
 ```
 
-The shell has already run these commands so you have `p` and `db` available:
+The shell imports premixdb as `p` and opens `db`. These bindings are already available:
 
 ```python
 import premixdb as p
 db = p.PremixDB()
 ```
 
-You can also use the tiny_shakespeare demo corpus of his plays:
+## Example
+
+The shell creates two small corpus snapshots: `demo` contains eight Tiny
+Shakespeare speeches, and `benchmark` contains one example from the
+[LEAF Shakespeare benchmark](https://leaf.cmu.edu/). One demo speech overlaps
+the reference at the default 13-word threshold. Both inputs ship with the package.
+
+The following example demonstrates usage of premixdb to:
+
+1. Filter, dedupe and decontaminate a corpus
+2. Create a [RegMix](https://arxiv.org/abs/2407.01492) style data mixture
+3. Tokenize and pack the result into a PyTorch dataset
 
 ```python
 from torch.utils.data import DataLoader
 
-dataset = db.Corpus('demo').query().mix()[0].train.torch()
-next(iter(DataLoader(dataset, batch_size=1)))
+mixtures = db.Corpus('demo').query(
+    steps=[
+        p.where(p.text.characters >= 100),
+        p.dedupe(),
+        p.where(p.quality.writing_style >= 0.8)
+    ],
+    decontaminate=p.Decontaminate(db.Corpus('benchmark'))
+).mix(
+    domains=p.Topic,
+    weights=p.RegMix(),
+    tokens=3,
+    splits=p.Splits(train=0.9, validation=0.05, test=0.05)
+)
+
+next(iter(DataLoader(mixtures[0].train.torch(), batch_size=1)))
 ```
 
 ```
 {'input_ids': tensor([[45472, 10426,  1677,  ...,   475,   286,   477]]),
  'attention_mask': tensor([[1, 1, 1,  ..., 1, 1, 1]]),
  'labels': tensor([[45472, 10426,  1677,  ...,   475,   286,   477]])}
-```
-
-## Full example
-
-Run from the repository root using the small checked-in C4 and S2ORC-derived
-samples. Capture snapshots, filter them, and mix the results for PyTorch training.
-Language and quality models download on first use.
-
-```python
-from pathlib import Path
-from torch.utils.data import DataLoader
-
-c4 = db.Corpus(
-    "c4",
-    p.Source.read_jsonl(Path("examples/data/c4.jsonl"), limit=8),
-)
-papers = db.Corpus(
-    "papers",
-    p.Source.read_jsonl(Path("examples/data/s2orc-train.jsonl"), key_column="id"),
-)
-query = c4.union(papers).query(
-    steps=[
-        p.where(p.text.characters >= 200),
-        p.dedupe(),
-        p.where(p.language.en >= 0.75),
-        p.where(p.quality.educational_value >= 1.0),
-    ]
-)
-
-mixtures = query.mix(tokens=256, replacement=True, sequence_length=64)
-
-dataset = mixtures[0]
-print(dataset.preview())
-batch = next(iter(DataLoader(dataset.train.torch(), batch_size=1)))
 ```
 
 ## Installation

@@ -16,7 +16,7 @@ query = training.query(
         p.where(p.text.characters > 0),
         p.dedupe(order_by=[p.object.uri.asc()]),
     ],
-    decontaminate=p.decontaminate(evaluation, algorithm="document"),
+    decontaminate=p.Decontaminate(evaluation, algorithm="document"),
     sampling=p.sample(seed=42, documents=100),
 )
 query.preview()
@@ -65,7 +65,8 @@ dataset = mixtures[0]
 
 Domains default to source corpora. Use `domains=p.Topic` to mix by topic.
 The budget counts content tokens; separators and padding are reported separately.
-Replacement is enabled by default. Train and evaluate candidates to choose one.
+Replacement defaults to false; set `replacement=True` to permit repeated passes.
+Train and evaluate candidates to choose one.
 
 ## Tokenizers and packing
 

@@ -428,13 +428,28 @@ def build(service: Coordinator, request: e.DerivationPlan) -> e.Materialization:
     result = e.Materialization(plan=request)
     policy = request.producer
     worker = producer(policy)
-    definition = json.dumps(
-        worker.definition, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode()
     schemas = worker.indexes if isinstance(worker, DupekitIndex) else worker.fields
     is_index = policy.HasField("dupekit")
     if len({spec.name for spec in schemas}) != len(schemas):
         raise ValueError("duplicate enrichment field/index names")
+
+    def documents() -> Iterator[Document]:
+        for row in population:
+            url = row.source_key if urlsplit(row.source_key).scheme in ("http", "https") else None
+            yield Document(row.id, row.text, url)
+
+    from premixdb.runtime.demo_enrichment import load as load_demo
+
+    saved = (
+        None if isinstance(worker, DupekitIndex) else load_demo(policy, worker.fields, documents())
+    )
+    definition = (
+        saved.definition_json
+        if saved is not None
+        else json.dumps(
+            worker.definition, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+    )
     manifests = [
         e.EnrichmentManifest(
             producer=policy,
@@ -447,12 +462,19 @@ def build(service: Coordinator, request: e.DerivationPlan) -> e.Materialization:
     logical_digests = [blake3() for _ in schemas]
     profilers = [] if is_index else [FieldProfiler(require_field(spec)) for spec in schemas]
 
-    def documents() -> Iterator[Document]:
-        for row in population:
-            url = row.source_key if urlsplit(row.source_key).scheme in ("http", "https") else None
-            yield Document(row.id, row.text, url)
-
-    outcomes = iter(cached_rows(service, request, worker, documents(), schemas, definition))
+    outcomes = (
+        iter(
+            [
+                [
+                    encode_value(require_field(spec), bytes.fromhex(id), values[spec.name])
+                    for spec in schemas
+                ]
+                for id, values in saved.rows
+            ]
+        )
+        if saved is not None
+        else iter(cached_rows(service, request, worker, documents(), schemas, definition))
+    )
     while rows := list(islice(outcomes, SHARD_ROWS)):
         if is_index:
             shard = e.DedupeEvidenceShard(rows=[r for r in rows if isinstance(r, e.DedupeEvidence)])

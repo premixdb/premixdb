@@ -52,6 +52,47 @@ def stored_dataset(store: ObjectStore, count: int = 132) -> d.Dataset:
     return resource
 
 
+@pytest.mark.parametrize("mode", ["plain", "batched", "streaming"])
+@pytest.mark.parametrize("corruption", ["codec", "zero", "huge", "short", "long", "data"])
+def test_all_readers_reject_invalid_compressed_sequence_pages(
+    tmp_path: Path, mode: str, corruption: str
+) -> None:
+    import pyarrow as pa
+
+    from premixdb.training.sequences import MAX_INDEX_PAGE_BYTES
+    from premixdb.training.torch import StreamingDataset, TorchDataset
+    from premixdb.v1.storage_pb2 import COMPRESSION_ZSTANDARD
+
+    with ObjectStore(tmp_path) as store, RangeReader(local_root=tmp_path) as reader:
+        resource = stored_dataset(store, count=2)
+        original = reader.read(resource.sequences[0])
+        data = pa.compress(original, codec="zstd").to_pybytes()
+        assert isinstance(data, bytes)
+        if corruption == "data":
+            data = b"invalid zstd frame"
+        ref = span(store.put("dataset", data), data)
+        ref.compression = COMPRESSION_ZSTANDARD
+        ref.profile.content_bytes = len(original)
+        if corruption == "codec":
+            invalid_call(setattr, ref, "compression", 999)
+        elif corruption == "zero":
+            ref.profile.content_bytes = 0
+        elif corruption == "huge":
+            ref.profile.content_bytes = MAX_INDEX_PAGE_BYTES + 1
+        elif corruption == "short":
+            ref.profile.content_bytes -= 1
+        elif corruption == "long":
+            ref.profile.content_bytes += 1
+        resource.sequences[0].CopyFrom(ref)
+        with pytest.raises(ValueError, match="sequence index"):
+            if mode == "plain":
+                read_page(resource, reader, 0)
+            elif mode == "batched":
+                TorchDataset(resource, reader).__getitems__([0, 1])
+            else:
+                list(StreamingDataset(resource, reader))
+
+
 @pytest.mark.parametrize("count", [128, 129])
 @pytest.mark.parametrize("topology", [p.Topology(), p.Topology(rank=1, world_size=3)])
 def test_shuffled_reader_reuses_whole_pages_and_resumes_exactly(

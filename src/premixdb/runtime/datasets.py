@@ -87,6 +87,7 @@ def resolve_recipe(
 def load_tokenizer_asset(
     coordinator: Coordinator, asset: storage.ObjectRef, limit: int, inline: bytes | None = None
 ) -> execution.HuggingFaceTokenizer:
+    from premixdb.engine.identity import unsigned
     from premixdb.runtime.assets import read
 
     relative = "tokenizer/objects/" + asset.blake3_digest.hex()
@@ -94,7 +95,22 @@ def load_tokenizer_asset(
     if inline is None and asset.uri == owned_uri:
         inline = coordinator._storage._get(relative)
     data = read(asset, local_root=coordinator._source_root, inline=inline)
-    return execution.HuggingFaceTokenizer.from_bytes(data, asset.blake3_digest.hex(), limit)
+    if not unsigned(limit):
+        raise ValueError("max_document_bytes must be positive")
+    key = (asset.blake3_digest, limit)
+    cached = coordinator._tokenizers.get(key)
+    if cached is not None:
+        return cached
+
+    def load() -> execution.HuggingFaceTokenizer:
+        cached = coordinator._tokenizers.get(key)
+        if cached is not None:
+            return cached
+        loaded = execution.HuggingFaceTokenizer.from_bytes(data, asset.blake3_digest.hex(), limit)
+        coordinator._tokenizers[key] = loaded
+        return loaded
+
+    return coordinator._submissions.run(("tokenizer-asset", key), load)
 
 
 def tokenizer(

@@ -52,7 +52,7 @@ where = ["src"]
 include = ["premixdb", "premixdb.*"]
 
 [tool.setuptools.package-data]
-premixdb = ["py.typed", "*.pyi", "engine/*.pyi", "data/*.txt", "data/*.json", "data/*.md"]
+premixdb = ["py.typed", "*.pyi", "engine/*.pyi", "data/*.txt", "data/*.json", "data/*.jsonl", "data/*.md"]
 
 [tool.setuptools]
 include-package-data = false
@@ -73,6 +73,7 @@ cache-keys = [
     { file = "src/premixdb/**/*.py" },
     { file = "src/premixdb/data/*.txt" },
     { file = "src/premixdb/data/*.json" },
+    { file = "src/premixdb/data/*.jsonl" },
     { file = "src/premixdb/data/*.md" },
 ]
 

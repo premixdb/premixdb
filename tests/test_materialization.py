@@ -6,6 +6,7 @@ import tracemalloc
 from concurrent.futures import Future
 from pathlib import Path
 from threading import Event
+from time import monotonic
 from typing import Literal
 from unittest.mock import patch
 
@@ -21,6 +22,50 @@ from premixdb.storage.catalog import Catalog
 from premixdb.v1 import data_mixture_pb2 as d
 from premixdb.v1 import query_pb2 as q
 from premixdb.v1 import status_pb2 as status
+
+
+@pytest.mark.parametrize("kind", ["query", "dataset"])
+def test_pending_wait_deadline_includes_admission_and_retry_reuses_work(
+    tmp_path: Path, kind: str
+) -> None:
+    entered, release = Event(), Event()
+    with p.PremixDB(storage=tmp_path, workers=1, progress=False) as db:
+        service = coordinator(db)
+        query = db.Corpus("admission", [p.Source("a", "abcd")]).query()
+        handle: p.Query | p.Dataset = query
+        if kind == "dataset":
+            query.wait()
+            handle = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=2)[0]
+        execute_query, profile_dataset = service.run_query, service._profile_dataset
+
+        def pause() -> None:
+            entered.set()
+            assert release.wait(timeout=5)
+
+        def run_query(recipe: q.Query) -> q.Query:
+            pause()
+            return execute_query(recipe)
+
+        def profile(recipe: d.CreateDatasetRequest) -> d.DatasetProfile:
+            pause()
+            return profile_dataset(recipe)
+
+        method, work = (
+            ("run_query", run_query) if kind == "query" else ("_profile_dataset", profile)
+        )
+        with patch.object(service, method, side_effect=work) as blocked:
+            try:
+                started = monotonic()
+                with pytest.raises(TimeoutError, match=f"timed out waiting for {kind}"):
+                    handle.wait(timeout=0.03)
+                assert monotonic() - started < 0.5
+                assert entered.wait(timeout=5)
+                with pytest.raises(TimeoutError, match=f"timed out waiting for {kind}"):
+                    handle.wait(timeout=0.03)
+                assert blocked.call_count == 1
+            finally:
+                release.set()
+            assert handle.wait(timeout=5).status is p.ExecutionStatus.COMPLETED
 
 
 @pytest.mark.parametrize("fail", [False, True])

@@ -32,5 +32,5 @@ def query(snapshot: p.Snapshot, *, evaluation: p.Snapshot | None = None) -> p.Qu
     if evaluation is None:
         return snapshot.query(steps=steps)
     return snapshot.query(
-        steps=steps, decontaminate=p.decontaminate(evaluation, algorithm="document")
+        steps=steps, decontaminate=p.Decontaminate(evaluation, algorithm="document")
     )

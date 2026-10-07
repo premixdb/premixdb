@@ -1,7 +1,7 @@
 include README.md
 include Makefile
 include src/_premixdb_build.py
-recursive-include src/premixdb/data *.txt *.json *.md
+recursive-include src/premixdb/data *.txt *.json *.jsonl *.md
 recursive-include proto *.proto *.md
 include scripts/generate_protos.py
 include scripts/benchmark_query_profiles.py
@@ -12,6 +12,7 @@ recursive-include docs *.md
 include scripts/prepare_c4.py
 include scripts/prepare_s2orc.py
 include scripts/export_enrichment.py
+include scripts/prepare_demo_enrichment.py
 include uv.lock
 include .python-version
 global-exclude *_pb2.py *_pb2.pyi *_pb2_grpc.py

@@ -81,8 +81,8 @@ fresh causal transformer with the same initialization, learning rate, and
 **20,480 input-byte budget in 40 updates**. Candidate 0 is the comparison reference;
 all training runs belong to the RegMix search. Replacement allows labels to be
 upsampled. Topic/content-type classifiers download on first use and cache their
-outputs; they require PyTorch 2.5+. The byte tokenizer and training model need no
-downloads.
+outputs. The first classification pass can take several minutes on CPU; later
+runs reuse the scores. The byte tokenizer and training model need no downloads.
 
 The central workflow is:
 

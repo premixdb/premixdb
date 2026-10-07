@@ -127,9 +127,17 @@ class _Execution[
                 recipe = copy_fields(value, queries.CreateQueryRequest())
             else:
                 recipe = self._recipe
-            response = self._db._submit(
-                recipe,
-            )
+            from premixdb.runtime.coordinator import Coordinator
+
+            self._db._require_writable()
+            assert isinstance(self._db._executor, Coordinator)
+            admission = self._db._executor._submit_async(recipe)
+            seconds = remaining()
+            try:
+                response = admission.result(timeout=seconds)
+            except TimeoutError:
+                remaining()  # Give expired waits the resource-specific error message.
+                raise
             if response.id != value.id:
                 raise ExecutionError("materialization returned a different resource")
             remaining()
@@ -166,6 +174,7 @@ class _Execution[
                 ResourceT,
                 self._db._get(kind, value.id),
             )
+        remaining()
         self._resource = value
         return self
 

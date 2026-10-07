@@ -34,7 +34,7 @@ class PackagingTests(unittest.TestCase):
         )
         shutil.copy2(ROOT / "src/_premixdb_build.py", self.root / "src")
         (self.root / "scripts").mkdir()
-        for name in ("generate_protos.py", "prepare_s2orc.py"):
+        for name in ("generate_protos.py", "prepare_s2orc.py", "prepare_demo_enrichment.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts")
         (self.root / "examples").mkdir()
         shutil.copy2(ROOT / "examples/01_tiny_shakespeare_snapshots.py", self.root / "examples")
@@ -78,8 +78,9 @@ class BlockBuildTools(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockBuildTools())
 sys.path.insert(0, {str(path)!r})
 import premixdb
-from premixdb.cli.main import _demo_sources
+from premixdb.cli.main import _benchmark_sources, _demo_sources
 from premixdb.v1 import corpus_pb2
+from premixdb.v1 import query_pb2
 from premixdb.internal import derivation_pb2
 assert Path(premixdb.__file__).is_relative_to({str(path)!r})
 message = premixdb.corpus('build-smoke-test')
@@ -88,8 +89,13 @@ assert "grpc" not in sys.modules
 assert derivation_pb2.DESCRIPTOR
 assert premixdb.__version__ == '0.1.3'
 sources = _demo_sources()
-assert len(sources) == 7222
+assert len(sources) == 8
 assert sources[0].text.startswith('First Citizen:')
+references = _benchmark_sources()
+assert len(references) == 1
+assert isinstance(premixdb.Decontaminate(b'r' * 32), query_pb2.Decontaminate)
+assert references[0].key.startswith('leaf/')
+assert len(references[0].text) == 81
 import os
 import tempfile
 os.environ.pop('PREMIXDB_GIT_COMMIT', None)
@@ -103,6 +109,11 @@ with tempfile.TemporaryDirectory() as storage:
         dataset = query.mix(tokenizer=premixdb.ByteTokenizer(), sequence_length=8)[0]
         assert dataset[0].tokens == list(b'hello') + [256, 257, 257]
         assert dataset[0].mask == [True] * 6 + [False] * 2
+        from unittest.mock import patch
+        with patch('premixdb.enrichment.models._sequence_model', side_effect=AssertionError('model')):
+            demo = db.Corpus('demo', sources)
+            assert demo.query(steps=[premixdb.where(premixdb.quality.writing_style >= 3)]).profile().output_documents == 3
+            assert demo.query(steps=[premixdb.where(premixdb.topic.art_and_design >= 0)]).profile().output_documents == 8
 """
         if training:
             code += """
@@ -126,6 +137,18 @@ with tempfile.TemporaryDirectory() as storage:
             self.assertTrue(self.expected_bindings() <= names)
             self.assertIn("premixdb/data/gpt2-tokenizer.json", names)
             self.assertIn("premixdb/data/gpt2-LICENSE.txt", names)
+            for name in (
+                "demo-enrichment.json",
+                "demo-enrichment.md",
+                "benchmark.jsonl",
+                "benchmark-source.json",
+                "benchmark-LICENSE.txt",
+                "benchmark.md",
+            ):
+                self.assertEqual(
+                    archive.read("premixdb/data/" + name),
+                    (ROOT / "src/premixdb/data" / name).read_bytes(),
+                )
             self.assertFalse(any("obsolete_pb2" in name for name in names))
             metadata = archive.read("premixdb-0.1.3.dist-info/METADATA").decode()
             self.assertNotIn("Requires-Dist: grpcio-tools", metadata)
@@ -189,8 +212,15 @@ with tempfile.TemporaryDirectory() as storage:
                 "src/_premixdb_build.py",
                 "src/premixdb/data/gpt2-tokenizer.json",
                 "src/premixdb/data/gpt2-LICENSE.txt",
+                "src/premixdb/data/demo-enrichment.json",
+                "src/premixdb/data/demo-enrichment.md",
+                "src/premixdb/data/benchmark.jsonl",
+                "src/premixdb/data/benchmark-source.json",
+                "src/premixdb/data/benchmark-LICENSE.txt",
+                "src/premixdb/data/benchmark.md",
                 "proto/premixdb/v1/corpus.proto",
                 "scripts/prepare_s2orc.py",
+                "scripts/prepare_demo_enrichment.py",
                 "examples/01_tiny_shakespeare_snapshots.py",
                 "examples/04_s2orc_distributions.py",
                 "examples/_tutorial.py",

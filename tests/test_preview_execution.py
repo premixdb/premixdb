@@ -91,7 +91,7 @@ def test_decontamination_preview_stops_after_three_target_documents(tmp_path: Pa
         target = db.Corpus("target", [p.Source(str(i), f"hello {i}\nDROP\nend") for i in range(8)])
         reference = db.Corpus("reference", [p.Source("ref", "DROP")])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
         )
         with (
             patch.object(
@@ -218,7 +218,7 @@ def test_preview_of_new_packing_reads_completed_selection_incrementally(tmp_path
         )
         reference = db.Corpus("reference", [p.Source("ref", "DROP")])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
         ).wait()
         dataset = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
         with patch.object(

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from premixdb.fields.selectors import FieldSelector, selector
 
 
-def decontaminate(
+def Decontaminate(
     *references: Snapshot | bytes | str,
     algorithm: Literal["document", "line", "ngram"] = "ngram",
     n: int = 13,

@@ -15,10 +15,12 @@ from test_enrichment_service import ControlledFields
 
 import premixdb as db
 from premixdb.engine.analytics import Column, Scalar
+from premixdb.engine.indexed import IndexedQuery
 from premixdb.internal import analytics_pb2 as a
 from premixdb.runtime import Coordinator, compile_query
 from premixdb.runtime.profiles import output_profiles
 from premixdb.schemas.ids import _decode_id
+from premixdb.storage import analytics as stored_analytics
 from premixdb.storage.analytics import (
     SELECTION_SUFFIX,
     load_column,
@@ -38,6 +40,45 @@ OPS = {
     q.Comparison.OPERATOR_GT: operator.gt,
     q.Comparison.OPERATOR_GE: operator.ge,
 }
+
+
+@pytest.mark.parametrize("cache_bytes", [0, 1])
+def test_indexed_iteration_retains_active_blocks_and_provenance_with_tiny_cache(
+    tmp_path: Path, cache_bytes: int
+) -> None:
+    with (
+        patch("premixdb.engine.analytics.BLOCK_ROWS", 8),
+        patch("premixdb.storage.analytics.BLOCK_ROWS", 8),
+        patch("premixdb.runtime.analytical_preparation.BLOCK_ROWS", 8),
+        db.PremixDB(storage=tmp_path, cache_bytes=cache_bytes, progress=False) as client,
+    ):
+        query = (
+            client.Corpus("stream", [db.Source(str(i), "é" * (i + 1)) for i in range(25)])
+            .query(steps=[db.where(db.text.bytes > 8)])
+            .wait()
+        )
+        service = coordinator(client)
+        handle = service._query(_decode_id(query.id))
+        assert isinstance(handle, IndexedQuery)
+        expected = handle.provenance()
+        with (
+            patch.object(
+                stored_analytics, "read_table", wraps=stored_analytics.read_table
+            ) as reads,
+            patch.object(
+                service._storage, "read_object", wraps=service._storage.read_object
+            ) as shards,
+        ):
+            rows = []
+            for row in handle:
+                rows.append(row.id)
+                assert handle.provenance_for(row) == expected[row.id]
+            assert len(rows) == len(set(rows)) == 21
+            parts = {ordinal // 8 for ordinal in handle.selected}
+            assert reads.call_count == len(parts)
+            assert shards.call_count == 1
+        assert not handle.population._active_parts
+        assert client._executor._cache.used_bytes == 0
 
 
 @pytest.mark.parametrize(

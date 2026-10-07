@@ -262,8 +262,8 @@ def query(
     for index, op in enumerate(operations):
         if isinstance(op, queries.Decontaminate):
             raise ValueError(
-                f"steps[{index}] contains p.decontaminate(...); pass it as "
-                "query(decontaminate=p.decontaminate(...)) instead of inside steps"
+                f"steps[{index}] contains p.Decontaminate(...); pass it as "
+                "query(decontaminate=p.Decontaminate(...)) instead of inside steps"
             )
         if isinstance(op, queries.QuerySampling):
             raise ValueError(

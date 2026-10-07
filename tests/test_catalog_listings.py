@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Thread
 from typing import Literal, Never
 from unittest.mock import patch
 
@@ -371,6 +373,26 @@ def test_mixture_query_filter_and_page_tokens_are_scoped(tmp_path: Path) -> None
             catalog.ListMix(d.ListMixRequest(query_id=b"short"))
     finally:
         catalog.close()
+
+
+def test_writable_coordinator_lists_mixtures_without_deadlocking(tmp_path: Path) -> None:
+    with p.PremixDB(storage=tmp_path, progress=False) as db:
+        query = db.Corpus("listing", [p.Source("a", "abcd")]).query()
+        mixture = query.mix(tokenizer=p.ByteTokenizer(), sequence_length=2)
+        service = coordinator(db)
+        result: Future[d.ListMixResponse] = Future()
+
+        def browse() -> None:
+            try:
+                result.set_result(service.ListMix(d.ListMixRequest(query_id=_decode_id(query.id))))
+            except BaseException as error:
+                result.set_exception(error)
+
+        thread = Thread(target=browse, daemon=True)
+        thread.start()
+        assert [item.id for item in result.result(timeout=5).mixtures] == [_decode_id(mixture.id)]
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_listing_arguments_and_document_defaults(tmp_path: Path) -> None:

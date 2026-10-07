@@ -1,0 +1,32 @@
+{
+  "dataset": "flwrlabs/shakespeare",
+  "benchmark": "LEAF Shakespeare",
+  "revision": "2cfe3a5ba0d9b34634ade086803a479b2c2b8e11",
+  "split": "train",
+  "rows": 1,
+  "url": "https://huggingface.co/datasets/flwrlabs/shakespeare/resolve/2cfe3a5ba0d9b34634ade086803a479b2c2b8e11/shakespeare.csv",
+  "upstream_sha256": "5c74050549811603d3bcccd428fed6318eb2c5491cdade24f3091467eea1ce3e",
+  "license": "BSD-2-Clause",
+  "text": "x + y, unchanged; x and y retained separately",
+  "id": "leaf/<zero-based byte offset of CSV record>",
+  "selection": "single unchanged LEAF example at byte offset 269764642, selected for exact 13-word overlap with speech/5385 in tiny_shakespeare.txt",
+  "overlap": {
+    "algorithm": "ngram",
+    "n": 13,
+    "matched_rows": 1,
+    "nonmatching_rows": 0,
+    "training_file": "tiny_shakespeare.txt",
+    "training_sha256": "86c4e6aa9db7c042ec79f339dcb96d42b0075e16b8fc2e86bf0ca57e2dc565ed",
+    "demo_speech": "speech/5385"
+  },
+  "ranges": [
+    {
+      "start": 269764617,
+      "bytes": 1048576,
+      "sha256": "065d20e714cb920a7ee108b2b1e8ea3609bdb6764010bd711da3e5136a8dfe9b"
+    }
+  ],
+  "sha256": "7a777ce6e22619f7b60e6c8acd450bc8702305a6799909cb2a9e4f42df1b601a",
+  "representative": false,
+  "license_url": "https://raw.githubusercontent.com/TalwalkarLab/leaf/09ec454a5675e32e1f0546b456b77857fdece018/LICENSE.md"
+}

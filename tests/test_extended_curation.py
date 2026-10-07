@@ -39,7 +39,7 @@ def test_token_sampling_measures_retained_and_empty_text_once_per_query(
         with patch.object(HuggingFaceTokenizer, "encode", autospec=True, side_effect=measured):
             for measurements, seed in enumerate((4, 5), 1):
                 query = target.query(
-                    decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
+                    decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span"),
                     sampling=p.sample(
                         seed=seed, tokens=budget, tokenizer=tokenizer, replacement=replacement
                     ),
@@ -72,7 +72,7 @@ class ExtendedCurationTests(unittest.TestCase):
         target = self.snapshot("target", ["pré\n秘密\nfin", "safe"])
         reference = self.snapshot("reference", ["秘密"])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
         )
         self.assertEqual(sorted(d["text"] for d in query.preview()), ["pré\n\nfin", "safe"])
         query.wait()
@@ -99,7 +99,7 @@ class ExtendedCurationTests(unittest.TestCase):
         target = self.snapshot("target", ["one two three", "clean", "also clean"])
         reference = self.snapshot("reference", ["xx one two yy"])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="ngram", n=2),
+            decontaminate=p.Decontaminate(reference, algorithm="ngram", n=2),
             sampling=p.sample(seed=7, documents=2),
         )
         self.assertEqual(query.profile().output_documents, 2)
@@ -109,7 +109,7 @@ class ExtendedCurationTests(unittest.TestCase):
         target = self.snapshot("target", ["ab\n秘密\ncd", "uvwxyz"])
         reference = self.snapshot("reference", ["秘密"])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span"),
             sampling=p.sample(seed=3, documents=2, domains=p.text.bytes, weights={"[6]": 1.0}),
         )
         self.assertEqual(dict(query.profile().sampling.realized_domains), {"[6]": 2})
@@ -119,7 +119,7 @@ class ExtendedCurationTests(unittest.TestCase):
         target = self.snapshot("target", ["pré\n秘密\nfin", "abcdefgh"])
         reference = self.snapshot("reference", ["秘密"])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span"),
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span"),
             sampling=p.sample(seed=3, documents=2, domains=p.text.characters, weights={"[8]": 1.0}),
         )
         self.assertEqual(dict(query.profile().sampling.realized_domains), {"[8]": 2})

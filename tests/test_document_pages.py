@@ -22,7 +22,7 @@ def test_document_preview_reads_only_visible_prefix_frames(tmp_path: Path, popul
         reference = db.Corpus("reference", [p.Source("remove", "DROP")])
         query = (
             snapshot.query(
-                decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+                decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
             )
             if population == "retained"
             else snapshot.query()

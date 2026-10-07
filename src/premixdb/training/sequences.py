@@ -14,10 +14,12 @@ from premixdb.schemas.ids import _encode_id
 from premixdb.schemas.protobuf import copy_message, parse
 from premixdb.storage.ranges import RangeReader
 from premixdb.v1 import data_mixture_pb2 as datasets
-from premixdb.v1.storage_pb2 import SpanRef
+from premixdb.v1.storage_pb2 import COMPRESSION_UNSPECIFIED, COMPRESSION_ZSTANDARD, SpanRef
 
 # The stored index format groups consecutive sequences into fixed-size pages.
 INDEX_PAGE_SIZE = 128
+# Bound decoded metadata as well as the RangeReader's encoded IO size.
+MAX_INDEX_PAGE_BYTES = 256 * 1024 * 1024
 
 
 def _validate_mask(data: bytes, kind: str) -> None:
@@ -171,6 +173,21 @@ def read_page(
 def sequence_page(
     resource: datasets.Dataset, data: bytes, page: int
 ) -> tuple[datasets.Sequence, ...]:
+    ref = resource.sequences[page]
+    if ref.compression == COMPRESSION_ZSTANDARD:
+        import pyarrow as pa
+
+        size = ref.profile.content_bytes
+        if not 0 < size <= MAX_INDEX_PAGE_BYTES:
+            raise ValueError("invalid or oversized decoded sequence index")
+        try:
+            decoded = pa.decompress(data, decompressed_size=size, codec="zstd").to_pybytes()
+            assert isinstance(decoded, bytes)
+            data = decoded
+        except (pa.ArrowException, OSError) as error:
+            raise ValueError("invalid compressed sequence index") from error
+    elif ref.compression != COMPRESSION_UNSPECIFIED:
+        raise ValueError("unsupported sequence index compression")
     sequences = parse(datasets.SequenceBatch, data).sequences
     expected = min(INDEX_PAGE_SIZE, resource.profile.sequences - page * INDEX_PAGE_SIZE)
     if len(sequences) != expected or [seq.ordinal for seq in sequences] != list(

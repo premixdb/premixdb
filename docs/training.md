@@ -88,6 +88,9 @@ Multiple candidates require `weights=p.RegMix(...)`. Its seed controls proposed
 proportions; the mix seed controls content selection. Replacement defaults to
 false, so allocations must fit the population. With replacement enabled, sampling
 uses repeated shuffled passes; `Bounds(max_epochs=...)` limits exposure.
+Without an explicit token budget, mixing uses all training tokens. Without
+replacement, that fixes RegMix to the population's natural proportions. To
+explore distinct proportions, set a smaller `tokens` budget or `replacement=True`.
 
 A mixture's datasets are alternative complete training recipes. Index or slice
 it to choose candidates; `mixture.datasets` exposes an immutable tuple of handles.

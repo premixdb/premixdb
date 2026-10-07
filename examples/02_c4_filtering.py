@@ -32,6 +32,7 @@ def main() -> None:
                 p.where(p.text.characters >= MIN_CHARACTERS),
                 p.where(p.datatrove.n_words >= MIN_WORDS),
                 p.where(p.datatrove.n_words <= MAX_WORDS),
+                p.where(p.quality.writing_style >= 0.8),
             ]
         )
         print("Captured documents:", snapshot.profile().documents)

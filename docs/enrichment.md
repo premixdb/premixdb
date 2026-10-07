@@ -13,8 +13,14 @@ query.profile()
 ```
 
 Fields compute when the query runs and reuse cached results when thresholds change.
-Models download on first use and run on CPU. Quality, topic, and embedding models
-require PyTorch 2.5+.
+Models download on first use and run on CPU. Use `uv sync --locked` to install the
+platform-specific PyTorch and Transformers dependencies.
+
+The built-in shell demo ships with precomputed quality scores and topic logits.
+Matching demo text reuses these values across machines and query thresholds,
+without model downloads or inference. Other text and field families use normal
+enrichment. See the [fixture notes](../src/premixdb/data/demo-enrichment.md) for
+provenance and regeneration.
 
 | Field | Value |
 | --- | --- |

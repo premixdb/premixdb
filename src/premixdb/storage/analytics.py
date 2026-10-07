@@ -181,6 +181,11 @@ def load_column(catalog: Catalog, block: a.ColumnBlock) -> Column:
 class Population:
     def __init__(self, catalog: Catalog, manifest: a.PopulationIndex) -> None:
         self._owner, self.manifest = weakref.ref(catalog), manifest
+        # Iterators own their current block. Weak references let provenance reuse
+        # that block without retaining memory outside the iterator or shared LRU.
+        self._active_parts: weakref.WeakValueDictionary[int, pa.Table] = (
+            weakref.WeakValueDictionary()
+        )
         self.starts = list(range(0, manifest.documents, BLOCK_ROWS))
         if len(self.starts) != len(manifest.columns):
             raise ValueError("incomplete analytical population")
@@ -195,6 +200,9 @@ class Population:
         return catalog
 
     def part(self, index: int) -> pa.Table:
+        active = self._active_parts.get(index)
+        if active is not None:
+            return active
         cache: MutableMapping[bytes, pa.Table] = self.catalog._cache.namespace(
             "analytical_registry"
         )
@@ -206,6 +214,7 @@ class Population:
             if len(table) != expected:
                 raise ValueError("incomplete analytical registry")
             cache[ref.blake3_digest] = table
+        self._active_parts[index] = table
         return table
 
     def row(self, ordinal: int, output_ordinal: int) -> Row:
@@ -214,6 +223,30 @@ class Population:
         part = bisect_right(self.starts, ordinal) - 1
         table, local = self.part(part), ordinal - self.starts[part]
         chunk, position = int(table["chunk"][local].as_py()), int(table["position"][local].as_py())
+        return self._row(table, local, position, self._descriptor(chunk), output_ordinal)
+
+    def rows(self, ordinals: Iterable[int]) -> Iterator[Row]:
+        """Retain only the current registry block and descriptor while streaming."""
+        current_part = current_chunk = -1
+        table, shard = None, None
+        for output_ordinal, ordinal in enumerate(ordinals):
+            if not 0 <= ordinal < self.manifest.documents:
+                raise IndexError("document ordinal out of range")
+            part = bisect_right(self.starts, ordinal) - 1
+            if part != current_part:
+                table = self.part(part)
+                current_part = part
+            assert table is not None
+            local = ordinal - self.starts[part]
+            chunk = int(table["chunk"][local].as_py())
+            if chunk != current_chunk:
+                shard = self._descriptor(chunk)
+                current_chunk = chunk
+            assert shard is not None
+            position = int(table["position"][local].as_py())
+            yield self._row(table, local, position, shard, output_ordinal)
+
+    def _descriptor(self, chunk: int) -> d.SelectionShard:
         if not 0 <= chunk < len(self.manifest.descriptors):
             raise ValueError("invalid analytical document descriptor")
         ref = self.manifest.descriptors[chunk]
@@ -227,6 +260,16 @@ class Population:
             except KeyError:
                 raise ValueError("stored selection shard is missing") from None
             cache[ref.blake3_digest] = shard
+        return shard
+
+    def _row(
+        self,
+        table: pa.Table,
+        local: int,
+        position: int,
+        shard: d.SelectionShard,
+        output_ordinal: int,
+    ) -> Row:
         if not 0 <= position < len(shard.rows):
             raise ValueError("invalid analytical descriptor position")
         record = shard.rows[position]

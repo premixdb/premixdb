@@ -9,9 +9,16 @@ from typing import Iterator, Mapping, Protocol
 from premixdb.engine.contracts import Provenance, SourceRange
 from premixdb.engine.datasets import Dataset, HuggingFaceTokenizer, Sequence
 from premixdb.storage.objects import ObjectStore
-from premixdb.training.sequences import INDEX_PAGE_SIZE, decode_preview
+from premixdb.storage.ranges import MAX_RANGE_BYTES
+from premixdb.training.sequences import INDEX_PAGE_SIZE, MAX_INDEX_PAGE_BYTES, decode_preview
 from premixdb.v1 import data_mixture_pb2 as datasets
-from premixdb.v1.storage_pb2 import ObjectProfile, SpanProfile, SpanRef
+from premixdb.v1.storage_pb2 import (
+    COMPRESSION_UNSPECIFIED,
+    COMPRESSION_ZSTANDARD,
+    ObjectProfile,
+    SpanProfile,
+    SpanRef,
+)
 
 
 class _Occurrences(Protocol):
@@ -66,7 +73,20 @@ def publish(
     source_tokens, geometry = {}, {}
 
     def flush() -> None:
+        size = batch.ByteSize()
+        if size > MAX_INDEX_PAGE_BYTES:
+            raise ValueError("oversized decoded sequence index")
         data = batch.SerializeToString(deterministic=True)
+        compression = COMPRESSION_UNSPECIFIED
+        if len(data) > MAX_RANGE_BYTES:
+            import pyarrow as pa
+
+            encoded = pa.compress(data, codec="zstd").to_pybytes()
+            assert isinstance(encoded, bytes)
+            data = encoded
+            compression = COMPRESSION_ZSTANDARD
+        if len(data) > MAX_RANGE_BYTES:
+            raise ValueError("oversized encoded sequence index")
         ref = store.put("dataset", data)
         batches.append(
             SpanRef(
@@ -74,7 +94,8 @@ def publish(
                 start=0,
                 end=len(data),
                 blake3_digest=ref.blake3_digest,
-                profile=SpanProfile(content_bytes=len(data)),
+                compression=compression,
+                profile=SpanProfile(content_bytes=size),
             )
         )
         batch.Clear()

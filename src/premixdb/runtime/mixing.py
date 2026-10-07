@@ -224,6 +224,22 @@ def generate(
         validate(values)
         return [dict(values) for _ in range(spec.n_candidates)]
 
+    # A budget that exhausts every domain's capacity fixes the proportions.
+    # Random proposals cannot hit this point, regardless of oversampling.
+    epochs = cap if spec.replacement else 1
+    population = sum(inventory.values())
+    budget = max(spec.tokens, spec.bounds.reference_tokens or spec.tokens)
+    if epochs is not None and budget == population * epochs:
+        values = {key: count / population for key, count in inventory.items()}
+        validate(values)
+        if spec.n_candidates > 1:
+            raise ValueError(
+                "only one feasible mixture: the token budget exhausts all domain capacities; "
+                "reduce tokens/reference_tokens, enable replacement or increase max_epochs "
+                "to propose distinct weights"
+            )
+        return [values]
+
     p = spec.algorithm.regmix
     rng = random.Random(p.seed)
     # Work in log space so even large prior powers cannot overflow inventories.
@@ -274,7 +290,8 @@ def generate(
         unique.add(tuple(values[k] for k in keys))
     if len(unique) < spec.n_candidates:
         raise ValueError(
-            f"only {len(unique)} unique feasible mixtures found; increase oversample or loosen bounds"
+            f"only {len(unique)} unique feasible mixtures found; increase oversample, "
+            "reduce tokens/reference_tokens, enable replacement or loosen bounds"
         )
     chosen = rng.sample(sorted(unique), spec.n_candidates)
     return [dict(zip(keys, values)) for values in chosen]

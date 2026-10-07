@@ -15,6 +15,8 @@ from blake3 import blake3
 
 from premixdb.v1.storage_pb2 import SpanRef
 
+MAX_RANGE_BYTES = 64 * 1024 * 1024
+
 
 class _ReaderState(TypedDict):
     local_root: Path | None
@@ -56,7 +58,7 @@ class RangeReader:
     def _validate(span: SpanRef) -> None:
         if (
             not 0 <= span.start <= span.end <= span.object.size_bytes
-            or span.end - span.start > 64 * 1024 * 1024
+            or span.end - span.start > MAX_RANGE_BYTES
         ):
             raise ValueError("invalid or oversized object range")
         if len(span.blake3_digest) != 32 or len(span.object.blake3_digest) != 32:
@@ -102,7 +104,7 @@ class RangeReader:
 
     def read_many(self, spans: Iterable[SpanRef], *, max_gap_bytes: int = 65536) -> list[bytes]:
         """Coalesce nearby ranges, fetch distinct objects concurrently, verify every span."""
-        if type(max_gap_bytes) is not int or not 0 <= max_gap_bytes <= 64 * 1024 * 1024:
+        if type(max_gap_bytes) is not int or not 0 <= max_gap_bytes <= MAX_RANGE_BYTES:
             raise ValueError("max_gap_bytes must be a bounded nonnegative integer")
         spans = list(spans)
         groups = {}
@@ -117,8 +119,7 @@ class RangeReader:
             for item in ordered:
                 span = item[1]
                 if chunk and (
-                    span.start > end + max_gap_bytes
-                    or max(end, span.end) - start > 64 * 1024 * 1024
+                    span.start > end + max_gap_bytes or max(end, span.end) - start > MAX_RANGE_BYTES
                 ):
                     tasks.append((start, end, chunk))
                     chunk = []

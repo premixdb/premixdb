@@ -373,7 +373,7 @@ class ExtendedResourceTests(unittest.TestCase):
         snapshot = self.client.Corpus("text", [p.Source("a", "pré\n秘密\nfin")])
         reference = self.client.Corpus("ref", [p.Source("b", "秘密")])
         dataset = snapshot.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
         ).mix(tokenizer=p.ByteTokenizer(), sequence_length=20)[0]
         regions = dataset[0].spans
         ranges = [
@@ -553,7 +553,7 @@ class ExtendedResourceTests(unittest.TestCase):
             self.population()
             .query(
                 steps=[p.indexed_dedupe(p.DedupeIndex.EXACT_DOCUMENT)],
-                decontaminate=p.decontaminate(reference, algorithm="ngram", n=2),
+                decontaminate=p.Decontaminate(reference, algorithm="ngram", n=2),
             )
             .wait()
         )

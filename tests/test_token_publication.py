@@ -3,6 +3,9 @@
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
+import pytest
+
+import premixdb as p
 from premixdb import RangeReader
 from premixdb.engine.datasets import Sequence
 from premixdb.engine.identity import CodeVersion
@@ -12,6 +15,7 @@ from premixdb.storage.objects import ObjectStore
 from premixdb.storage.tokens import publish
 from premixdb.training.sequences import read_page
 from premixdb.v1 import data_mixture_pb2 as d
+from premixdb.v1.storage_pb2 import COMPRESSION_UNSPECIFIED, COMPRESSION_ZSTANDARD
 
 
 def test_many_short_documents_keep_full_and_preview_provenance(tmp_path: Path) -> None:
@@ -56,3 +60,61 @@ def test_many_short_documents_keep_full_and_preview_provenance(tmp_path: Path) -
         assert example.truncated
         assert len(example.tokens) == len(example.loss_mask) == len(example.attention_mask) == 256
         assert list(example.regions) == regions[:128]
+
+
+def test_oversized_sequence_pages_publish_and_reopen_in_all_readers(tmp_path: Path) -> None:
+    from premixdb.training.torch import StreamingDataset, TorchDataset
+
+    # Exercise the real publisher at a smaller IO limit, including the final raw page.
+    with (
+        patch("premixdb.storage.tokens.MAX_RANGE_BYTES", 65536),
+        patch("premixdb.storage.ranges.MAX_RANGE_BYTES", 65536),
+    ):
+        with p.PremixDB(storage=tmp_path, progress=False) as db:
+            dataset = (
+                db.Corpus("pages", [p.Source("a", "abcd" * 129)])
+                .query()
+                .mix(
+                    tokenizer=p.ByteTokenizer(), sequence_length=4, packing=p.Concat(separator=None)
+                )[0]
+                .wait()
+            )
+            resource, identity = dataset._proto, dataset.id
+            assert resource.profile.sequences == 129
+            assert resource.sequences[0].profile.content_bytes > 65536
+            assert resource.sequences[0].end <= 65536
+            assert resource.sequences[0].compression == COMPRESSION_ZSTANDARD
+            assert resource.sequences[1].compression == COMPRESSION_UNSPECIFIED
+        with p.PremixDB(storage=tmp_path, read_only=True) as reopened:
+            assert reopened._dataset(identity)._proto == resource
+            reader = reopened._object_reader
+            for ordinal in (0, 127, 128):
+                seq = read_page(resource, reader, ordinal, 1)[0]
+                assert seq.ordinal == ordinal
+                assert seq.tokens == list(b"abcd")
+                assert seq.mask == [True] * 4
+                assert seq.spans[0].document_token_start == ordinal * 4
+            indexed = TorchDataset(resource, reader).__getitems__([128, 0, 127, 1])
+            streamed = list(StreamingDataset(resource, reader))
+            assert len(indexed) == 4 and len(streamed) == 129
+            for example in [*indexed, *streamed]:
+                assert example["input_ids"].tolist() == list(b"abcd")
+
+
+@pytest.mark.parametrize("limit,kind", [(1, "encoded"), (256, "decoded")])
+def test_unreadable_sequence_pages_are_rejected_during_publication(
+    tmp_path: Path, limit: int, kind: str
+) -> None:
+    constant = "MAX_RANGE_BYTES" if kind == "encoded" else "MAX_INDEX_PAGE_BYTES"
+    with p.PremixDB(storage=tmp_path, progress=False) as db:
+        dataset = (
+            db.Corpus("bounded", [p.Source("a", "abcd")])
+            .query()
+            .mix(tokenizer=p.ByteTokenizer(), sequence_length=4)[0]
+        )
+        with patch(f"premixdb.storage.tokens.{constant}", limit):
+            with pytest.raises(ValueError, match=f"oversized {kind} sequence index"):
+                dataset.wait()
+        failed = db._dataset(dataset.id)
+        assert failed.status is p.ExecutionStatus.ERROR
+        assert not failed._proto.sequences

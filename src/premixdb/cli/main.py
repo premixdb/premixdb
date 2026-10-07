@@ -8,6 +8,7 @@ import signal
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
+from hashlib import sha256
 from importlib.resources import files
 from pprint import pprint
 from threading import current_thread, main_thread
@@ -29,9 +30,21 @@ _LEGACY_DEMO_SOURCES = (
     p.Source("code", "Code turns ideas into programs you can run."),
     p.Source("empty", ""),
 )
+_DEMO_SPEECHES = (9, 13, 15, 16, 17, 22, 23, 5385)
+_LEGACY_BENCHMARK_DIGEST = "f0594f3b98d65653cc829cbe2813fc44b65f92c200dbbeb5031015558ac04de8"
 
 
 def _demo_sources() -> list[p.Source]:
+    blocks = (
+        files("premixdb")
+        .joinpath("data/tiny_shakespeare.txt")
+        .read_text(encoding="utf-8")
+        .split("\n\n")
+    )
+    return [p.Source(f"speech/{i:04d}", blocks[i] + "\n\n") for i in _DEMO_SPEECHES]
+
+
+def _full_demo_sources() -> list[p.Source]:
     text = files("premixdb").joinpath("data/tiny_shakespeare.txt").read_text(encoding="utf-8")
     blocks = text.split("\n\n")
     return [
@@ -39,6 +52,31 @@ def _demo_sources() -> list[p.Source]:
         for i, block in enumerate(blocks)
         if block or i < len(blocks) - 1
     ]
+
+
+def _benchmark_sources() -> list[p.Source]:
+    text = files("premixdb").joinpath("data/benchmark.jsonl").read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in text.splitlines()]
+    return [p.Source(row["id"], row["text"]) for row in rows]
+
+
+def _snapshot_sources(snapshot: p.Snapshot, count: int) -> dict[str, str]:
+    return {
+        row["source_key"]: row["text"]
+        for offset in range(0, count, 1000)
+        for row in snapshot.preview(
+            limit=min(1000, count - offset), offset=offset, max_characters=4096
+        )
+    }
+
+
+def _builtin_benchmark(benchmark: p.Snapshot) -> bool:
+    count = benchmark.profile().documents
+    if count != 128:
+        return False
+    sources = _snapshot_sources(benchmark, count)
+    data = json.dumps(sorted(sources.items()), separators=(",", ":")).encode()
+    return sha256(data).hexdigest() == _LEGACY_BENCHMARK_DIGEST
 
 
 def _builtin_demo(demo: p.Snapshot) -> bool:
@@ -55,15 +93,22 @@ def _builtin_demo(demo: p.Snapshot) -> bool:
             f"speech/{i:04d}": block + "\n\n"
             for i, block in enumerate(excerpt.strip().split("\n\n"))
         }
+    elif count == 7222:
+        expected = {source.key: source.text for source in _full_demo_sources()}
     else:
         return False
-    return {
-        row["source_key"]: row["text"] for row in demo.preview(limit=count, max_characters=1024)
-    } == expected
+    return _snapshot_sources(demo, count) == expected
 
 
 def _shell_banner(db: p.PremixDB) -> str:
     writable_local = not db._read_only
+    if writable_local:
+        try:
+            benchmark = db.Corpus("benchmark")
+        except ValueError:
+            benchmark = None
+        if benchmark is None or _builtin_benchmark(benchmark):
+            db.Corpus("benchmark", _benchmark_sources())
     try:
         demo = db.Corpus("demo")
     except ValueError:
@@ -72,7 +117,10 @@ def _shell_banner(db: p.PremixDB) -> str:
         demo = None
     if writable_local and (demo is None or _builtin_demo(demo)):
         db.Corpus("demo", _demo_sources())
-    return "premixdb: db is open; p is premixdb. Try db.Corpus('demo').preview()."
+    if writable_local:
+        return "premixdb: db is open; p is premixdb. Try db.Corpus('demo').preview()."
+    else:
+        return ""
 
 
 @contextmanager
@@ -197,8 +245,7 @@ def main(argv: list[str] | None = None) -> int:
 
                     _interact(
                         dict(db=db, p=p),
-                        banner=_shell_banner(db)
-                        + "\nTab: completion; Up/Down: history; Ctrl-R: history search.",
+                        banner=_shell_banner(db),
                         history=Path(db._storage) / ".shell_history",
                     )
             elif args.command == "corpora":

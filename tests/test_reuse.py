@@ -26,7 +26,7 @@ def test_completed_selection_reopens_without_running_kernels(tmp_path: Path, mod
         if mode == "span":
             reference = db.Corpus("reference", [p.Source("ref", "remove me")])
             query = snapshot.query(
-                decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+                decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
             )
         elif mode == "replacement":
             query = snapshot.query(sampling=p.sample(seed=42, documents=3, replacement=True))

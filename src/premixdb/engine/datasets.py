@@ -64,6 +64,11 @@ def _tokenizer_definition(asset_digest: str) -> str:
 
 
 class HuggingFaceTokenizer:
+    def __sizeof__(self) -> int:
+        # The native vocabulary is opaque to Python's memory accounting. Reserve
+        # a conservative allowance so the shared LRU also budgets that storage.
+        return object.__sizeof__(self) + 16 * len(self.asset_bytes)
+
     def __init__(self, path: str | Path, expected: str, max_document_bytes: int) -> None:
         self._set_limit(max_document_bytes)
         try:

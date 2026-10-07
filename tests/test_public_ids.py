@@ -108,7 +108,7 @@ def test_contamination_witnesses_use_public_reference_ids(
         target = db.Corpus("target", [p.Source("a", "pré\n秘密\nfin")])
         reference = db.Corpus("reference", [p.Source("ref", "秘密")])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity=granularity)
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity=granularity)
         )
         origin = next(iter(query._provenance().values()))
         witness = origin["contamination"][0]
@@ -126,7 +126,7 @@ def test_read_only_lineage_needs_no_selection_or_query_execution_modules(tmp_pat
         target = db.Corpus("target", [p.Source("a" * 64, "pré\n秘密\nfin")])
         reference = db.Corpus("reference", [p.Source("ref", "秘密")])
         query = target.query(
-            decontaminate=p.decontaminate(reference, algorithm="line", granularity="span")
+            decontaminate=p.Decontaminate(reference, algorithm="line", granularity="span")
         )
         lineage = query._provenance()
         assert next(iter(lineage.values()))["source_key"] == "a" * 64
