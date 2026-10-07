@@ -7,6 +7,10 @@ Run the checkout with `make shell` (`uvx --from . premixdb shell`).
 changes. Neither command needs the development environment; checks use the locked
 project environment below.
 
+The interactive shell loads PyTorch and prepares the default tokenizer before
+showing its prompt. This pays the one-time training setup at startup so the
+first demo cell can reuse it. Library clients load these components lazily.
+
 ```bash
 make sync
 make lint

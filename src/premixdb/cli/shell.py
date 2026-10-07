@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 from typing import cast
 
@@ -57,6 +58,22 @@ class _Shell(TerminalInteractiveShell):
         configurables.append(self.Completer)
 
 
+def _prepare_training(namespace: dict[str, object]) -> None:
+    """Pay the demo's one-time training setup before the interactive prompt."""
+    import_module("premixdb.training.torch")
+    from premixdb.api.database import PremixDB
+    from premixdb.engine.tokenizer_assets import _gpt2_tokenizer
+    from premixdb.runtime import Coordinator
+
+    db = namespace.get("db")
+    if not isinstance(db, PremixDB) or not isinstance(db._executor, Coordinator):
+        return
+    policy = _gpt2_tokenizer().hugging_face
+    # Warming a codec that cannot fit the cache would immediately discard it.
+    if db._executor._cache.max_bytes > 17 * len(policy.json):
+        db._executor._tokenizer_asset(policy.asset, policy.max_document_bytes, policy.json)
+
+
 def _interact(namespace: dict[str, object], *, banner: str, history: Path) -> None:
     history.parent.mkdir(parents=True, exist_ok=True)
     config = Config()
@@ -69,6 +86,7 @@ def _interact(namespace: dict[str, object], *, banner: str, history: Path) -> No
     ipython_dir.mkdir(exist_ok=True)
     shell = _Shell.instance(config=config, user_ns=namespace, ipython_dir=str(ipython_dir))
     try:
+        _prepare_training(namespace)
         shell.show_banner(banner + "\n" if banner else "")
         shell.mainloop()
     finally:

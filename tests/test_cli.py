@@ -181,7 +181,11 @@ def test_ipython_completes_only_public_names_and_saves_history(
 def test_shell_starts_in_a_fresh_process(shell_store: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "premixdb", "--storage", str(shell_store), "shell"],
-        input="assert db.Corpus('demo').profile().documents == 2; print('DEMO_OK')\nexit\n",
+        input=(
+            "import sys; assert 'premixdb.training.torch' in sys.modules; "
+            "assert len(db._executor._tokenizers) == 1; "
+            "assert db.Corpus('demo').profile().documents == 2; print('DEMO_OK')\nexit\n"
+        ),
         text=True,
         capture_output=True,
         timeout=30,
