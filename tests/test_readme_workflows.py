@@ -12,9 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-from _type_support import SHELL_SOURCES, invalid_call
+from _type_support import invalid_call
 
 import premixdb as p
+from premixdb.cli.main import _shell_banner
 from premixdb.contracts import FieldValue
 from premixdb.enrichment.types import ComputedRow, field
 from premixdb.enrichment.types import Document as FeatureDocument
@@ -44,7 +45,7 @@ class TutorialModels:
                 field("weborganizer.content_type", width=24, classes=tuple(p.ContentType)),
             )
         else:
-            self.fields = (field("quality.educational_value"),)
+            self.fields = (field("quality.educational_value"), field("quality.writing_style"))
 
     def compute(self, documents: Sequence[FeatureDocument]) -> list[ComputedRow]:
         result: list[ComputedRow] = []
@@ -55,6 +56,7 @@ class TutorialModels:
                 "language.fr": 0.05 if doc.text else None,
                 "language.label": "en" if doc.text else None,
                 "quality.educational_value": 2.0 if scientific else 0.5,
+                "quality.writing_style": 0.9,
                 "weborganizer.topic": [
                     10.0
                     if label
@@ -338,7 +340,9 @@ def test_actual_readme_python_blocks_execute_in_order(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PREMIXDB_STORAGE", str(tmp_path / ".premixdb"))
     with p.PremixDB() as shell_db:
-        shell_db.Corpus("demo", SHELL_SOURCES)
+        _shell_banner(shell_db)
+        assert shell_db.Corpus("demo").profile().documents == 8
+        assert shell_db.Corpus("benchmark").profile().documents == 1
     monkeypatch.chdir(Path(__file__).parents[1])
     real_producer = enrichment.producer
     with (
@@ -357,7 +361,18 @@ def test_actual_readme_python_blocks_execute_in_order(
         shell_db = None
         try:
             for index, code in enumerate(blocks):
-                exec(compile(ast.parse(code), f"README.md:example-{index + 1}", "exec"), namespace)
+                tree = ast.parse(code)
+                # Preserve the value displayed by the shell for the final example.
+                if index == len(blocks) - 1 and isinstance(tree.body[-1], ast.Expr):
+                    tree.body[-1] = ast.copy_location(
+                        ast.Assign(
+                            targets=[ast.Name(id="batch", ctx=ast.Store())],
+                            value=tree.body[-1].value,
+                        ),
+                        tree.body[-1],
+                    )
+                    ast.fix_missing_locations(tree)
+                exec(compile(tree, f"README.md:example-{index + 1}", "exec"), namespace)
                 if shell_db is None:
                     handle = namespace.get("db")
                     assert isinstance(handle, p.PremixDB)
@@ -365,9 +380,6 @@ def test_actual_readme_python_blocks_execute_in_order(
         finally:
             if shell_db is not None:
                 shell_db.close()
-    c4, papers = namespace["c4"], namespace["papers"]
-    assert isinstance(c4, p.Snapshot) and c4.profile().documents == 8
-    assert isinstance(papers, p.Snapshot) and papers.profile().documents == 4
     mixtures = namespace["mixtures"]
     assert isinstance(mixtures, p.DataMixture) and len(mixtures) == 1
     batch = namespace["batch"]
@@ -375,4 +387,4 @@ def test_actual_readme_python_blocks_execute_in_order(
     from torch import Tensor
 
     tokens: object = batch["input_ids"]
-    assert isinstance(tokens, Tensor) and tuple(tokens.shape) == (1, 64)
+    assert isinstance(tokens, Tensor) and tuple(tokens.shape) == (1, 2048)
