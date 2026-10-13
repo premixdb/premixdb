@@ -13,6 +13,9 @@ from premixdb.v1.field_pb2 import Field
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
     from torch import Tensor
+    from torch.nn import Module
+
+    from premixdb.enrichment.interfaces import ModelConfig
 
 from premixdb.enrichment.types import (
     ModelPin,
@@ -34,6 +37,45 @@ EMBEDDING_MODELS = {
 }
 
 
+def _restore_weborganizer_buffers(model: Module, config: ModelConfig) -> None:
+    """Rebuild constructor-only buffers without touching checkpoint weights."""
+    import torch
+
+    embeddings = model.get_submodule("new.embeddings")
+    # Transformers 5 loads on meta and materializes non-persistent buffers with
+    # empty_like. The published NewModel only initializes these in __init__,
+    # not _init_weights, leaving positions and rotary frequencies/caches invalid.
+    # Use its own constructor so RoPE scaling follows the pinned model code.
+    with torch.random.fork_rng(devices=[]), torch.device("cpu"):
+        fresh = type(embeddings)(config)
+    for name, module in fresh.named_modules():
+        target = embeddings.get_submodule(name)
+        for buffer_name in module._non_persistent_buffers_set:
+            buffer = module.get_buffer(buffer_name)
+            original = target.get_buffer(buffer_name)
+            target.register_buffer(
+                buffer_name,
+                buffer.to(device=original.device, dtype=original.dtype),
+                persistent=False,
+            )
+
+
+def _weborganizer_attention_mask(
+    model: Module, attention_mask: Tensor, input_shape: tuple[int, ...]
+) -> Tensor:
+    """Preserve the encoder mask interface used by the published NewModel."""
+    import torch
+
+    if attention_mask.ndim == 2:
+        extended = attention_mask[:, None, None, :]
+    elif attention_mask.ndim == 3:
+        extended = attention_mask[:, None, :, :]
+    else:
+        raise ValueError(f"invalid attention mask shape for input {input_shape}")
+    dtype = next(model.parameters()).dtype
+    return (1.0 - extended.to(dtype=dtype)) * torch.finfo(dtype).min
+
+
 def _sequence_model(
     pin: ModelPin, device: str, *, web: bool = False
 ) -> tuple[ModelTokenizer, SequenceModel]:
@@ -46,16 +88,21 @@ def _sequence_model(
     if tokenizer is None:
         raise ValueError("model repository did not provide a tokenizer")
     if web:
-        model = cast(
-            SequenceModel,
-            AutoModelForSequenceClassification.from_pretrained(
-                pin.repository,
-                revision=pin.revision,
-                trust_remote_code=True,
-                use_memory_efficient_attention=False,
-                unpad_inputs=False,
-            ),
+        from types import MethodType
+
+        loaded = AutoModelForSequenceClassification.from_pretrained(
+            pin.repository,
+            revision=pin.revision,
+            trust_remote_code=True,
+            use_memory_efficient_attention=False,
+            unpad_inputs=False,
         )
+        _restore_weborganizer_buffers(loaded, loaded.config)
+        encoder = loaded.get_submodule("new")
+        # Transformers 5 also removed the inherited encoder mask helper.
+        if not hasattr(encoder, "get_extended_attention_mask"):
+            encoder.get_extended_attention_mask = MethodType(_weborganizer_attention_mask, encoder)
+        model = cast(SequenceModel, loaded)
     else:
         model = cast(
             SequenceModel,
@@ -275,7 +322,7 @@ class WebOrganizer:
         """Describe the pinned assets and settings that determine output identity."""
         return {
             "provider": "weborganizer",
-            "version": 1,
+            "version": 2,
             "model": {"repository": self.pin.repository, "revision": self.pin.revision},
             "packages": package_versions("transformers", "torch", "einops"),
             "device": self.device,

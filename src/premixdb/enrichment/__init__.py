@@ -6,6 +6,7 @@ The query planner derives built-in fields automatically when queries need them.
 
 from premixdb.enrichment.classification import probabilities, top_class
 from premixdb.enrichment.datatrove import DataTroveFields, from_datatrove
+from premixdb.enrichment.devices import inference_device
 from premixdb.enrichment.dupekit import DupekitIndex
 from premixdb.enrichment.language import LanguageScores
 from premixdb.enrichment.models import Embeddings, QuRating, WebOrganizer
@@ -21,6 +22,7 @@ __all__ = [
     "QuRating",
     "WebOrganizer",
     "from_datatrove",
+    "inference_device",
     "probabilities",
     "top_class",
 ]

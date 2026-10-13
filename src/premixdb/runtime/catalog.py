@@ -1,4 +1,4 @@
-"""Built-in derivations known to planning, without loading inference runtimes.
+"""Built-in derivations known to planning, without loading model weights.
 
 Changing a recipe changes its pin. Existing artifacts are immutable and reused;
 model revisions, language vocabulary and inference policies are defined by premixdb.
@@ -17,7 +17,7 @@ from premixdb.runtime import environment as _runtime
 from premixdb.schemas.protobuf import wire
 from premixdb.v1 import query_pb2 as q
 
-CATALOG_VERSION = 3
+CATALOG_VERSION = 4
 MODELS = {
     "quality": (
         d.ModelProducer.QUALITY,
@@ -66,12 +66,14 @@ def recipe(name: str, *, index: bool = False) -> d.EnrichmentProducer:
     if family == "datatrove":
         return d.EnrichmentProducer(datatrove=d.DataTroveProducer(language="en"))
     kind, repository, revision = MODELS[family if family == "quality" else name]
+    from premixdb.enrichment.devices import inference_device
+
     return d.EnrichmentProducer(
         model=d.ModelProducer(
             kind=kind,
             repository=repository,
             revision=revision,
-            device="cpu",
+            device=inference_device(),
             batch_size=8,
             max_length=512 if family == "quality" else 8192,
         )

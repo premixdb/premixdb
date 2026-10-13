@@ -39,6 +39,20 @@ def configure(lesson: dict[str, object], **categories: dict[str, object]) -> Non
         main.__globals__[category] = replace(config, **changes)
 
 
+@pytest.mark.parametrize(
+    ("cuda", "mps", "expected"),
+    [(True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")],
+)
+def test_runtime_selects_available_accelerator(
+    lesson: dict[str, object], monkeypatch: pytest.MonkeyPatch, cuda: bool, mps: bool, expected: str
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+    constructor = cast(Callable[..., object], lesson["RuntimeConfig"])
+    assert getattr(constructor(), "device") == expected
+    assert getattr(constructor(device="cpu"), "device") == "cpu"
+
+
 def test_transformer_cannot_see_future_training_targets(lesson: dict[str, object]) -> None:
     constructor = cast(Callable[[object], nn.Module], lesson["LanguageModel"])
     config = lesson["MODEL"]

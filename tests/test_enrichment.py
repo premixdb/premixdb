@@ -28,6 +28,7 @@ from premixdb.enrichment import (
     QuRating,
     WebOrganizer,
     from_datatrove,
+    inference_device,
     probabilities,
     top_class,
 )
@@ -89,6 +90,105 @@ def classifier_tokenizer() -> ModelTokenizer:
 
 
 class ModelTests(unittest.TestCase):
+    def test_automatic_device_is_pinned_in_builtin_model_recipes(self) -> None:
+        from premixdb.runtime.catalog import plan, recipe
+        from premixdb.runtime.enrichment import producer
+
+        pins = set()
+        for cuda, mps, expected in (
+            (True, True, "cuda"),
+            (False, True, "mps"),
+            (False, False, "cpu"),
+        ):
+            with (
+                self.subTest(device=expected),
+                patch("torch.cuda.is_available", return_value=cuda),
+                patch("torch.backends.mps.is_available", return_value=mps),
+            ):
+                self.assertEqual(inference_device(), expected)
+                for name in ("weborganizer.topic", "quality.writing_style", "embedding.harrier"):
+                    policy = recipe(name)
+                    self.assertEqual(policy.model.device, expected)
+                    worker = producer(policy)
+                    assert isinstance(worker, (WebOrganizer, QuRating, Embeddings))
+                    self.assertEqual(worker.device, expected)
+                pins.add(plan([b"snapshot"], "weborganizer.topic", b"commit").id)
+        self.assertEqual(len(pins), 3)
+
+    def test_weborganizer_attention_mask_excludes_padding(self) -> None:
+        import torch
+
+        from premixdb.enrichment.models import _weborganizer_attention_mask
+
+        model = torch.nn.Linear(2, 2).double()
+        mask = torch.tensor([[1, 1, 0], [1, 0, 0]])
+        bias = _weborganizer_attention_mask(model, mask, (2, 3))
+        self.assertEqual(bias.shape, (2, 1, 1, 3))
+        self.assertEqual(bias.dtype, torch.float64)
+        probabilities = torch.softmax(torch.ones(2, 2, 3, 3) + bias, dim=-1)
+        torch.testing.assert_close(probabilities[0, :, :, 2], torch.zeros(2, 3).double())
+        torch.testing.assert_close(probabilities[1, :, :, 0], torch.ones(2, 3).double())
+        expanded = mask[:, None, :].expand(-1, 3, -1)
+        torch.testing.assert_close(
+            _weborganizer_attention_mask(model, expanded, (2, 3)), bias.expand(-1, 1, 3, -1)
+        )
+
+    def test_weborganizer_load_restores_constructor_buffers_and_preserves_weights(self) -> None:
+        import torch
+        from transformers import BertConfig, BertForSequenceClassification
+
+        from premixdb.enrichment.models import _sequence_model
+
+        class ConstructorEmbeddings(torch.nn.Module):
+            def __init__(self, config: BertConfig) -> None:
+                super().__init__()
+                self.word_embeddings = torch.nn.Embedding(5, 8)
+                self.register_buffer("position_ids", torch.arange(16), persistent=False)
+                self.rotary_emb = torch.nn.Module()
+                frequencies = 1 / (10000 ** (torch.arange(0, 8, 2).float() / 8))
+                angles = torch.outer(torch.arange(16).float(), frequencies)
+                self.rotary_emb.register_buffer("inv_freq", frequencies, persistent=False)
+                self.rotary_emb.register_buffer("cos_cached", angles.cos(), persistent=False)
+                self.rotary_emb.register_buffer("sin_cached", angles.sin(), persistent=False)
+
+        config = BertConfig(
+            vocab_size=5,
+            hidden_size=8,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            intermediate_size=16,
+        )
+        config.num_labels = 24
+        model = BertForSequenceClassification(config)
+        model.add_module("new", torch.nn.Module())
+        embeddings = ConstructorEmbeddings(config)
+        model.get_submodule("new").add_module("embeddings", embeddings)
+        expected = {name: value.clone() for name, value in embeddings.named_buffers()}
+        weights = {name: value.clone() for name, value in model.state_dict().items()}
+        for buffer in embeddings.buffers():
+            buffer.fill_(-3959422977)
+        rng = torch.get_rng_state().clone()
+        with (
+            patch(
+                "transformers.AutoTokenizer.from_pretrained", return_value=classifier_tokenizer()
+            ),
+            patch(
+                "transformers.AutoModelForSequenceClassification.from_pretrained",
+                return_value=model,
+            ),
+        ):
+            _, loaded = _sequence_model(
+                ModelPin("WebOrganizer/TopicClassifier-NoURL", REVISION), "cpu", web=True
+            )
+        self.assertIs(loaded, model)
+        self.assertTrue(callable(model.get_submodule("new").get_extended_attention_mask))
+        self.assertTrue(torch.equal(rng, torch.get_rng_state()))
+        for name, buffer in embeddings.named_buffers():
+            torch.testing.assert_close(buffer, expected[name])
+        for name, weight in model.state_dict().items():
+            torch.testing.assert_close(weight, weights[name])
+        self.assertFalse(any("position_ids" in name or "rotary_emb" in name for name in weights))
+
     def test_builtin_metadata_and_empty_batches_do_not_load_models(self) -> None:
         from premixdb.enrichment.language import LanguageScores
         from premixdb.runtime.catalog import recipe

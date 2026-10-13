@@ -1,13 +1,14 @@
 """Search topic or content-type weights with RegMix and select by held-out loss.
 
 Uses the checked-in C4 sample. Classifiers download on first use.
+Model inference and training prefer CUDA, then Apple MPS, and otherwise CPU.
 The training loop comes first; the small causal transformer is defined below.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from itertools import islice
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 import premixdb as p
+from premixdb.enrichment import inference_device
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,7 @@ class EvaluationConfig:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    device: str = "cpu"
+    device: str = field(default_factory=inference_device)
     threads: int = 2
 
 
@@ -113,6 +115,7 @@ def main() -> None:
             "Use positive budgets, sequence_length >= 2, and width divisible by heads."
         )
     torch.set_num_threads(RUNTIME.threads)
+    print(f"Training device: {RUNTIME.device}")
     with p.PremixDB(storage=DATA.storage) as db:
         snapshot = db.Corpus(
             "tutorial/c4-ablation", p.Source.read_jsonl(DATA.input, limit=DATA.limit)
